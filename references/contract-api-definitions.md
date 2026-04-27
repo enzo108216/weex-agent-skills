@@ -2,6 +2,17 @@
 
 Generated from live V3 docs on 2026-03-10.
 
+## Contents
+
+- Summary table
+- `account.*` endpoint sections
+- `market.*` endpoint sections
+- `transaction.*` endpoint sections
+
+Use in-page search with the exact endpoint key from the summary table to jump to a specific generated section quickly.
+
+## Summary Table
+
 Total endpoints: **42**
 
 | Key | Method | Path | Auth |
@@ -48,6 +59,8 @@ Total endpoints: **42**
 | `transaction.place_orders_batch` | `POST` | `/capi/v3/batchOrders` | `True` |
 | `transaction.place_pending_order` | `POST` | `/capi/v3/algoOrder` | `True` |
 | `transaction.place_tp_sl_order` | `POST` | `/capi/v3/placeTpSlOrder` | `True` |
+
+## Account Endpoint Sections
 
 ## account.adjust_position_margin_trade — Adjust Isolated Margin (TRADE)
 
@@ -348,6 +361,8 @@ NONE
 | `crossLeverage` | `String` | Resulting cross leverage |
 | `isolatedLongLeverage` | `String` | Resulting isolated long leverage |
 | `isolatedShortLeverage` | `String` | Resulting isolated short leverage |
+
+## Market Endpoint Sections
 
 ## market.get_book_ticker — Get Best Bid/Ask
 
@@ -702,6 +717,8 @@ NONE
 | `indexPrice` | `String` | Last index price |
 | `openTime` | `Long` | Timestamp of the first trade in the 24-hour window |
 | `closeTime` | `Long` | Timestamp of the last trade in the 24-hour window |
+
+## Transaction Endpoint Sections
 
 ## transaction.cancel_all_orders — Cancel All Open Orders (TRADE)
 
@@ -1176,4 +1193,3 @@ NONE
 | `orderId` | `Long` | Plan order ID when successful. |
 | `errorCode` | `String` | Error code when success = false . |
 | `errorMessage` | `String` | Error description when success = false . |
-

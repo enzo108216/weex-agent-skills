@@ -15,7 +15,7 @@ Quick commands:
 
 ```bash
 python3 scripts/weex_spot_api.py list-endpoints --pretty
-python3 scripts/weex_spot_api.py call --endpoint spot.market.gettickerinfo --query '{"symbol":"BTCUSDT"}' --pretty
+python3 scripts/weex_spot_api.py call --endpoint spot.market.get_ticker_info --query '{"symbol":"BTCUSDT"}' --pretty
 ```
 
 Latest trade endpoint:

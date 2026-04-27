@@ -1,2 +1,27 @@
+# Keep only the skill package itself in Git.
+# Everything else is ignored by default unless explicitly allowlisted below.
+/*
+
+# Repository metadata that should stay versioned.
+!/.gitignore
+!/LICENSE
+!/README.md
+!/SKILL.md
+!/file-index.json
+!/manifest.json
+!/requirements.txt
+
+# Core skill directories.
+!/references/
+!/references/**
+!/scripts/
+!/scripts/**
+!/tests/
+!/tests/**
+
+# OS, IDE, and Python cache files.
+.DS_Store
+/.idea/
 __pycache__/
 *.pyc
+.pytest_cache/

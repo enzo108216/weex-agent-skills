@@ -2,7 +2,7 @@
 """WEEX Spot REST API helper.
 
 - Endpoint definitions loaded from references/spot-api-definitions.json
-- Private auth from environment variables only
+- Private auth from a secure saved profile
 - Supports generic endpoint calls and deterministic order placement
 """
 
@@ -21,9 +21,31 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
+from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
+
+ProfileError = RuntimeError
+load_profile_credentials = None
+resolve_profile = None
+
 DEFAULT_BASE_URL = "https://api-spot.weex.com"
 DEFAULT_LOCALE = "en-US"
 DEFAULT_TIMEOUT = 15.0
+GET_BODY_UNSUPPORTED_MESSAGE = (
+    "GET requests do not accept --body. Pass request fields with --query instead."
+)
+PRIVATE_PROFILE_REQUIRED_MESSAGE = (
+    "Private commands require a saved profile. Configure a default profile with "
+    "scripts/weex_profile_manager.py or scripts/weex_profiles.py, or pass --profile <name>."
+)
+PROFILE_RUNTIME_DEPENDENCY_MISSING = (
+    "Unable to enable saved-profile support for the WEEX Spot REST API helper "
+    "because Python dependency '{module_name}' is missing. Install requirements.txt "
+    "with this interpreter and retry."
+)
+PROFILE_RUNTIME_UNAVAILABLE = (
+    "Unable to enable saved-profile support for the WEEX Spot REST API helper "
+    "because its runtime dependencies are unavailable."
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +78,29 @@ def load_endpoint_map() -> Dict[str, Endpoint]:
 
 
 ENDPOINTS = load_endpoint_map()
+
+
+def _load_profile_runtime_dependencies() -> None:
+    global ProfileError, load_profile_credentials, resolve_profile
+
+    if load_profile_credentials is not None and resolve_profile is not None:
+        return
+
+    try:
+        from weex_profile_store import (
+            ProfileError as profile_error_type,
+            load_profile_credentials as load_profile_credentials_fn,
+            resolve_profile as resolve_profile_fn,
+        )
+    except ModuleNotFoundError as exc:
+        module_name = exc.name or "unknown"
+        raise SystemExit(PROFILE_RUNTIME_DEPENDENCY_MISSING.format(module_name=module_name)) from exc
+    except ImportError as exc:
+        raise SystemExit(PROFILE_RUNTIME_UNAVAILABLE) from exc
+
+    ProfileError = profile_error_type
+    load_profile_credentials = load_profile_credentials_fn
+    resolve_profile = resolve_profile_fn
 
 
 def find_endpoint_key_by_doc_suffix(doc_suffix: str) -> str:
@@ -101,6 +146,7 @@ class WeexSpotClient:
         api_key: Optional[str],
         api_secret: Optional[str],
         api_passphrase: Optional[str],
+        profile_name: Optional[str] = None,
         user_agent: str = "weex-trader-skill-spot/1.0",
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -109,21 +155,35 @@ class WeexSpotClient:
         self.api_key = api_key
         self.api_secret = api_secret
         self.api_passphrase = api_passphrase
+        self.profile_name = profile_name
         self.user_agent = user_agent
 
     def _require_auth(self) -> None:
+        _load_profile_runtime_dependencies()
+        if self.profile_name and (not self.api_key or not self.api_secret or not self.api_passphrase):
+            try:
+                creds = load_profile_credentials(self.profile_name)
+            except ProfileError as exc:
+                raise SystemExit(str(exc)) from exc
+            self.api_key = creds.api_key
+            self.api_secret = creds.api_secret
+            self.api_passphrase = creds.api_passphrase
         missing = []
         if not self.api_key:
-            missing.append("WEEX_API_KEY")
+            missing.append("API Key")
         if not self.api_secret:
-            missing.append("WEEX_API_SECRET")
+            missing.append("Secret Key")
         if not self.api_passphrase:
-            missing.append("WEEX_API_PASSPHRASE")
+            missing.append("Passphrase")
         if missing:
-            raise SystemExit(
-                "Missing private API credentials in environment. "
-                "Set these vars and retry: " + ", ".join(missing)
-            )
+            if self.profile_name:
+                raise SystemExit(
+                    f"Missing private API credentials in profile '{self.profile_name}'. "
+                    "Update the saved profile with scripts/weex_profile_manager.py "
+                    "or scripts/weex_profiles.py and retry: "
+                    + ", ".join(missing)
+                )
+            raise SystemExit(PRIVATE_PROFILE_REQUIRED_MESSAGE)
 
     def _sign(self, timestamp_ms: str, method: str, path: str, query_string: str, body_str: str) -> str:
         message = f"{timestamp_ms}{method}{path}"
@@ -146,6 +206,8 @@ class WeexSpotClient:
         method = endpoint.method.upper()
         q = query or {}
         b = body or {}
+        if method == "GET" and b:
+            raise SystemExit(GET_BODY_UNSUPPORTED_MESSAGE)
         query_string = parse.urlencode(q, doseq=True)
         body_str = compact_json(b)
 
@@ -284,6 +346,41 @@ def generate_client_order_id() -> str:
     return f"codex-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
 
 
+def command_requires_auth(args: argparse.Namespace) -> bool:
+    if args.command == "call":
+        return ENDPOINTS[args.endpoint].requires_auth
+    return args.command in {"place-order"}
+
+
+def resolve_runtime_profile(
+    requested_profile: Optional[str],
+    allow_invalid_default: bool,
+) -> Optional[Any]:
+    try:
+        _load_profile_runtime_dependencies()
+    except SystemExit:
+        if requested_profile is None and allow_invalid_default:
+            return None
+        raise
+
+    if requested_profile:
+        try:
+            return resolve_profile(requested_profile)
+        except ProfileError as exc:
+            raise SystemExit(str(exc)) from exc
+    try:
+        return resolve_profile(None)
+    except ProfileError as exc:
+        if allow_invalid_default:
+            return None
+        raise SystemExit(str(exc)) from exc
+
+
+def require_private_profile(profile: Optional[Any]) -> None:
+    if profile is None:
+        raise SystemExit(PRIVATE_PROFILE_REQUIRED_MESSAGE)
+
+
 def cmd_list_endpoints(args: argparse.Namespace) -> int:
     rows = []
     for ep in sorted(ENDPOINTS.values(), key=lambda e: (e.category, e.key)):
@@ -362,54 +459,118 @@ def cmd_place_order(args: argparse.Namespace, client: WeexSpotClient) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="WEEX Spot REST API helper")
-    parser.add_argument("--base-url", default=os.getenv("WEEX_SPOT_API_BASE", DEFAULT_BASE_URL))
-    parser.add_argument("--locale", default=os.getenv("WEEX_LOCALE", DEFAULT_LOCALE))
-    parser.add_argument("--timeout", type=float, default=float(os.getenv("WEEX_API_TIMEOUT", DEFAULT_TIMEOUT)))
+    parser = argparse.ArgumentParser(
+        description="WEEX Spot REST API helper",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Saved profile name; omit it to use the configured default profile",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Optional spot API base URL override; leave empty to use the saved profile value or the built-in official default",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="HTTP timeout in seconds; leave empty to use WEEX_API_TIMEOUT or the built-in default",
+    )
     categories = sorted({endpoint.category for endpoint in ENDPOINTS.values() if endpoint.category})
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_list = sub.add_parser("list-endpoints", help="List supported spot REST endpoints")
-    p_list.add_argument("--category", choices=categories, default=None)
-    p_list.add_argument("--pretty", action="store_true")
+    p_list = sub.add_parser(
+        "list-endpoints",
+        help="List supported spot REST endpoints",
+        description="List the spot endpoint definitions bundled with this skill.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_list.add_argument("--category", choices=categories, default=None, help="Filter endpoints by spot endpoint category")
+    p_list.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
-    p_call = sub.add_parser("call", help="Call a spot endpoint by key with JSON query/body")
-    p_call.add_argument("--endpoint", required=True, choices=sorted(ENDPOINTS.keys()))
+    p_call = sub.add_parser(
+        "call",
+        help="Call a spot endpoint by key with JSON query/body",
+        description="Call a specific spot REST endpoint using raw JSON query and body payloads.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_call.add_argument("--endpoint", required=True, choices=sorted(ENDPOINTS.keys()), help="Exact endpoint key from list-endpoints")
     p_call.add_argument("--query", default="{}", help="JSON object string")
     p_call.add_argument("--body", default="{}", help="JSON object string")
-    p_call.add_argument("--dry-run", action="store_true")
-    p_call.add_argument("--confirm-live", action="store_true")
-    p_call.add_argument("--pretty", action="store_true")
+    p_call.add_argument("--dry-run", action="store_true", help="Preview the signed request without sending it")
+    p_call.add_argument("--confirm-live", action="store_true", help="Allow live mutating requests")
+    p_call.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
-    p_ticker = sub.add_parser("ticker", help="Get spot ticker for one symbol")
-    p_ticker.add_argument("--symbol", required=True)
-    p_ticker.add_argument("--pretty", action="store_true")
+    p_ticker = sub.add_parser(
+        "ticker",
+        help="Get spot ticker for one symbol",
+        description="Fetch the current spot ticker for a single symbol.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_ticker.add_argument("--symbol", required=True, help="Trading pair symbol, for example BTCUSDT")
+    p_ticker.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
-    p_place = sub.add_parser("place-order", help="Convenience wrapper for the live spot PlaceOrder doc")
-    p_place.add_argument("--symbol", required=True)
-    p_place.add_argument("--side", required=True, choices=["BUY", "SELL", "buy", "sell"])
-    p_place.add_argument("--order-type", required=True, choices=["LIMIT", "MARKET", "limit", "market"])
-    p_place.add_argument("--quantity", required=True)
-    p_place.add_argument("--price", default=None)
-    p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "gtc", "ioc", "fok"])
-    p_place.add_argument("--new-client-order-id", default=None)
-    p_place.add_argument("--dry-run", action="store_true")
-    p_place.add_argument("--confirm-live", action="store_true")
-    p_place.add_argument("--pretty", action="store_true")
+    p_place = sub.add_parser(
+        "place-order",
+        help="Convenience wrapper for the live spot PlaceOrder doc",
+        description="Place one spot order using the documented V3 fields exposed by this wrapper.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_place.add_argument("--symbol", required=True, help="Trading pair symbol, for example BTCUSDT")
+    p_place.add_argument("--side", required=True, choices=["BUY", "SELL", "buy", "sell"], help="Order side: BUY or SELL")
+    p_place.add_argument("--order-type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET sends immediately at market price")
+    p_place.add_argument("--quantity", required=True, help="Order quantity in the format expected by WEEX for this spot market")
+    p_place.add_argument("--price", default=None, help="Limit price; usually required for LIMIT orders and omitted for MARKET orders")
+    p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "gtc", "ioc", "fok"], help="Execution policy for LIMIT orders: GTC, IOC, or FOK")
+    p_place.add_argument("--new-client-order-id", default=None, help="Optional client-defined order identifier; auto-generated when omitted")
+    p_place.add_argument("--dry-run", action="store_true", help="Build and sign the request without sending it")
+    p_place.add_argument("--confirm-live", action="store_true", help="Required to actually send the order instead of refusing live mutation")
+    p_place.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    command_name = f"spot.{args.command}"
+    try:
+        refresh_agent_records(command=command_name)
+    except Exception:
+        pass
+    requires_auth = command_requires_auth(args)
+    if requires_auth:
+        try:
+            ensure_private_runtime_ready(command=command_name, auto_setup=True, language=None)
+        except RuntimePreflightError as exc:
+            raise SystemExit(str(exc)) from exc
+    profile = resolve_runtime_profile(
+        requested_profile=args.profile,
+        allow_invalid_default=not requires_auth,
+    )
+    if requires_auth:
+        require_private_profile(profile)
+
+    env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
+    base_url = (
+        args.base_url
+        or (profile.spot_base_url if profile else "")
+        or env_base_url
+        or DEFAULT_BASE_URL
+    )
+    locale = os.getenv("WEEX_LOCALE") or DEFAULT_LOCALE
+    timeout = args.timeout if args.timeout is not None else float(os.getenv("WEEX_API_TIMEOUT", DEFAULT_TIMEOUT))
     client = WeexSpotClient(
-        base_url=args.base_url,
-        timeout=args.timeout,
-        locale=args.locale,
-        api_key=os.getenv("WEEX_API_KEY"),
-        api_secret=os.getenv("WEEX_API_SECRET"),
-        api_passphrase=os.getenv("WEEX_API_PASSPHRASE"),
+        base_url=base_url,
+        timeout=timeout,
+        locale=locale,
+        api_key=None,
+        api_secret=None,
+        api_passphrase=None,
+        profile_name=profile.name if profile else None,
     )
 
     if args.command == "list-endpoints":

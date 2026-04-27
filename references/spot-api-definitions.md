@@ -2,6 +2,19 @@
 
 Generated from live V3 docs on 2026-03-10.
 
+## Contents
+
+- Summary table
+- `spot.account.*` endpoint sections
+- `spot.config.*` endpoint sections
+- `spot.market.*` endpoint sections
+- `spot.order.*` endpoint sections
+- `spot.rebate.*` endpoint sections
+
+Use in-page search with the exact endpoint key from the summary table to jump to a specific generated section quickly.
+
+## Summary Table
+
 Total endpoints: **32**
 
 | Key | Method | Path | Auth |
@@ -38,6 +51,8 @@ Total endpoints: **32**
 | `spot.rebate.internal_withdrawal` | `POST` | `/api/v3/rebate/affiliate/internalWithdrawal` | `True` |
 | `spot.rebate.query_sub_channel_transactions` | `POST` | `/api/v3/rebate/affiliate/querySubChannelTransactions` | `True` |
 | `spot.rebate.verify_referrals` | `GET` | `/api/v3/agency/verifyReferrals` | `True` |
+
+## Spot Account Endpoint Sections
 
 ## spot.account.get_account_balance — Get Account Information (USER_DATA)
 
@@ -173,6 +188,8 @@ NONE
 | `amount` | `String` | Transfer amount. |
 | `tradeTime` | `String` | Transfer time (ms). |
 
+## Spot Config Endpoint Sections
+
 ## spot.config.currency_info — Get Coin Information
 
 - Method: `GET`
@@ -291,6 +308,8 @@ NONE
 ### Response Parameters
 
 NONE
+
+## Spot Market Endpoint Sections
 
 ## spot.market.get_all_ticker_info — Get 24h Ticker Statistics
 
@@ -461,6 +480,8 @@ NONE
 | `time` | `Long` | Trade time (milliseconds). |
 | `isBuyerMaker` | `Boolean` | true if the buyer was the maker side. |
 | `isBestMatch` | `Boolean` | true if the trade matched the best price level. |
+
+## Spot Order Endpoint Sections
 
 ## spot.order.bulk_cancel — Batch Cancel Orders (TRADE)
 
@@ -714,6 +735,8 @@ NONE
 | `time` | `Long` | Creation time (ms). |
 | `updateTime` | `Long` | Last update time (ms). |
 | `isWorking` | `Boolean` | Whether the order is currently working. |
+
+## Spot Rebate Endpoint Sections
 
 ## spot.rebate.get_affiliate_assets — Get Affiliate Member Assets
 
@@ -1004,4 +1027,3 @@ NONE
 |---|---|---|
 | `uid` | `Long` | UID that was checked |
 | `isRefferal` | `Boolean` | true if the UID belongs to the current affiliate |
-

@@ -328,8 +328,16 @@ def write_outputs(product: str, docs: List[ParsedDoc]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Regenerate WEEX REST API definitions from live docs")
-    parser.add_argument("--product", choices=["contract", "spot", "all"], default="all")
+    parser = argparse.ArgumentParser(
+        description="Regenerate WEEX REST API definitions from live docs",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--product",
+        choices=["contract", "spot", "all"],
+        default="all",
+        help="Which API definition set to regenerate: contract only, spot only, or both",
+    )
     args = parser.parse_args()
 
     sitemap_urls = load_sitemap_urls()

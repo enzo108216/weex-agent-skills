@@ -1,15 +1,14 @@
-# Release Channel
+# Release Notes
 
-## Author release flow
+This note is for repository maintainers. It is not part of the normal runtime routing for the skill.
 
-1. Bump `metadata.version` in `SKILL.md`.
-2. Package skill:
+## Packaging
 
-```bash
-python3 /Users/raymond/.codex/skills/fs-skill-creator/scripts/package_skill.py /path/to/weex-trader-skill ./dist
-```
+1. Update the skill contents you want to publish from this checkout.
+2. Use the packaging workflow that exists in your local Codex environment or release tooling.
+3. Pass repo-relative or user-provided paths into that workflow instead of hardcoding a workstation-specific absolute path.
 
-3. Create GitHub Release with tag like `v1.1.0`.
-4. Upload `weex-trader-skill.skill` as release asset.
+## Versioning
 
-Agent client update behavior is handled outside this skill. This repository no longer ships a dedicated update script.
+- Keep version information in git tags, release notes, or external package metadata.
+- Do not assume `SKILL.md` carries an inline version key; the current frontmatter only defines the skill name and description.
