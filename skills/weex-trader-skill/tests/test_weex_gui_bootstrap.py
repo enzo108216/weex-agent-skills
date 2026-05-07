@@ -26,16 +26,17 @@ class GuiBootstrapTests(unittest.TestCase):
             stderr="",
         )
 
-        with mock.patch.object(bootstrap.subprocess, "run", return_value=completed):
-            with mock.patch.object(
-                bootstrap,
-                "_linked_library_paths",
-                return_value=(
-                    "/System/Library/Frameworks/Tcl.framework/Versions/8.5/Tcl",
-                    "/System/Library/Frameworks/Tk.framework/Versions/8.5/Tk",
-                ),
-            ):
-                probe = bootstrap.probe_runtime("/usr/bin/python3")
+        with mock.patch.object(bootstrap.platform, "system", return_value="Darwin"):
+            with mock.patch.object(bootstrap.subprocess, "run", return_value=completed):
+                with mock.patch.object(
+                    bootstrap,
+                    "_linked_library_paths",
+                    return_value=(
+                        "/System/Library/Frameworks/Tcl.framework/Versions/8.5/Tcl",
+                        "/System/Library/Frameworks/Tk.framework/Versions/8.5/Tk",
+                    ),
+                ):
+                    probe = bootstrap.probe_runtime("/usr/bin/python3")
 
         self.assertFalse(probe.usable)
         self.assertEqual(probe.reason, "tk_crashed")
