@@ -1,0 +1,8 @@
+# WEEX Agent Repo Guidance
+
+- Treat `skills/` as the only source-of-truth layer.
+- Use `skills/weex-trader-skill` for WEEX REST access, profile management, vault operations, and any live order action.
+- Use `skills/weex-analysis-skill` for read-only exposure, PnL, fill, and risk review.
+- Never send mutating requests without explicit user confirmation and the live-confirmation flag required by the trader skill.
+- Prefer non-argv secret transport when the trader skill offers a safer option.
+- When analysis needs live data, collect it first, normalize it into JSON, then pass it into the analysis skill.

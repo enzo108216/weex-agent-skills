@@ -1,27 +1,30 @@
-# Keep only the skill package itself in Git.
-# Everything else is ignored by default unless explicitly allowlisted below.
+# Ignore everything at the repository root by default.
 /*
 
-# Repository metadata that should stay versioned.
+# Keep repository metadata files that define the skill catalog.
 !/.gitignore
+!/AGENTS.md
+!/CLAUDE.md
 !/LICENSE
 !/README.md
-!/SKILL.md
-!/file-index.json
-!/manifest.json
-!/requirements.txt
 
-# Core skill directories.
-!/references/
-!/references/**
-!/scripts/
-!/scripts/**
-!/tests/
-!/tests/**
+# Keep tracked catalog structures and their contents.
+!/.agents/
+!/.agents/**
+!/.claude/
+!/.claude/**
+!/.cursor/
+!/.cursor/**
+!/.github/
+!/.github/**
+!/skills/
+!/skills/**
+!/tools/
+!/tools/**
 
-# OS, IDE, and Python cache files.
-.DS_Store
-/.idea/
-__pycache__/
-*.pyc
-.pytest_cache/
+# Ignore editor, OS, and Python cache files anywhere, including inside allowed paths.
+**/.DS_Store
+**/.idea/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/

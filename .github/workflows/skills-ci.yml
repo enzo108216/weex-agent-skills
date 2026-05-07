@@ -1,0 +1,40 @@
+name: skills-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify checkout is clean for packaging
+        run: python3 tools/clean_local_skill_checkout.py --check
+
+      - name: Verify shared risk review core is synced
+        run: python3 tools/sync_weex_risk_review_core.py --check
+
+      - name: Run skill tests
+        run: python3 tools/run_skill_tests.py
+
+      - name: Smoke local trader skill install
+        run: python3 tools/install_local_skills.py --skill weex-trader-skill --agent codex --dir /tmp/weex-skill-install/trader --force
+
+      - name: Smoke local analysis skill install
+        run: python3 tools/install_local_skills.py --skill weex-analysis-skill --agent codex --dir /tmp/weex-skill-install/analysis --force
+
+      - name: Re-clean checkout before publish validation
+        run: python3 tools/clean_local_skill_checkout.py
+
+      - name: Validate publish dry run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh skill publish --dry-run

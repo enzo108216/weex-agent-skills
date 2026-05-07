@@ -1,0 +1,9 @@
+---
+description: WEEX repository routing and safety rules
+alwaysApply: true
+---
+
+- Use `skills/weex-trader-skill` for WEEX execution, profile, vault, and live REST workflows.
+- Use `skills/weex-analysis-skill` for read-only analysis of normalized snapshots and fills.
+- Never send mutating WEEX requests without explicit user confirmation.
+- Prefer secret transport that avoids putting credentials or vault passwords directly on argv.
