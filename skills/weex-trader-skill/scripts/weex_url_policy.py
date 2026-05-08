@@ -3,10 +3,26 @@
 
 from __future__ import annotations
 
+from typing import Mapping
+from urllib import request
 from urllib.parse import urlparse
 
 
 ALLOWED_WEEX_BASE_DOMAINS = ("weex.com", "weex.tech")
+WEEX_AUTH_HEADER_NAMES = {
+    "ACCESS-KEY",
+    "ACCESS-PASSPHRASE",
+    "ACCESS-TIMESTAMP",
+    "ACCESS-SIGN",
+}
+
+
+class _NoRedirectHandler(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+_NO_REDIRECT_OPENER = request.build_opener(_NoRedirectHandler)
 
 
 class BaseUrlPolicyError(ValueError):
@@ -69,3 +85,19 @@ def validate_weex_base_url(raw_url: str, *, label: str = "base URL") -> str:
         raise BaseUrlPolicyError("host", label=label, host=parsed.hostname)
 
     return value.rstrip("/")
+
+
+def contains_weex_auth_headers(headers: Mapping[str, object]) -> bool:
+    names = {str(name).upper() for name in headers}
+    return bool(names & WEEX_AUTH_HEADER_NAMES)
+
+
+def open_weex_request(
+    req: request.Request,
+    *,
+    timeout: float,
+    headers: Mapping[str, object],
+):
+    if contains_weex_auth_headers(headers):
+        return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
+    return request.urlopen(req, timeout=timeout)

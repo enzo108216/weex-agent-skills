@@ -286,6 +286,9 @@ def cmd_show(args: argparse.Namespace, language: str) -> int:
 
 
 def cmd_save(args: argparse.Namespace, language: str) -> int:
+    contract_base_url = validate_base_url_arg(language, args.contract_base_url, "contract_base_url_label")
+    spot_base_url = validate_base_url_arg(language, args.spot_base_url, "spot_base_url_label")
+
     api_key = args.api_key
     api_secret = args.api_secret
     api_passphrase = args.api_passphrase
@@ -299,9 +302,6 @@ def cmd_save(args: argparse.Namespace, language: str) -> int:
         api_key = api_key or prompt_secret(language, "api_key_label")
         api_secret = api_secret or prompt_secret(language, "api_secret_label")
         api_passphrase = api_passphrase or prompt_secret(language, "api_passphrase_label")
-
-    contract_base_url = validate_base_url_arg(language, args.contract_base_url, "contract_base_url_label")
-    spot_base_url = validate_base_url_arg(language, args.spot_base_url, "spot_base_url_label")
 
     profile = upsert_profile(
         name=args.profile,

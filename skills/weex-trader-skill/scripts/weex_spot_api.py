@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
 from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
-from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
+from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
 ProfileError = RuntimeError
 load_profile_credentials = None
@@ -257,7 +257,7 @@ class WeexSpotClient:
             headers=prepared["headers"],
         )
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
+            with open_weex_request(req, timeout=self.timeout, headers=prepared["headers"]) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 try:
                     payload = json.loads(raw)

@@ -9,6 +9,8 @@ import types
 import unittest
 import json
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from unittest import mock
 
 
@@ -68,6 +70,61 @@ runpy.run_path(script_path, run_name="__main__")
             capture_output=True,
             check=False,
         )
+
+    def assert_authenticated_redirect_is_not_followed(self, client: object) -> None:
+        captured_headers: list[dict[str, str]] = []
+
+        class Receiver(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                captured_headers.append(dict(self.headers.items()))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        class Redirector(BaseHTTPRequestHandler):
+            target = ""
+
+            def do_GET(self) -> None:
+                self.send_response(302)
+                self.send_header("Location", self.target)
+                self.end_headers()
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        receiver = HTTPServer(("127.0.0.1", 0), Receiver)
+        receiver_thread = Thread(target=receiver.serve_forever, daemon=True)
+        receiver_thread.start()
+        Redirector.target = f"http://127.0.0.1:{receiver.server_port}/capture"
+        redirector = HTTPServer(("127.0.0.1", 0), Redirector)
+        redirector_thread = Thread(target=redirector.serve_forever, daemon=True)
+        redirector_thread.start()
+        try:
+            prepared = {
+                "url": f"http://127.0.0.1:{redirector.server_port}/start",
+                "method": "GET",
+                "data": None,
+                "headers": {
+                    "ACCESS-KEY": "key-secret",
+                    "ACCESS-PASSPHRASE": "pass-secret",
+                    "ACCESS-SIGN": "sign-secret",
+                    "User-Agent": "redirect-regression-test",
+                },
+            }
+
+            response = client.send(prepared)
+        finally:
+            redirector.shutdown()
+            receiver.shutdown()
+            redirector.server_close()
+            receiver.server_close()
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["status"], 302)
+        self.assertEqual(captured_headers, [])
 
     def test_profile_manager_help_works_without_gui_runtime(self) -> None:
         completed = self.run_command(str(SCRIPTS / "weex_profile_manager_en.py"), "--help")
@@ -519,6 +576,51 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertIn("weex.com", combined)
         self.assertIn("contract.example.test", combined)
         self.assertNotIn("must use", combined)
+
+    def test_profile_cli_validates_base_url_before_prompting_for_secrets(self) -> None:
+        import weex_profiles_cli as profiles_cli
+
+        args = types.SimpleNamespace(
+            profile="main",
+            description=None,
+            contract_base_url="https://contract.example.test",
+            spot_base_url=None,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            api_key_env=None,
+            api_secret_env=None,
+            api_passphrase_env=None,
+            secrets_stdin_json=False,
+            prompt_secrets=True,
+            set_default=False,
+            clear_default=False,
+            pretty=False,
+        )
+
+        with mock.patch.object(profiles_cli, "prompt_secret", side_effect=AssertionError("prompted for secrets")):
+            with mock.patch.object(profiles_cli, "upsert_profile") as upsert_mock:
+                with self.assertRaises(profiles_cli.ProfileError) as exc_info:
+                    profiles_cli.cmd_save(args, "en")
+
+        upsert_mock.assert_not_called()
+        self.assertIn("contract.example.test", str(exc_info.exception))
+
+    def test_contract_client_does_not_follow_redirects_with_auth_headers(self) -> None:
+        import weex_contract_api as contract
+
+        client = contract.WeexContractClient.__new__(contract.WeexContractClient)
+        client.timeout = 5
+
+        self.assert_authenticated_redirect_is_not_followed(client)
+
+    def test_spot_client_does_not_follow_redirects_with_auth_headers(self) -> None:
+        import weex_spot_api as spot
+
+        client = spot.WeexSpotClient.__new__(spot.WeexSpotClient)
+        client.timeout = 5
+
+        self.assert_authenticated_redirect_is_not_followed(client)
 
     def test_public_spot_cli_bootstraps_agent_state_without_profile_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
