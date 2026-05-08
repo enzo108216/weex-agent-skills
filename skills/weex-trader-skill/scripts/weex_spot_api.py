@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
 from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
+from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
 
 ProfileError = RuntimeError
 load_profile_credentials = None
@@ -149,7 +150,10 @@ class WeexSpotClient:
         profile_name: Optional[str] = None,
         user_agent: str = "weex-trader-skill-spot/1.0",
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        try:
+            self.base_url = validate_weex_base_url(base_url, label="spot base URL")
+        except BaseUrlPolicyError as exc:
+            raise SystemExit(str(exc)) from exc
         self.timeout = timeout
         self.locale = locale
         self.api_key = api_key

@@ -96,9 +96,9 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
                 {
                     "WEEX_TRADER_SKILL_HOME": tempdir,
                     "WEEX_LOCALE": "zh-CN",
-                    "WEEX_API_BASE": "https://generic.env.test",
-                    "WEEX_CONTRACT_API_BASE": "https://contract.env.test",
-                    "WEEX_SPOT_API_BASE": "https://spot.env.test",
+                    "WEEX_API_BASE": "https://api.weex.tech",
+                    "WEEX_CONTRACT_API_BASE": "https://contract.weex.tech",
+                    "WEEX_SPOT_API_BASE": "https://spot.weex.com",
                 },
                 clear=False,
             ):
@@ -113,6 +113,7 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
         self.assertTrue(payload["env"]["WEEX_API_BASE"])
         self.assertTrue(payload["env"]["WEEX_CONTRACT_API_BASE"])
         self.assertTrue(payload["env"]["WEEX_SPOT_API_BASE"])
+        self.assertTrue(payload["env_validation"]["ok"])
 
     def test_runtime_state_reports_invalid_runtime_environment_values(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -122,6 +123,7 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
                     "WEEX_TRADER_SKILL_HOME": tempdir,
                     "WEEX_API_TIMEOUT": "abc",
                     "WEEX_API_BASE": "not-a-url",
+                    "WEEX_CONTRACT_API_BASE": "https://contract.env.test",
                 },
                 clear=False,
             ):
@@ -136,6 +138,7 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(len(payload["env_validation"]["issues"]), 2)
         self.assertTrue(any("WEEX_API_TIMEOUT" in issue for issue in payload["env_validation"]["issues"]))
         self.assertTrue(any("WEEX_API_BASE" in issue for issue in payload["env_validation"]["issues"]))
+        self.assertTrue(any("WEEX_CONTRACT_API_BASE" in issue for issue in payload["env_validation"]["issues"]))
 
     def test_private_runtime_preflight_reports_missing_modules_and_invalid_env(self) -> None:
         with mock.patch.object(agent_state, "_probe_required_modules", return_value=(False, ["cryptography", "requests"])):

@@ -29,7 +29,7 @@ Symptom:
 
 - `Private WEEX command preflight failed`
 - `WEEX_API_TIMEOUT must be a positive number of seconds`
-- `WEEX_API_BASE` / `WEEX_CONTRACT_API_BASE` / `WEEX_SPOT_API_BASE` must be a full URL
+- `WEEX_API_BASE` / `WEEX_CONTRACT_API_BASE` / `WEEX_SPOT_API_BASE` must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
 
 Action:
 

@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 
 from weex_agent_state import refresh_agent_records
 from weex_profile_language import resolve_language
+from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
 
 
 ProfileError = RuntimeError
@@ -69,6 +70,8 @@ TEXTS = {
         "error_stdin_json_empty": "Expected secret JSON on stdin, but stdin was empty",
         "error_stdin_json_invalid": "Secret JSON on stdin is invalid: {reason}",
         "error_stdin_json_shape": "Secret JSON on stdin must be an object with api_key, api_secret, and api_passphrase",
+        "contract_base_url_label": "Contract Base URL",
+        "spot_base_url_label": "Spot Base URL",
         "runtime_dependency_missing": "Unable to start the WEEX profile CLI because Python dependency '{module_name}' is missing. Install requirements.txt with this interpreter and retry.",
         "runtime_unavailable": "Unable to start the WEEX profile CLI because its runtime dependencies are unavailable.",
     },
@@ -113,6 +116,8 @@ TEXTS = {
         "error_stdin_json_empty": "需要从 stdin 读取密钥 JSON，但 stdin 为空",
         "error_stdin_json_invalid": "stdin 中的密钥 JSON 无效：{reason}",
         "error_stdin_json_shape": "stdin 中的密钥 JSON 必须是对象，并包含 api_key、api_secret、api_passphrase 字段",
+        "contract_base_url_label": "合约 Base URL",
+        "spot_base_url_label": "现货 Base URL",
         "runtime_dependency_missing": "无法启动 WEEX 账号命令行工具，因为缺少 Python 依赖“{module_name}”。请使用当前解释器先安装 requirements.txt 后重试。",
         "runtime_unavailable": "无法启动 WEEX 账号命令行工具，因为运行时依赖不可用。",
     },
@@ -209,6 +214,17 @@ def secret_values_from_stdin_json(language: str, enabled: bool) -> Dict[str, str
     return values
 
 
+def validate_base_url_arg(language: str, raw_url: Optional[str], label_key: str) -> Optional[str]:
+    if raw_url is None:
+        return None
+    if not raw_url.strip():
+        return ""
+    try:
+        return validate_weex_base_url(raw_url, label=t(language, label_key))
+    except BaseUrlPolicyError as exc:
+        raise ProfileError(exc.localized_message(language)) from exc
+
+
 def describe_credentials(profile_id: str) -> Dict[str, Any]:
     try:
         has_credentials = profile_has_credentials_by_id(profile_id)
@@ -284,11 +300,14 @@ def cmd_save(args: argparse.Namespace, language: str) -> int:
         api_secret = api_secret or prompt_secret(language, "api_secret_label")
         api_passphrase = api_passphrase or prompt_secret(language, "api_passphrase_label")
 
+    contract_base_url = validate_base_url_arg(language, args.contract_base_url, "contract_base_url_label")
+    spot_base_url = validate_base_url_arg(language, args.spot_base_url, "spot_base_url_label")
+
     profile = upsert_profile(
         name=args.profile,
         description=args.description,
-        contract_base_url=args.contract_base_url,
-        spot_base_url=args.spot_base_url,
+        contract_base_url=contract_base_url,
+        spot_base_url=spot_base_url,
         api_key=api_key,
         api_secret=api_secret,
         api_passphrase=api_passphrase,

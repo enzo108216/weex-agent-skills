@@ -115,6 +115,18 @@
         "resolve_language"
       ]
     },
+    "scripts/weex_url_policy.py": {
+      "role": "Shared allowlist and shape validation for WEEX REST base URLs.",
+      "when": [
+        "validating custom contract or spot REST hosts",
+        "checking WEEX_API_BASE and market-specific API base overrides",
+        "rejecting non-WEEX hosts before credentials are loaded or signed"
+      ],
+      "surface": [
+        "validate_weex_base_url",
+        "is_allowed_weex_hostname"
+      ]
+    },
     "scripts/weex_gui_bootstrap.py": {
       "role": "Managed GUI runtime bootstrap for macOS and Windows entrypoints.",
       "when": [

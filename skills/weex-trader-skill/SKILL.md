@@ -66,8 +66,8 @@ These auto-detect language from `agent-init.json`.
   - `api_secret`: required; WEEX Secret Key for signing private requests
   - `api_passphrase`: required; WEEX API Passphrase paired with the key and secret
   - description / note: optional metadata for account purpose or permissions
-  - `contract_base_url`: optional; leave empty for the official contract REST host `https://api-contract.weex.com`
-  - `spot_base_url`: optional; leave empty for the official spot REST host `https://api-spot.weex.com`
+  - `contract_base_url`: optional; leave empty for the official contract REST host `https://api-contract.weex.com`; custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
+  - `spot_base_url`: optional; leave empty for the official spot REST host `https://api-spot.weex.com`; custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
 - Do not frame this as only the minimum fields needed to make private endpoints work; explain meaning, requiredness, and blank-value behavior for every field
 - For terminal entry, also explain `--prompt-secrets`, `--api-key-env` / `--api-secret-env` / `--api-passphrase-env`, and `--secrets-stdin-json`
 - Before edit/delete/default changes, inspect current accounts with `list --pretty`, unless the user explicitly asked to open the GUI first

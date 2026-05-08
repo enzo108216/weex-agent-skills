@@ -15,7 +15,6 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 from weex_gui_bootstrap import (
     BOOTSTRAP_DISABLE_ENV,
@@ -24,6 +23,7 @@ from weex_gui_bootstrap import (
     probe_runtime,
 )
 from weex_profile_language import resolve_language_with_source
+from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
 
 
 CONFIG_HOME_ENV = "WEEX_TRADER_SKILL_HOME"
@@ -350,9 +350,10 @@ def validate_runtime_environment(env: Optional[dict[str, str]] = None) -> dict[s
         raw_url = _clean_text(source.get(env_name))
         if not raw_url:
             continue
-        parsed = urlparse(raw_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            issues.append(f"{env_name} must be a full http/https URL; got {raw_url!r}.")
+        try:
+            validate_weex_base_url(raw_url, label=env_name)
+        except BaseUrlPolicyError as exc:
+            issues.append(str(exc))
 
     return {
         "ok": not issues,

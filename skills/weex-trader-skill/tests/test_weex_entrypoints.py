@@ -456,6 +456,70 @@ runpy.run_path(script_path, run_name="__main__")
 
         self.assertEqual(str(exc_info.exception), spot.GET_BODY_UNSUPPORTED_MESSAGE)
 
+    def test_contract_client_rejects_non_weex_base_url(self) -> None:
+        import weex_contract_api as contract
+
+        with self.assertRaises(SystemExit) as exc_info:
+            contract.WeexContractClient(
+                base_url="https://contract.example.test",
+                timeout=contract.DEFAULT_TIMEOUT,
+                locale=contract.DEFAULT_LOCALE,
+                api_key=None,
+                api_secret=None,
+                api_passphrase=None,
+            )
+
+        self.assertIn("must use a weex.com or weex.tech host", str(exc_info.exception))
+
+    def test_spot_client_accepts_weex_tech_base_url(self) -> None:
+        import weex_spot_api as spot
+
+        client = spot.WeexSpotClient(
+            base_url="https://spot.weex.tech/",
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+        )
+
+        self.assertEqual(client.base_url, "https://spot.weex.tech")
+
+    def test_zh_profile_cli_reports_invalid_base_url_in_chinese(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = os.environ.copy()
+            env["WEEX_TRADER_SKILL_HOME"] = tempdir
+            env["WEEX_GUI_RUNTIME_DISABLE"] = "1"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "weex_profiles_zh.py"),
+                    "save",
+                    "--profile",
+                    "main",
+                    "--contract-base-url",
+                    "https://contract.example.test",
+                    "--api-key",
+                    "key-1234",
+                    "--api-secret",
+                    "secret-1234",
+                    "--api-passphrase",
+                    "pass-1234",
+                ],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        combined = f"{completed.stdout}\n{completed.stderr}"
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("合约 Base URL", combined)
+        self.assertIn("weex.com", combined)
+        self.assertIn("contract.example.test", combined)
+        self.assertNotIn("must use", combined)
+
     def test_public_spot_cli_bootstraps_agent_state_without_profile_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             env = os.environ.copy()
@@ -499,7 +563,7 @@ runpy.run_path(script_path, run_name="__main__")
     def test_public_spot_runtime_profile_uses_default_profile_when_available(self) -> None:
         import weex_spot_api as spot
 
-        profile = types.SimpleNamespace(name="main", spot_base_url="https://spot.example.test")
+        profile = types.SimpleNamespace(name="main", spot_base_url="https://spot.weex.com")
         previous_resolve_profile = spot.resolve_profile
         previous_load_profile_credentials = spot.load_profile_credentials
         previous_profile_error = spot.ProfileError
@@ -519,7 +583,7 @@ runpy.run_path(script_path, run_name="__main__")
     def test_public_contract_runtime_profile_uses_default_profile_when_available(self) -> None:
         import weex_contract_api as contract
 
-        profile = types.SimpleNamespace(name="main", contract_base_url="https://contract.example.test")
+        profile = types.SimpleNamespace(name="main", contract_base_url="https://contract.weex.tech")
         previous_resolve_profile = contract.resolve_profile
         previous_load_profile_credentials = contract.load_profile_credentials
         previous_profile_error = contract.ProfileError
@@ -551,8 +615,8 @@ runpy.run_path(script_path, run_name="__main__")
                             with mock.patch.dict(
                                 os.environ,
                                 {
-                                    "WEEX_CONTRACT_API_BASE": "https://contract.env.test",
-                                    "WEEX_API_BASE": "https://generic.env.test",
+                                    "WEEX_CONTRACT_API_BASE": "https://contract.weex.tech",
+                                    "WEEX_API_BASE": "https://generic.weex.com",
                                     "WEEX_LOCALE": "zh-CN",
                                 },
                                 clear=False,
@@ -561,7 +625,7 @@ runpy.run_path(script_path, run_name="__main__")
 
         self.assertEqual(exit_code, 0)
         client_mock.assert_called_once_with(
-            base_url="https://contract.env.test",
+            base_url="https://contract.weex.tech",
             timeout=contract.DEFAULT_TIMEOUT,
             locale="zh-CN",
             api_key=None,
@@ -585,7 +649,7 @@ runpy.run_path(script_path, run_name="__main__")
                             with mock.patch.dict(
                                 os.environ,
                                 {
-                                    "WEEX_API_BASE": "https://generic.spot.env.test",
+                                    "WEEX_API_BASE": "https://generic.spot.weex.tech",
                                     "WEEX_LOCALE": "zh-CN",
                                 },
                                 clear=False,
@@ -594,7 +658,7 @@ runpy.run_path(script_path, run_name="__main__")
 
         self.assertEqual(exit_code, 0)
         client_mock.assert_called_once_with(
-            base_url="https://generic.spot.env.test",
+            base_url="https://generic.spot.weex.tech",
             timeout=spot.DEFAULT_TIMEOUT,
             locale="zh-CN",
             api_key=None,

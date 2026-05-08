@@ -39,8 +39,8 @@ Complete profile parameter list
 - `api_secret`: required. WEEX Secret Key used to sign private requests.
 - `api_passphrase`: required. WEEX API Passphrase.
 - description / note: optional metadata for the account purpose, such as main, test, read-only, or bot account.
-- `contract_base_url`: optional. Leaving it empty uses the official contract REST host `https://api-contract.weex.com`.
-- `spot_base_url`: optional. Leaving it empty uses the official spot REST host `https://api-spot.weex.com`.
+- `contract_base_url`: optional. Leaving it empty uses the official contract REST host `https://api-contract.weex.com`. Custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`.
+- `spot_base_url`: optional. Leaving it empty uses the official spot REST host `https://api-spot.weex.com`. Custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`.
 - whether to set it as default: optional workflow choice. If enabled, future private commands can omit `--profile` when they should use this account automatically.
 
 Do not frame this as only the minimum fields needed to make private endpoints work. Explain what each field means, whether it is required, what happens if it is omitted, and when metadata or host overrides are intentionally useful.

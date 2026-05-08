@@ -96,8 +96,8 @@ Collect or review the full profile parameter set, not only the minimum credentia
 - `api_secret`: required; WEEX Secret Key used to sign private requests
 - `api_passphrase`: required; WEEX API Passphrase paired with the key and secret
 - description / note: optional metadata for account purpose or permissions
-- `contract_base_url`: optional; leave empty to use `https://api-contract.weex.com`
-- `spot_base_url`: optional; leave empty to use `https://api-spot.weex.com`
+- `contract_base_url`: optional; leave empty to use `https://api-contract.weex.com`; custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
+- `spot_base_url`: optional; leave empty to use `https://api-spot.weex.com`; custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
 - whether to set it as default: optional workflow choice; if enabled, later private commands can omit `--profile`
 
 ## Typical GUI Tasks
