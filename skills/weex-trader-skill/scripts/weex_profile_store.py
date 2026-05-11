@@ -76,7 +76,8 @@ def _require_cryptography_runtime() -> None:
         return
     raise ProfileError(
         "WEEX application vault storage requires Python dependency 'cryptography'. "
-        "Install requirements.txt with this interpreter and retry."
+        "Run scripts/weex_runtime_setup.py --pretty or install requirements.lock with --require-hashes "
+        "using this interpreter and retry."
     )
 
 

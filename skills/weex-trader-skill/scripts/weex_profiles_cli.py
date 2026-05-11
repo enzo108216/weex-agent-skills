@@ -72,7 +72,7 @@ TEXTS = {
         "error_stdin_json_shape": "Secret JSON on stdin must be an object with api_key, api_secret, and api_passphrase",
         "contract_base_url_label": "Contract Base URL",
         "spot_base_url_label": "Spot Base URL",
-        "runtime_dependency_missing": "Unable to start the WEEX profile CLI because Python dependency '{module_name}' is missing. Install requirements.txt with this interpreter and retry.",
+        "runtime_dependency_missing": "Unable to start the WEEX profile CLI because Python dependency '{module_name}' is missing. Run scripts/weex_runtime_setup.py --pretty or install requirements.lock with --require-hashes using this interpreter and retry.",
         "runtime_unavailable": "Unable to start the WEEX profile CLI because its runtime dependencies are unavailable.",
     },
     "zh": {
@@ -118,7 +118,7 @@ TEXTS = {
         "error_stdin_json_shape": "stdin 中的密钥 JSON 必须是对象，并包含 api_key、api_secret、api_passphrase 字段",
         "contract_base_url_label": "合约 Base URL",
         "spot_base_url_label": "现货 Base URL",
-        "runtime_dependency_missing": "无法启动 WEEX 账号命令行工具，因为缺少 Python 依赖“{module_name}”。请使用当前解释器先安装 requirements.txt 后重试。",
+        "runtime_dependency_missing": "无法启动 WEEX 账号命令行工具，因为缺少 Python 依赖“{module_name}”。请先运行 scripts/weex_runtime_setup.py --pretty，或使用当前解释器通过 --require-hashes 安装 requirements.lock 后重试。",
         "runtime_unavailable": "无法启动 WEEX 账号命令行工具，因为运行时依赖不可用。",
     },
 }

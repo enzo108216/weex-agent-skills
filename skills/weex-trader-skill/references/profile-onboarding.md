@@ -76,7 +76,7 @@ Notes:
 - The GUI now fronts the shared application vault on both Windows and macOS through a global vault control area separate from per-profile credential fields.
 - Use the vault action in that global vault control area to initialize, unlock, or lock the vault around private profile work.
 - Windows/macOS vault setup or unlock: AI should use the UI and launch the vault UI so the user completes unlock graphically instead of through terminal prompts.
-- If the current Python runtime cannot initialize Tk on Windows or macOS, the GUI entrypoints can auto-provision a managed CPython 3.12 virtual environment under the local WEEX config directory and relaunch themselves there.
+- On Windows and macOS, GUI profile and vault entrypoints must use the pinned managed CPython 3.12.13 runtime even when the current Python runtime can initialize Tk. AI should explain the pinned setup and ask for confirmation before running `python3 scripts/weex_gui_bootstrap.py ensure --accept-managed-runtime --pretty`; GUI entrypoints can then relaunch themselves there.
 
 Terminal fallback:
 
@@ -152,5 +152,5 @@ Before edit/delete/default changes, inspect the current accounts first with `lis
 ## Notes
 
 - Private REST commands require a saved profile.
-- If a command fails with a missing dependency such as `ModuleNotFoundError: cryptography`, install `requirements.txt` with the same interpreter before retrying.
+- If a command fails with a missing dependency such as `ModuleNotFoundError: cryptography`, install `requirements.lock` with `--require-hashes` using the same interpreter before retrying.
 - Public commands such as `ticker` and `list-endpoints` do not require a valid default profile.

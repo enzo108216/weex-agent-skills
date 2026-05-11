@@ -133,6 +133,49 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertIn("usage:", completed.stdout)
         self.assertIn("Run without arguments", completed.stdout)
 
+    def test_profile_manager_reports_missing_managed_runtime_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = os.environ.copy()
+            env["WEEX_TRADER_SKILL_HOME"] = tempdir
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "weex_profile_manager_zh.py")],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        combined = f"{completed.stdout}\n{completed.stderr}"
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("尚未安装受管 GUI 运行时", combined)
+        self.assertNotIn("Traceback", combined)
+
+    def test_vault_manager_reports_missing_managed_runtime_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = os.environ.copy()
+            env["WEEX_TRADER_SKILL_HOME"] = tempdir
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "weex_vault_manager_app.py"),
+                    "--language",
+                    "zh",
+                    "--requested-action",
+                    "status",
+                ],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        combined = f"{completed.stdout}\n{completed.stderr}"
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("尚未安装受管 GUI 运行时", combined)
+        self.assertNotIn("Traceback", combined)
+
     def test_gui_bootstrap_help_works_without_gui_runtime(self) -> None:
         completed = self.run_command(str(SCRIPTS / "weex_gui_bootstrap.py"), "--help")
 
@@ -171,7 +214,8 @@ runpy.run_path(script_path, run_name="__main__")
             )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("Inspect the current GUI runtime", completed.stdout)
+        self.assertIn("Inspect the current Python runtime", completed.stdout)
+        self.assertIn("required managed GUI runtime", completed.stdout)
         self.assertIn("--fix", completed.stdout)
 
     def test_runtime_setup_help_works_without_profile_runtime(self) -> None:

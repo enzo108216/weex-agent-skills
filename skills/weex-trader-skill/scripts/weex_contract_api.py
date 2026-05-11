@@ -41,8 +41,8 @@ PRIVATE_PROFILE_REQUIRED_MESSAGE = (
 )
 PROFILE_RUNTIME_DEPENDENCY_MISSING = (
     "Unable to enable saved-profile support for the WEEX Contract REST API helper "
-    "because Python dependency '{module_name}' is missing. Install requirements.txt "
-    "with this interpreter and retry."
+    "because Python dependency '{module_name}' is missing. Run scripts/weex_runtime_setup.py --pretty "
+    "or install requirements.lock with --require-hashes using this interpreter and retry."
 )
 PROFILE_RUNTIME_UNAVAILABLE = (
     "Unable to enable saved-profile support for the WEEX Contract REST API helper "
