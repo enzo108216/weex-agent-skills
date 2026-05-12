@@ -1,0 +1,77 @@
+{
+  "schema_version": 3,
+  "identity": {
+    "name": "weex-monitor-skill",
+    "source_of_truth": "SKILL.md",
+    "purpose": "WEEX automated monitor orchestration for two MVP scenarios: position PnL monitoring and symbol price TP/SL conditional close planning."
+  },
+  "path_policy": {
+    "skill_root": ".",
+    "resolve_relative_paths_from": "skill root",
+    "portable_paths_only": true
+  },
+  "read_order": {
+    "default": [
+      "manifest.json",
+      "SKILL.md"
+    ],
+    "open_if_needed": {
+      "file_level_details": "file-index.json",
+      "monitor_cli": "scripts/weex_monitor_cli.py",
+      "live_execution_boundary": "../weex-trader-skill/SKILL.md"
+    }
+  },
+  "routing": {
+    "decision_axes": [
+      "task_type: position_pnl_monitor or symbol_price_monitor",
+      "trigger_source: local PnL evaluation or exchange-native price TP/SL",
+      "execution_boundary: plan-only in this skill or live execution delegated to weex-trader-skill"
+    ],
+    "domains": {
+      "task_preview": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "preview",
+          "confirm-text"
+        ],
+        "mutating": false
+      },
+      "task_confirmation": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "confirm"
+        ],
+        "mutating": "local task state only",
+        "requires": [
+          "--confirm-monitor"
+        ]
+      },
+      "price_condition_planning": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "build-price-order"
+        ],
+        "mutating": false,
+        "live_execution_delegate": "weex-trader-skill"
+      },
+      "pnl_evaluation": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "evaluate-pnl"
+        ],
+        "mutating": false,
+        "live_execution_delegate": "weex-trader-skill"
+      },
+      "local_task_management": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "list",
+          "events",
+          "run-once",
+          "cancel"
+        ],
+        "mutating": "local task state only"
+      }
+    }
+  }
+}
