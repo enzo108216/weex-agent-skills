@@ -436,6 +436,238 @@ class MonitorTaskTests(unittest.TestCase):
             ["task_confirmed", "dry_run_evaluated", "dry_run_triggered"],
         )
 
+    def test_run_loop_dry_run_is_one_shot_and_returns_thread_report(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "ETHUSDT",
+            "position_side": "SHORT",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "25",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "SHORT",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        positions_sequence = [
+            [
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "SHORT",
+                    "size": "0.2",
+                    "unrealizePnl": "31.5",
+                }
+            ],
+            [
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "SHORT",
+                    "size": "0.2",
+                    "unrealizePnl": "50",
+                }
+            ],
+        ]
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                confirmed = monitor.confirm_task(task_json, confirm_monitor=True, now_ms=1000)
+                loop_result = monitor.run_loop_dry_run(
+                    positions_sequence,
+                    iterations=2,
+                    sleep_seconds=0,
+                    now_ms=2000,
+                )
+                tasks = monitor.load_tasks()
+                events = monitor.load_events(confirmed["task_id"])
+
+        self.assertEqual(loop_result["dry_run"], True)
+        self.assertEqual(loop_result["iterations_requested"], 2)
+        self.assertEqual(loop_result["iterations_completed"], 2)
+        self.assertEqual(loop_result["triggered_count"], 1)
+        self.assertEqual(tasks[0]["status"], "triggered")
+        self.assertIn("thread_report", loop_result["iterations"][0]["results"][0])
+        self.assertIn("requires --confirm-live", loop_result["iterations"][0]["results"][0]["thread_report"])
+        self.assertEqual(
+            [event["event_type"] for event in events],
+            ["task_confirmed", "dry_run_evaluated", "dry_run_triggered"],
+        )
+
+    def test_trigger_result_builds_live_delegate_plan_without_submitting(self) -> None:
+        task_json = {
+            "task_id": "mon_delegate",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "ETHUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "25",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        result = monitor.evaluate_pnl_task(
+            task_json,
+            [{"symbol": "ETHUSDT", "side": "LONG", "size": "0.3", "unrealizePnl": "31.5"}],
+        )
+
+        delegate_plan = monitor.build_live_delegate_plan(task_json, result, purpose="pnl-trigger")
+
+        self.assertEqual(delegate_plan["delegate_skill"], "weex-trader-skill")
+        self.assertEqual(delegate_plan["requires_confirm_live"], True)
+        self.assertEqual(delegate_plan["mutating_request_submitted"], False)
+        self.assertEqual(delegate_plan["close_order"]["side"], "SELL")
+        self.assertTrue(delegate_plan["idempotency_key"].startswith("monitor:mon_delegate:pnl-trigger:"))
+
+    def test_submit_price_order_requires_confirm_live(self) -> None:
+        task_json = {
+            "task_id": "mon_price_live",
+            "task_type": "symbol_price_monitor",
+            "profile": "demo",
+            "symbol": "ETHUSDT",
+            "position_side": "SHORT",
+            "condition": {
+                "metric": "last_price",
+                "operator": "<",
+                "threshold": "2500",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "SHORT",
+                "quantity": "0.2",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        with mock.patch.object(monitor, "_run_json_command") as runner:
+            with self.assertRaisesRegex(monitor.MonitorInputError, "confirm-live"):
+                monitor.submit_price_order(task_json, confirm_live=False, now_ms=2000)
+
+        runner.assert_not_called()
+
+    def test_submit_price_order_uses_trader_tp_sl_guard_and_records_submission(self) -> None:
+        task_json = {
+            "task_id": "mon_price_live",
+            "task_type": "symbol_price_monitor",
+            "profile": "demo",
+            "symbol": "ETHUSDT",
+            "position_side": "SHORT",
+            "condition": {
+                "metric": "last_price",
+                "operator": "<",
+                "threshold": "2500",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "SHORT",
+                "quantity": "0.2",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                confirmed = monitor.confirm_task(task_json, confirm_monitor=True, now_ms=1000)
+                with mock.patch.object(
+                    monitor,
+                    "_run_json_command",
+                    side_effect=[
+                        {
+                            "intent_id": "intent-tpsl",
+                            "risk_signature": "sig-tpsl",
+                            "tp_sl_order": monitor.build_price_tp_sl_order_body(task_json),
+                        },
+                        {"ok": True, "algoId": "7001", "clientAlgoId": "mon_price_live"},
+                    ],
+                ) as runner:
+                    result = monitor.submit_price_order(confirmed, confirm_live=True, now_ms=2000)
+                tasks = monitor.load_tasks()
+                events = monitor.load_events(confirmed["task_id"])
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(result["exchange_response"]["algoId"], "7001")
+        self.assertIn("thread_report", result)
+        self.assertEqual(tasks[0]["status"], "submitted")
+        self.assertIn("live_price_order_submitted", [event["event_type"] for event in events])
+        first_command = runner.call_args_list[0].args[0]
+        second_command = runner.call_args_list[1].args[0]
+        self.assertIn("preview-tp-sl", first_command)
+        self.assertIn("confirm-tp-sl", second_command)
+        self.assertIn("--confirm-live", second_command)
+
+    def test_run_live_once_executes_triggered_pnl_close_through_trader_guard(self) -> None:
+        task_json = {
+            "task_id": "mon_pnl_live",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.01",
+                    "unrealized_pnl": "51.2",
+                }
+            ],
+            "degraded_reasons": [],
+            "partial": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                confirmed = monitor.confirm_task(task_json, confirm_monitor=True, now_ms=1000)
+                with mock.patch.object(
+                    monitor,
+                    "_run_json_command",
+                    side_effect=[
+                        account_payload,
+                        account_payload,
+                        {"intent_id": "intent-close", "risk_signature": "sig-close"},
+                        {"ok": True, "orderId": "9001", "clientOrderId": "monitor_mon_pnl_live"},
+                    ],
+                ) as runner:
+                    results = monitor.run_live_once(confirm_live=True, now_ms=2000)
+                tasks = monitor.load_tasks()
+                events = monitor.load_events(confirmed["task_id"])
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["result"]["triggered"])
+        self.assertEqual(results[0]["status"], "completed")
+        self.assertEqual(results[0]["exchange_response"]["orderId"], "9001")
+        self.assertIn("Live close order submitted", results[0]["thread_report"])
+        self.assertEqual(tasks[0]["status"], "completed")
+        self.assertIn("live_order_submitted", [event["event_type"] for event in events])
+        preview_command = runner.call_args_list[2].args[0]
+        confirm_command = runner.call_args_list[3].args[0]
+        self.assertIn("preview-order", preview_command)
+        self.assertIn("confirm-order", confirm_command)
+        self.assertIn("--confirm-live", confirm_command)
+        preview_order_json = preview_command[preview_command.index("--order-json") + 1]
+        preview_order = json.loads(preview_order_json)
+        self.assertEqual(preview_order["side"], "SELL")
+        self.assertEqual(preview_order["position_side"], "LONG")
+        self.assertEqual(preview_order["new_client_order_id"], "monitor_mon_pnl_live")
+
 
 if __name__ == "__main__":
     unittest.main()

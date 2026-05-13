@@ -3,7 +3,7 @@
   "purpose": "File-level guide for the WEEX monitor skill.",
   "file_guide": {
     "scripts/weex_monitor_cli.py": {
-      "role": "Primary deterministic monitor CLI for task normalization, monitor confirmation, SQLite local persistence, append-only events, price TP/SL body generation, PnL trigger evaluation, and dry-run checks.",
+      "role": "Primary deterministic monitor CLI for task normalization, monitor confirmation, SQLite local persistence, append-only events, price TP/SL body generation/submission through trader guard, PnL trigger evaluation, dry-run checks, and delegated live PnL close execution.",
       "when": [
         "creating or previewing a monitor DSL",
         "saving an active monitor task after explicit monitor confirmation",
@@ -11,16 +11,23 @@
         "evaluating a PnL monitor from normalized position snapshots",
         "listing or cancelling local monitor tasks",
         "reviewing local monitor events",
-        "running a dry-run trigger pass against mock positions"
+        "running a dry-run trigger pass against mock positions",
+        "running a bounded dry-run loop against mock position sequences",
+        "building a non-mutating live delegate summary for weex-trader-skill",
+        "submitting a confirmed price TP/SL task through weex-trader-skill with --confirm-live",
+        "running a confirmed live PnL check that delegates market close to weex-trader-skill"
       ],
       "surface": [
         "preview",
         "confirm",
         "build-price-order",
+        "submit-price-order",
         "evaluate-pnl",
         "confirm-text",
         "events",
         "run-once",
+        "run-live-once",
+        "run-loop",
         "list",
         "cancel"
       ]

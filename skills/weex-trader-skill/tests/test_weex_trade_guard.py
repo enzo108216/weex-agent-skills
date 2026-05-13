@@ -366,6 +366,137 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIsNone(remaining_intent)
         self.assertIn('"order_id": "9001"', stream.getvalue())
 
+    def test_submit_live_order_passes_new_client_order_id_for_futures(self) -> None:
+        prepared_bodies: list[dict[str, object]] = []
+        fake_contract_api = mock.Mock()
+        fake_contract_api.ENDPOINTS = {"place": {"path": "/capi/v3/order"}}
+        fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "place"
+        fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
+        fake_client = mock.Mock()
+
+        def prepare_request(endpoint: dict[str, object], query: dict[str, object], body: dict[str, object]) -> dict[str, object]:
+            prepared_bodies.append(body)
+            return {"endpoint": endpoint, "query": query, "body": body}
+
+        fake_client.prepare_request.side_effect = prepare_request
+        fake_client.send.return_value = {"ok": True, "data": {"orderId": "1001"}}
+
+        with mock.patch.object(trade_guard, "_build_contract_client", return_value=(fake_contract_api, fake_client)):
+            result = trade_guard._submit_live_order(
+                market="futures",
+                profile_name="demo",
+                raw_order={
+                    "symbol": "btcusdt",
+                    "side": "SELL",
+                    "position_side": "LONG",
+                    "order_type": "MARKET",
+                    "quantity": "0.01",
+                    "new_client_order_id": "monitor-mon1-close",
+                },
+            )
+
+        self.assertEqual(result["orderId"], "1001")
+        self.assertEqual(prepared_bodies[0]["newClientOrderId"], "monitor-mon1-close")
+
+    def test_preview_tp_sl_saves_intent_and_returns_confirmation_fields(self) -> None:
+        args = mock.Mock(
+            profile="demo",
+            language="zh",
+            tp_sl_json=json.dumps(
+                {
+                    "symbol": "ETHUSDT",
+                    "clientAlgoId": "mon_price_demo",
+                    "planType": "TAKE_PROFIT",
+                    "triggerPrice": "2500",
+                    "executePrice": "0",
+                    "quantity": "0.2",
+                    "positionSide": "SHORT",
+                    "triggerPriceType": "CONTRACT_PRICE",
+                }
+            ),
+            pretty=True,
+            ttl_seconds=300,
+        )
+        aggregator_instance = mock.Mock()
+        aggregator_instance.collect_account_risk_payload.return_value = {
+            "mode": "account_scan",
+            "market": "futures",
+            "account_snapshot": {"equity": 1000, "available_balance": 500},
+            "positions": [],
+            "recent_orders": [],
+            "conditional_orders": [],
+            "open_orders": [],
+            "degraded_reasons": [],
+            "constraints": [],
+        }
+        analysis_payload = {
+            "has_risk": False,
+            "alerts": [],
+            "confirmation_required": True,
+            "next_action_hint": "confirm tp/sl",
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance):
+                    with mock.patch.object(trade_guard.analysis, "analyze_account_risk", return_value=analysis_payload):
+                        stream = io.StringIO()
+                        with mock.patch.object(sys, "stdout", stream):
+                            exit_code = trade_guard.cmd_preview_tp_sl(args, now_ms=1000)
+                        saved_intent = intent_state.load_intent()
+
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertIsNotNone(saved_intent)
+        self.assertEqual(saved_intent["intent_type"], "tp_sl_order")
+        self.assertEqual(saved_intent["tp_sl_order"]["clientAlgoId"], "mon_price_demo")
+        self.assertIn("risk_signature", payload)
+        self.assertEqual(payload["user_confirmation"]["reply_text"], "确认")
+
+    def test_confirm_tp_sl_executes_live_tp_sl_when_intent_is_valid(self) -> None:
+        args = mock.Mock(intent_id="intent-tpsl", risk_signature="sig-tpsl", confirm_live=True, pretty=True)
+        tp_sl_order = {
+            "symbol": "ETHUSDT",
+            "clientAlgoId": "mon_price_demo",
+            "planType": "TAKE_PROFIT",
+            "triggerPrice": "2500",
+            "executePrice": "0",
+            "quantity": "0.2",
+            "positionSide": "SHORT",
+            "triggerPriceType": "CONTRACT_PRICE",
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview=tp_sl_order,
+                    raw_order=tp_sl_order,
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    intent_type="tp_sl_order",
+                    tp_sl_order=tp_sl_order,
+                )
+                intent["intent_id"] = "intent-tpsl"
+                intent["risk_signature"] = "sig-tpsl"
+                intent_state.save_intent(intent)
+                stream = io.StringIO()
+                with mock.patch.object(
+                    trade_guard,
+                    "_submit_live_tp_sl_order",
+                    return_value={"algoId": "7001", "clientAlgoId": "mon_price_demo"},
+                ) as submit_mock:
+                    with mock.patch.object(sys, "stdout", stream):
+                        exit_code = trade_guard.cmd_confirm_tp_sl(args, now_ms=2000)
+                remaining_intent = intent_state.load_intent()
+
+        self.assertEqual(exit_code, 0)
+        submit_mock.assert_called_once_with(profile_name="demo", raw_order=tp_sl_order)
+        self.assertIsNone(remaining_intent)
+        self.assertIn('"algoId": "7001"', stream.getvalue())
+
     def test_confirm_order_requires_intent_id_and_risk_signature(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)
 

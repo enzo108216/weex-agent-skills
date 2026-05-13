@@ -3,7 +3,7 @@
   "identity": {
     "name": "weex-monitor-skill",
     "source_of_truth": "SKILL.md",
-    "purpose": "WEEX automated monitor orchestration for two MVP scenarios: position PnL monitoring and symbol price TP/SL conditional close planning."
+    "purpose": "WEEX automated monitor orchestration for two scenarios: position PnL monitoring with delegated live close and symbol price TP/SL conditional close submission."
   },
   "path_policy": {
     "skill_root": ".",
@@ -25,7 +25,7 @@
     "decision_axes": [
       "task_type: position_pnl_monitor or symbol_price_monitor",
       "trigger_source: local PnL evaluation or exchange-native price TP/SL",
-      "execution_boundary: plan-only in this skill or live execution delegated to weex-trader-skill"
+      "execution_boundary: dry-run/plan-only or live execution delegated through weex-trader-skill guard commands"
     ],
     "domains": {
       "task_preview": {
@@ -54,6 +54,17 @@
         "mutating": false,
         "live_execution_delegate": "weex-trader-skill"
       },
+      "price_condition_submission": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "submit-price-order"
+        ],
+        "mutating": "delegated live TP/SL order through weex-trader-skill",
+        "requires": [
+          "--confirm-live"
+        ],
+        "live_execution_delegate": "weex-trader-skill"
+      },
       "pnl_evaluation": {
         "entrypoint": "scripts/weex_monitor_cli.py",
         "commands": [
@@ -62,12 +73,24 @@
         "mutating": false,
         "live_execution_delegate": "weex-trader-skill"
       },
+      "pnl_live_runner": {
+        "entrypoint": "scripts/weex_monitor_cli.py",
+        "commands": [
+          "run-live-once"
+        ],
+        "mutating": "delegated live market close through weex-trader-skill",
+        "requires": [
+          "--confirm-live"
+        ],
+        "live_execution_delegate": "weex-trader-skill"
+      },
       "local_task_management": {
         "entrypoint": "scripts/weex_monitor_cli.py",
         "commands": [
           "list",
           "events",
           "run-once",
+          "run-loop",
           "cancel"
         ],
         "mutating": "local task state only"

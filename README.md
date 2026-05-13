@@ -4,9 +4,9 @@
 
 This repository currently supports Codex, Openclaw, and Claude Code with WEEX skills.
 
-After installing the skills, you can ask your AI tool to check WEEX market data, review account state, collect trading history, preview order risk, or analyze WEEX trading records. For normal use, you do not need to run the Python scripts directly. Start from the skill name in chat.
+After installing the skills, you can ask your AI tool to check WEEX market data, review account state, collect trading history, preview order risk, create an automated monitor, or analyze WEEX trading records. For normal use, you do not need to run the Python scripts directly. Start from the skill name in chat.
 
-A skill is an add-on instruction package for your AI tool. Mentioning `$weex-trader-skill` or `$weex-analysis-skill` tells the AI which WEEX workflow to use.
+A skill is an add-on instruction package for your AI tool. Mentioning `$weex-trader-skill`, `$weex-analysis-skill`, or `$weex-monitor-skill` tells the AI which WEEX workflow to use.
 
 ## Start Here
 
@@ -32,7 +32,7 @@ Use $weex-trader-skill to check the latest BTCUSDT spot price.
 
 4. If you are new to the workflow, start with read-only tasks such as market prices, account review, trading-history replay collection, or risk analysis before trying any live order.
 
-## The Two Skills
+## The Three Skills
 
 ### `weex-trader-skill`
 
@@ -81,6 +81,28 @@ Example prompts:
 | Generate profile | `"Use $weex-analysis-skill to generate a trading profile from this replay data."` |
 | Review account risk | `"Use $weex-analysis-skill to analyze this account-risk JSON and summarize the main risks."` |
 
+### `weex-monitor-skill`
+
+Use [`weex-monitor-skill`](skills/weex-monitor-skill/SKILL.md) when the AI tool needs to turn a natural-language WEEX monitor request into a confirmed local monitor task.
+
+This skill is an orchestration layer. It drafts, confirms, stores, evaluates, executes through `weex-trader-skill`, and reports monitor tasks. It does not own API credentials, vault unlock, signing, or direct REST submission. Live price TP/SL submission and live PnL-triggered market close still require explicit `--confirm-live`.
+
+Good for:
+
+- monitoring one futures position by unrealized PnL
+- executing a direction-specific market close through `weex-trader-skill` when a PnL threshold is reached and `--confirm-live` is provided
+- submitting a direction-specific exchange-native TP/SL order through `weex-trader-skill` for a symbol price condition and `--confirm-live` is provided
+- running dry-run monitor checks with local position snapshots
+- listing, reviewing, and cancelling local monitor tasks
+
+Example prompts:
+
+| Scenario | Prompt |
+|---|---|
+| Monitor PnL | `"Use $weex-monitor-skill to monitor my BTCUSDT long; if unrealized profit is greater than 50 USDT, close it at market after live confirmation."` |
+| Monitor price | `"Use $weex-monitor-skill to close my ETHUSDT short with a market TP/SL order if price goes below 2500, quantity 0.2, after live confirmation."` |
+| Review monitors | `"Use $weex-monitor-skill to list my local monitor tasks and recent events."` |
+
 ## Which Skill Should I Use?
 
 | If you want to... | Use |
@@ -89,6 +111,7 @@ Example prompts:
 | check live private account, balance, order, or position data | `weex-trader-skill` |
 | set up or use a saved WEEX API profile | `weex-trader-skill` |
 | preview, place, cancel, or check a live order | `weex-trader-skill` |
+| create or review a local automated monitor for PnL or price conditions | `weex-monitor-skill` |
 | analyze an existing WEEX JSON file or pasted JSON data | `weex-analysis-skill` |
 | analyze live account history | collect data with `weex-trader-skill`, then analyze it with `weex-analysis-skill` |
 
@@ -115,5 +138,6 @@ Most users only need the GitHub install command in [Start Here](#start-here).
 
 - [`weex-trader-skill` README](skills/weex-trader-skill/README.md): live WEEX access, API profiles, order preview, live order flow, and troubleshooting.
 - [`weex-analysis-skill` README](skills/weex-analysis-skill/README.md): accepted input data, analysis examples, replay review, and safety notes.
+- [`weex-monitor-skill` SKILL.md](skills/weex-monitor-skill/SKILL.md): automated monitor DSL, confirmation flow, dry-run runner, and live execution boundary.
 - [`weex-trader-skill` script operations](skills/weex-trader-skill/references/script-operations.md): direct script usage for advanced users.
 - [`weex-analysis-skill` analysis playbook](skills/weex-analysis-skill/references/analysis-playbook.md): analysis behavior and interpretation details.

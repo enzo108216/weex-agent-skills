@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
@@ -46,6 +48,25 @@ def tasks_path() -> Path:
 
 def db_path() -> Path:
     return monitor_home() / TASK_DB_FILENAME
+
+
+def trader_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "weex-trader-skill" / "scripts"
+
+
+def _trader_script_command(script_name: str, *args: str) -> list[str]:
+    return [sys.executable, str(trader_scripts_dir() / script_name), *args]
+
+
+def _run_json_command(command: list[str]) -> Any:
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise MonitorInputError(f"delegated command failed ({completed.returncode}): {detail}")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise MonitorInputError("delegated command did not return JSON") from exc
 
 
 def load_tasks() -> list[dict[str, Any]]:
@@ -325,6 +346,13 @@ def run_once_dry_run(
             "idempotency_key": idempotency_key,
             "result": result,
         }
+        if result.get("triggered"):
+            output["live_delegate_plan"] = build_live_delegate_plan(
+                task,
+                result,
+                purpose="dry-run-trigger",
+            )
+        output["thread_report"] = render_thread_report(output)
         with _connect() as conn:
             _append_event(
                 conn,
@@ -349,6 +377,393 @@ def run_once_dry_run(
                 )
         results.append(output)
     return results
+
+
+def run_loop_dry_run(
+    positions_sequence: list[list[dict[str, Any]]],
+    *,
+    iterations: int,
+    task_id: str | None = None,
+    sleep_seconds: float = 0,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    if iterations < 1:
+        raise MonitorInputError("iterations must be >= 1")
+    if sleep_seconds < 0:
+        raise MonitorInputError("sleep_seconds must be >= 0")
+    if not isinstance(positions_sequence, list) or not positions_sequence:
+        raise MonitorInputError("positions_sequence must be a non-empty JSON array")
+
+    loop_started_at_ms = now_ms if now_ms is not None else _now_ms()
+    iteration_outputs: list[dict[str, Any]] = []
+    triggered_count = 0
+    for index in range(iterations):
+        positions = positions_sequence[min(index, len(positions_sequence) - 1)]
+        if not isinstance(positions, list):
+            raise MonitorInputError("each positions_sequence item must be a JSON array")
+        results = run_once_dry_run(
+            positions,
+            task_id=task_id,
+            now_ms=loop_started_at_ms + index,
+        )
+        triggered_count += sum(1 for item in results if item.get("result", {}).get("triggered"))
+        iteration_outputs.append(
+            {
+                "iteration": index + 1,
+                "results": results,
+            }
+        )
+        if sleep_seconds and index + 1 < iterations:
+            time.sleep(sleep_seconds)
+
+    return {
+        "dry_run": True,
+        "iterations_requested": iterations,
+        "iterations_completed": len(iteration_outputs),
+        "triggered_count": triggered_count,
+        "iterations": iteration_outputs,
+        "mutating_request_submitted": False,
+    }
+
+
+def build_live_delegate_plan(
+    raw_task: dict[str, Any],
+    evaluation_result: dict[str, Any],
+    *,
+    purpose: str,
+) -> dict[str, Any]:
+    task = normalize_task(raw_task)
+    if not isinstance(evaluation_result, dict):
+        raise MonitorInputError("evaluation_result must be a JSON object")
+    if not evaluation_result.get("triggered"):
+        raise MonitorInputError("live delegate plan requires a triggered evaluation result")
+    close_order = evaluation_result.get("close_order")
+    if not isinstance(close_order, dict):
+        raise MonitorInputError("triggered evaluation result is missing close_order")
+
+    return {
+        "delegate_skill": "weex-trader-skill",
+        "requires_confirm_live": True,
+        "mutating_request_submitted": False,
+        "task_id": task["task_id"],
+        "profile": task["profile"],
+        "market": task["market"],
+        "idempotency_key": build_idempotency_key(task, purpose),
+        "close_order": close_order,
+        "trigger_snapshot": evaluation_result.get("trigger_snapshot", {}),
+        "instruction": "Submit only through weex-trader-skill after explicit --confirm-live.",
+    }
+
+
+def submit_price_order(
+    raw_task: dict[str, Any],
+    *,
+    confirm_live: bool,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    if not confirm_live:
+        raise MonitorInputError("submit-price-order requires --confirm-live")
+    submitted_at_ms = now_ms if now_ms is not None else _now_ms()
+    task = normalize_task(raw_task)
+    if task["task_type"] != "symbol_price_monitor":
+        raise MonitorInputError("submit-price-order requires symbol_price_monitor")
+    if task.get("status") != "active":
+        raise MonitorInputError("submit-price-order requires an active monitor task")
+
+    price_order = build_price_tp_sl_order_body(task)
+    preview = _run_json_command(
+        _trader_script_command(
+            "weex_trade_guard.py",
+            "preview-tp-sl",
+            "--profile",
+            task["profile"],
+            "--tp-sl-json",
+            json.dumps(price_order, ensure_ascii=False, separators=(",", ":")),
+            "--ttl-seconds",
+            "300",
+            "--pretty",
+        )
+    )
+    intent_id = _required_delegate_field(preview, "intent_id")
+    risk_signature = _required_delegate_field(preview, "risk_signature")
+    exchange_response = _run_json_command(
+        _trader_script_command(
+            "weex_trade_guard.py",
+            "confirm-tp-sl",
+            "--intent-id",
+            intent_id,
+            "--risk-signature",
+            risk_signature,
+            "--confirm-live",
+            "--pretty",
+        )
+    )
+
+    updated_task = dict(task)
+    updated_task["status"] = "submitted"
+    updated_task["submitted_at_ms"] = submitted_at_ms
+    updated_task["price_order"] = price_order
+    updated_task["exchange_response"] = exchange_response
+    output = {
+        "task_id": task["task_id"],
+        "status": "submitted",
+        "price_order": price_order,
+        "exchange_response": exchange_response,
+        "thread_report": render_price_submission_report(task, price_order, exchange_response),
+    }
+    with _connect() as conn:
+        _append_event(
+            conn,
+            task["task_id"],
+            "live_price_order_previewed",
+            {"preview": preview, "price_order": price_order},
+            created_at_ms=submitted_at_ms,
+        )
+        _upsert_task(conn, updated_task, updated_at_ms=submitted_at_ms)
+        _append_event(
+            conn,
+            task["task_id"],
+            "live_price_order_submitted",
+            output,
+            created_at_ms=submitted_at_ms,
+        )
+    return output
+
+
+def run_live_once(
+    *,
+    confirm_live: bool,
+    task_id: str | None = None,
+    now_ms: int | None = None,
+) -> list[dict[str, Any]]:
+    if not confirm_live:
+        raise MonitorInputError("run-live-once requires --confirm-live")
+    evaluated_at_ms = now_ms if now_ms is not None else _now_ms()
+    outputs: list[dict[str, Any]] = []
+
+    for task in load_tasks():
+        if task.get("status") != "active":
+            continue
+        if task_id is not None and task.get("task_id") != task_id:
+            continue
+        if task.get("task_type") != "position_pnl_monitor":
+            continue
+
+        first_payload = _collect_live_account_payload(task)
+        first_blocker = _live_payload_blocker(first_payload)
+        if first_blocker is not None:
+            output = _live_not_executed_output(task, first_blocker)
+            _append_live_event(task["task_id"], "live_evaluated", output, evaluated_at_ms)
+            outputs.append(output)
+            continue
+
+        first_result = evaluate_pnl_task(task, _positions_from_account_payload(first_payload))
+        if not first_result.get("triggered"):
+            output = {
+                "task_id": task["task_id"],
+                "status": "active",
+                "result": first_result,
+                "thread_report": render_live_thread_report(task, first_result, None),
+            }
+            _append_live_event(task["task_id"], "live_evaluated", output, evaluated_at_ms)
+            outputs.append(output)
+            continue
+
+        recheck_payload = _collect_live_account_payload(task)
+        recheck_blocker = _live_payload_blocker(recheck_payload)
+        if recheck_blocker is not None:
+            output = _live_not_executed_output(task, f"revalidation_{recheck_blocker}")
+            _append_live_event(task["task_id"], "live_revalidation_failed", output, evaluated_at_ms)
+            outputs.append(output)
+            continue
+
+        recheck_result = evaluate_pnl_task(task, _positions_from_account_payload(recheck_payload))
+        if not recheck_result.get("triggered"):
+            output = {
+                "task_id": task["task_id"],
+                "status": "active",
+                "result": recheck_result,
+                "thread_report": "WEEX monitor live trigger revalidation did not match; no live close order was submitted.",
+            }
+            _append_live_event(task["task_id"], "live_revalidation_failed", output, evaluated_at_ms)
+            outputs.append(output)
+            continue
+
+        close_order = dict(recheck_result["close_order"])
+        close_order["new_client_order_id"] = _live_client_order_id(task["task_id"])
+        preview = _run_json_command(
+            _trader_script_command(
+                "weex_trade_guard.py",
+                "preview-order",
+                "--profile",
+                task["profile"],
+                "--market",
+                task["market"],
+                "--order-json",
+                json.dumps(close_order, ensure_ascii=False, separators=(",", ":")),
+                "--ttl-seconds",
+                "300",
+                "--pretty",
+            )
+        )
+        intent_id = _required_delegate_field(preview, "intent_id")
+        risk_signature = _required_delegate_field(preview, "risk_signature")
+        exchange_response = _run_json_command(
+            _trader_script_command(
+                "weex_trade_guard.py",
+                "confirm-order",
+                "--intent-id",
+                intent_id,
+                "--risk-signature",
+                risk_signature,
+                "--confirm-live",
+                "--pretty",
+            )
+        )
+        output = {
+            "task_id": task["task_id"],
+            "status": "completed",
+            "result": recheck_result,
+            "close_order": close_order,
+            "exchange_response": exchange_response,
+            "thread_report": render_live_thread_report(task, recheck_result, exchange_response),
+        }
+        updated_task = dict(task)
+        updated_task["status"] = "completed"
+        updated_task["triggered_at_ms"] = evaluated_at_ms
+        updated_task["completed_at_ms"] = evaluated_at_ms
+        updated_task["trigger_snapshot"] = recheck_result.get("trigger_snapshot", {})
+        updated_task["close_order"] = close_order
+        updated_task["exchange_response"] = exchange_response
+        with _connect() as conn:
+            _append_event(conn, task["task_id"], "live_evaluated", {"result": first_result}, created_at_ms=evaluated_at_ms)
+            _append_event(conn, task["task_id"], "live_triggered", {"result": recheck_result}, created_at_ms=evaluated_at_ms)
+            _append_event(conn, task["task_id"], "live_order_previewed", {"preview": preview, "close_order": close_order}, created_at_ms=evaluated_at_ms)
+            _upsert_task(conn, updated_task, updated_at_ms=evaluated_at_ms)
+            _append_event(conn, task["task_id"], "live_order_submitted", output, created_at_ms=evaluated_at_ms)
+        outputs.append(output)
+    return outputs
+
+
+def _required_delegate_field(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if value is None or str(value).strip() == "":
+        raise MonitorInputError(f"delegated preview response missing {key}")
+    return str(value).strip()
+
+
+def _collect_live_account_payload(task: dict[str, Any]) -> dict[str, Any]:
+    payload = _run_json_command(
+        _trader_script_command(
+            "weex_trade_data_aggregator.py",
+            "collect-account-risk",
+            "--profile",
+            str(task["profile"]),
+            "--market",
+            str(task["market"]),
+            "--symbol",
+            str(task["symbol"]),
+            "--pretty",
+        )
+    )
+    if not isinstance(payload, dict):
+        raise MonitorInputError("live account payload must be a JSON object")
+    return payload
+
+
+def _positions_from_account_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    positions = payload.get("positions")
+    if not isinstance(positions, list):
+        raise MonitorInputError("live account payload positions must be a JSON array")
+    return [item for item in positions if isinstance(item, dict)]
+
+
+def _live_payload_blocker(payload: dict[str, Any]) -> str | None:
+    if payload.get("partial"):
+        return "live_data_partial"
+    degraded_reasons = payload.get("degraded_reasons")
+    if isinstance(degraded_reasons, list) and degraded_reasons:
+        return "live_data_degraded"
+    return None
+
+
+def _live_not_executed_output(task: dict[str, Any], reason: str) -> dict[str, Any]:
+    result = {
+        "triggered": False,
+        "reason": reason,
+        "execution_delegate": "weex-trader-skill",
+    }
+    return {
+        "task_id": task["task_id"],
+        "status": "active",
+        "result": result,
+        "thread_report": render_live_thread_report(task, result, None),
+    }
+
+
+def _append_live_event(task_id: str, event_type: str, output: dict[str, Any], created_at_ms: int) -> None:
+    with _connect() as conn:
+        _append_event(conn, task_id, event_type, output, created_at_ms=created_at_ms)
+
+
+def _live_client_order_id(task_id: str) -> str:
+    normalized = "".join(ch if ch.isalnum() else "_" for ch in f"monitor_{task_id}")
+    return normalized[:36]
+
+
+def render_price_submission_report(
+    task: dict[str, Any],
+    price_order: dict[str, str],
+    exchange_response: dict[str, Any],
+) -> str:
+    return (
+        f"WEEX monitor {task['task_id']} price TP/SL submitted: "
+        f"{price_order['symbol']} {price_order['positionSide']} {price_order['planType']} "
+        f"at {price_order['triggerPrice']} quantity {price_order['quantity']}. "
+        f"Exchange response: {exchange_response}."
+    )
+
+
+def render_live_thread_report(
+    task: dict[str, Any],
+    result: dict[str, Any],
+    exchange_response: dict[str, Any] | None,
+) -> str:
+    if result.get("triggered") and exchange_response is not None:
+        snapshot = result.get("trigger_snapshot", {})
+        return (
+            f"WEEX monitor {task['task_id']} Live close order submitted: "
+            f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
+            f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
+            f"Exchange response: {exchange_response}."
+        )
+    return (
+        f"WEEX monitor {task['task_id']} live check did not submit a close order: "
+        f"{result.get('reason', 'unknown_reason')}."
+    )
+
+
+def render_thread_report(output: dict[str, Any]) -> str:
+    task_id = str(output.get("task_id", "unknown"))
+    result = output.get("result", {})
+    if not isinstance(result, dict):
+        raise MonitorInputError("result output must be a JSON object")
+    if result.get("triggered"):
+        snapshot = result.get("trigger_snapshot", {})
+        close_order = result.get("close_order", {})
+        return (
+            f"WEEX monitor {task_id} dry-run triggered: "
+            f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
+            f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
+            f"Planned close order: {close_order}. "
+            "Live execution delegate is weex-trader-skill and requires --confirm-live. "
+            "No live order was submitted by weex-monitor-skill."
+        )
+    return (
+        f"WEEX monitor {task_id} dry-run not triggered: "
+        f"{result.get('reason', 'unknown_reason')}. "
+        "No live order was submitted by weex-monitor-skill."
+    )
 
 
 def _connect() -> sqlite3.Connection:
@@ -665,8 +1080,25 @@ def build_parser() -> argparse.ArgumentParser:
     run_once.add_argument("--positions-json")
     run_once.add_argument("--positions-file")
 
+    run_live_once_parser = subparsers.add_parser("run-live-once")
+    run_live_once_parser.add_argument("--confirm-live", action="store_true")
+    run_live_once_parser.add_argument("--task-id")
+
+    run_loop = subparsers.add_parser("run-loop")
+    run_loop.add_argument("--dry-run", action="store_true")
+    run_loop.add_argument("--task-id")
+    run_loop.add_argument("--iterations", type=int, default=1)
+    run_loop.add_argument("--sleep-seconds", type=float, default=0)
+    run_loop.add_argument("--positions-sequence-json")
+    run_loop.add_argument("--positions-sequence-file")
+
     cancel = subparsers.add_parser("cancel")
     cancel.add_argument("--task-id", required=True)
+
+    submit_price = subparsers.add_parser("submit-price-order")
+    submit_price.add_argument("--task-json")
+    submit_price.add_argument("--task-file")
+    submit_price.add_argument("--confirm-live", action="store_true")
 
     return parser
 
@@ -700,8 +1132,29 @@ def main(argv: list[str] | None = None) -> int:
                 raise MonitorInputError("run-once currently requires --dry-run")
             positions = _read_json_arg(args.positions_json, args.positions_file, name="positions")
             _print_json(run_once_dry_run(positions, task_id=args.task_id))
+        elif args.command == "run-live-once":
+            _print_json(run_live_once(confirm_live=args.confirm_live, task_id=args.task_id))
+        elif args.command == "run-loop":
+            if not args.dry_run:
+                raise MonitorInputError("run-loop currently requires --dry-run")
+            positions_sequence = _read_json_arg(
+                args.positions_sequence_json,
+                args.positions_sequence_file,
+                name="positions-sequence",
+            )
+            _print_json(
+                run_loop_dry_run(
+                    positions_sequence,
+                    iterations=args.iterations,
+                    task_id=args.task_id,
+                    sleep_seconds=args.sleep_seconds,
+                )
+            )
         elif args.command == "cancel":
             _print_json(cancel_task(args.task_id))
+        elif args.command == "submit-price-order":
+            task = _read_json_arg(args.task_json, args.task_file, name="task")
+            _print_json(submit_price_order(task, confirm_live=args.confirm_live))
         else:
             parser.error(f"unsupported command: {args.command}")
     except (MonitorInputError, json.JSONDecodeError, OSError) as exc:

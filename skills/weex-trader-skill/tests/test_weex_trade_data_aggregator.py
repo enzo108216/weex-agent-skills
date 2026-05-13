@@ -981,6 +981,7 @@ class ReplayCollectionTests(unittest.TestCase):
                 "size": "0.01",
                 "openValue": "300",
                 "leverage": "5",
+                "unrealizePnl": "51.2",
             },
             {
                 "symbol": "ETHUSDT",
@@ -1007,6 +1008,7 @@ class ReplayCollectionTests(unittest.TestCase):
 
         self.assertIsNone(result["symbol"])
         self.assertEqual(result["market_snapshot"]["current_price"], 3150.0)
+        self.assertEqual(result["positions"][0]["unrealized_pnl"], 51.2)
         fetcher.fetch_futures_latest_price.assert_called_once_with(symbol="ETHUSDT")
 
     def test_collect_account_risk_payload_estimates_price_from_position_when_market_lookup_fails(self) -> None:

@@ -16,7 +16,7 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 - `scripts/weex_contract_api.py`: contract/futures REST
 - `scripts/weex_spot_api.py`: spot REST
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
-- `scripts/weex_trade_guard.py`: preview order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
+- `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
 - `scripts/weex_trade_risk_review.py`: local risk review helpers for standalone trade-guard preview/account-scan flows
 - `scripts/weex_order_intent_state.py`: store and validate pending order intents
 - `scripts/weex_gui_launcher.py`: detached launcher for GUI profile/vault entrypoints on macOS and Windows; vault launches accept `--requested-action setup|unlock|status|lock`
@@ -39,7 +39,7 @@ These auto-detect language from `agent-init.json`.
 - Contract/futures tasks: use `scripts/weex_contract_api.py`
 - Spot tasks: use `scripts/weex_spot_api.py`
 - Replay, profile, or order-risk inputs for the analysis skill: collect live data with `scripts/weex_trade_data_aggregator.py`, then pass the normalized JSON into `weex-analysis-skill`
-- Order preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
+- Order preview, TP/SL preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
 - Windows/macOS setup or editing: prefer the visual profile manager
 - Linux interactive setup: prefer the Linux wizard
 - Open `README.md` for the broad usage/install summary

@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 NOISE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".git"}
 NOISE_FILE_NAMES = {".DS_Store"}
 NOISE_FILE_SUFFIXES = {".pyc"}
-DEFAULT_SKILLS = ("weex-trader-skill", "weex-analysis-skill")
+DEFAULT_SKILLS = ("weex-trader-skill", "weex-analysis-skill", "weex-monitor-skill")
 ROOT_METADATA_FILES = (
     Path("README.md"),
     Path("LICENSE"),

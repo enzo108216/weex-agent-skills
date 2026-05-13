@@ -89,6 +89,11 @@ class InstallLocalSkillsTests(unittest.TestCase):
             self.assertFalse((export_root / ".agents").exists())
             self.assertTrue((export_root / "skills" / "demo-skill" / "SKILL.md").exists())
 
+    def test_default_local_install_includes_monitor_skill(self) -> None:
+        self.assertIn("weex-trader-skill", installer.DEFAULT_SKILLS)
+        self.assertIn("weex-analysis-skill", installer.DEFAULT_SKILLS)
+        self.assertIn("weex-monitor-skill", installer.DEFAULT_SKILLS)
+
 
 if __name__ == "__main__":
     unittest.main()

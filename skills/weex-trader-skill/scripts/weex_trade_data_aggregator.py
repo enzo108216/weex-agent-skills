@@ -699,6 +699,7 @@ def _normalize_positions(payload: Any, market: str) -> list[dict[str, Any]]:
             ),
             "quantity": _to_float(_pick(row, "size", "quantity", "qty")),
             "notional": _to_float(_pick(row, "openValue", "value", "notional")),
+            "unrealized_pnl": _to_float(_pick(row, "unrealizePnl", "unrealizedPnl", "unrealized_pnl")),
             "leverage": _to_float(_pick(row, "leverage")),
             "created_time": int(_pick(row, "createdTime", "time") or 0),
             "updated_time": int(_pick(row, "updatedTime", "updateTime") or 0),

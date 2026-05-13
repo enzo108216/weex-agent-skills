@@ -43,6 +43,18 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("Never send mutating requests", skill_text)
         self.assertIn("does not own API credentials", skill_text)
 
+    def test_skill_documents_ai_natural_language_to_dsl_rules(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("AI natural-language parsing", skill_text)
+        self.assertIn("convert the user's monitor instruction into the Task DSL", skill_text)
+        self.assertIn("ask for the missing field", skill_text)
+        self.assertIn("profile is always required", skill_text)
+        self.assertIn("symbol_price_monitor requires action.quantity", skill_text)
+        self.assertIn("dry-run commands still write local SQLite task state and events", skill_text)
+        self.assertIn("不要下单", skill_text)
+        self.assertIn("BTCUSDT 多单未实现盈利大于 50", skill_text)
+
     def test_file_index_covers_script_and_script_avoids_trader_imports(self) -> None:
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
         script_text = SCRIPT.read_text(encoding="utf-8")
