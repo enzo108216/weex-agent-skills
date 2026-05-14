@@ -123,6 +123,10 @@ If you downloaded or cloned this repository and want to install from that local 
 python3 tools/install_local_skills.py --all --agent codex
 ```
 
+Use `--agent claude-code` for Claude Code. The local installer validates the agents supported by `gh skill install`; if your host is not in that list, install to its expected skills directory with `--dir`.
+
+`weex-monitor-skill` depends on `weex-trader-skill` for live account reads and live execution delegation. Installing only `weex-monitor-skill` from the local installer automatically includes `weex-trader-skill`; installing all skills is still recommended.
+
 Most users only need the GitHub install command in [Start Here](#start-here).
 
 ## User Safety Notes

@@ -24,7 +24,7 @@
   "routing": {
     "decision_axes": [
       "task_type: position_pnl_monitor or symbol_price_monitor",
-      "trigger_source: local PnL evaluation or exchange-native price TP/SL",
+      "trigger_source: local PnL evaluation, bounded live loop, or exchange-native price TP/SL",
       "execution_boundary: dry-run/plan-only or live execution delegated through weex-trader-skill guard commands"
     ],
     "domains": {
@@ -34,7 +34,7 @@
           "preview",
           "confirm-text"
         ],
-        "mutating": false
+        "mutating": "confirm-text writes local draft confirmation state only"
       },
       "task_confirmation": {
         "entrypoint": "scripts/weex_monitor_cli.py",
@@ -43,7 +43,8 @@
         ],
         "mutating": "local task state only",
         "requires": [
-          "--confirm-monitor"
+          "--confirm-monitor",
+          "--confirmation-token"
         ]
       },
       "price_condition_planning": {
@@ -59,7 +60,7 @@
         "commands": [
           "submit-price-order"
         ],
-        "mutating": "delegated live TP/SL order through weex-trader-skill",
+        "mutating": "delegated live TP/SL order through weex-trader-skill after confirmed-task lookup and live position revalidation",
         "requires": [
           "--confirm-live"
         ],
@@ -76,9 +77,10 @@
       "pnl_live_runner": {
         "entrypoint": "scripts/weex_monitor_cli.py",
         "commands": [
-          "run-live-once"
+          "run-live-once",
+          "run-loop --confirm-live"
         ],
-        "mutating": "delegated live market close through weex-trader-skill",
+        "mutating": "delegated live market close through weex-trader-skill; confirmed-task lookup and local active-to-executing claim prevent unconfirmed or duplicate runner submission",
         "requires": [
           "--confirm-live"
         ],
@@ -90,7 +92,7 @@
           "list",
           "events",
           "run-once",
-          "run-loop",
+          "run-loop --dry-run",
           "cancel"
         ],
         "mutating": "local task state only"

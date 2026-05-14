@@ -3,19 +3,22 @@
   "purpose": "File-level guide for the WEEX monitor skill.",
   "file_guide": {
     "scripts/weex_monitor_cli.py": {
-      "role": "Primary deterministic monitor CLI for task normalization, monitor confirmation, SQLite local persistence, append-only events, price TP/SL body generation/submission through trader guard, PnL trigger evaluation, dry-run checks, and delegated live PnL close execution.",
+      "role": "Primary deterministic monitor CLI for task normalization, monitor confirmation text/token binding, SQLite local persistence, append-only events, confirmed-task lookup, live position revalidation, price TP/SL body generation/submission through trader guard, PnL trigger evaluation, dry-run checks, live loop execution, delegated live PnL close execution, failure review state, and execution claim locking.",
       "when": [
         "creating or previewing a monitor DSL",
-        "saving an active monitor task after explicit monitor confirmation",
+        "rendering confirmation text and a confirmation token before activation",
+        "saving an active monitor task after explicit monitor confirmation and matching confirmation token",
         "building a WEEX TP/SL conditional order body for a price monitor",
         "evaluating a PnL monitor from normalized position snapshots",
         "listing or cancelling local monitor tasks",
         "reviewing local monitor events",
         "running a dry-run trigger pass against mock positions",
         "running a bounded dry-run loop against mock position sequences",
+        "running a confirmed live loop for active PnL monitors",
         "building a non-mutating live delegate summary for weex-trader-skill",
-        "submitting a confirmed price TP/SL task through weex-trader-skill with --confirm-live",
-        "running a confirmed live PnL check that delegates market close to weex-trader-skill"
+        "submitting a confirmed and live-position-validated price TP/SL task through weex-trader-skill with --confirm-live",
+        "running a confirmed-token-validated live PnL check that delegates market close to weex-trader-skill",
+        "recording delegated live failures as review_required"
       ],
       "surface": [
         "preview",
@@ -37,6 +40,15 @@
     },
     "manifest.json": {
       "role": "Machine-readable routing and execution-boundary metadata."
+    },
+    "file-index.json": {
+      "role": "This navigation guide; keep it updated when the skill surface, docs, tests, or scripts change."
+    },
+    "tests/test_weex_monitor_cli.py": {
+      "role": "Behavioral tests for monitor task normalization, confirmation token binding, dry-run and live loop execution, live delegation, failure recording, execution claim locking, and CLI subprocess flows."
+    },
+    "tests/test_docs_consistency.py": {
+      "role": "Documentation and package consistency tests for frontmatter, manifest identity, safety-boundary text, AI natural-language DSL rules, file-index coverage, and prohibited trader internal imports."
     }
   }
 }

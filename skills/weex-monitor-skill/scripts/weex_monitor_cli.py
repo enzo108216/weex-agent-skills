@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -235,14 +236,61 @@ def evaluate_pnl_task(task: dict[str, Any], positions: list[dict[str, Any]]) -> 
     }
 
 
-def confirm_task(raw_task: dict[str, Any], *, confirm_monitor: bool, now_ms: int | None = None) -> dict[str, Any]:
+def prepare_confirmation(raw_task: dict[str, Any], *, now_ms: int | None = None) -> dict[str, Any]:
+    rendered_at_ms = now_ms if now_ms is not None else _now_ms()
+    task = normalize_task(raw_task, now_ms=rendered_at_ms)
+    task["status"] = "draft"
+    confirmation_text = render_confirmation_text(task, now_ms=rendered_at_ms)
+    confirmation_token = _new_confirmation_token()
+    fingerprint = _confirmation_fingerprint(task)
+    output = {
+        "task": task,
+        "confirmation_text": confirmation_text,
+        "confirmation_token": confirmation_token,
+        "confirmation_fingerprint": fingerprint,
+    }
+    with _connect() as conn:
+        _upsert_task(conn, task, updated_at_ms=rendered_at_ms)
+        _store_confirmation(
+            conn,
+            confirmation_token=confirmation_token,
+            task=task,
+            task_hash=fingerprint,
+            confirmation_text=confirmation_text,
+            created_at_ms=rendered_at_ms,
+        )
+        _append_event(
+            conn,
+            task["task_id"],
+            "task_confirmation_rendered",
+            output,
+            created_at_ms=rendered_at_ms,
+        )
+    return output
+
+
+def confirm_task(
+    raw_task: dict[str, Any],
+    *,
+    confirm_monitor: bool,
+    confirmation_token: str | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
     if not confirm_monitor:
         raise MonitorInputError("refusing to activate monitor task without --confirm-monitor")
+    if confirmation_token is None or str(confirmation_token).strip() == "":
+        raise MonitorInputError("confirmation-token is required before activating monitor task")
     confirmed_at_ms = now_ms if now_ms is not None else _now_ms()
     task = normalize_task(raw_task, now_ms=confirmed_at_ms)
     task["status"] = "active"
     task["confirmed_at_ms"] = confirmed_at_ms
     with _connect() as conn:
+        _consume_confirmation_token(
+            conn,
+            confirmation_token=str(confirmation_token).strip(),
+            task=task,
+            used_at_ms=confirmed_at_ms,
+        )
         _upsert_task(conn, task, updated_at_ms=confirmed_at_ms)
         _append_event(
             conn,
@@ -281,7 +329,7 @@ def render_confirmation_text(raw_task: dict[str, Any], *, now_ms: int | None = N
     condition = task["condition"]
     action = task["action"]
     parts = [
-        "WEEX monitor confirmation",
+        "自动化监控确认 / WEEX monitor confirmation",
         f"task_id: {task['task_id']}",
         f"profile: {task['profile']}",
         f"symbol: {task['symbol']}",
@@ -384,9 +432,11 @@ def run_loop_dry_run(
     *,
     iterations: int,
     task_id: str | None = None,
-    sleep_seconds: float = 0,
+    sleep_seconds: float | None = 0,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
+    if sleep_seconds is None:
+        sleep_seconds = 0
     if iterations < 1:
         raise MonitorInputError("iterations must be >= 1")
     if sleep_seconds < 0:
@@ -423,6 +473,56 @@ def run_loop_dry_run(
         "triggered_count": triggered_count,
         "iterations": iteration_outputs,
         "mutating_request_submitted": False,
+    }
+
+
+def run_live_loop(
+    *,
+    confirm_live: bool,
+    iterations: int,
+    task_id: str | None = None,
+    sleep_seconds: float | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    if not confirm_live:
+        raise MonitorInputError("run-loop live mode requires --confirm-live")
+    if iterations < 1:
+        raise MonitorInputError("iterations must be >= 1")
+    if sleep_seconds is not None and sleep_seconds < 0:
+        raise MonitorInputError("sleep_seconds must be >= 0")
+
+    loop_started_at_ms = now_ms if now_ms is not None else _now_ms()
+    effective_sleep_seconds = (
+        sleep_seconds
+        if sleep_seconds is not None
+        else _minimum_active_pnl_frequency_seconds(task_id=task_id)
+    )
+    iteration_outputs: list[dict[str, Any]] = []
+    submitted_count = 0
+    for index in range(iterations):
+        results = run_live_once(
+            confirm_live=True,
+            task_id=task_id,
+            now_ms=loop_started_at_ms + index,
+        )
+        submitted_count += sum(1 for item in results if item.get("status") == "completed")
+        iteration_outputs.append(
+            {
+                "iteration": index + 1,
+                "results": results,
+            }
+        )
+        if effective_sleep_seconds and index + 1 < iterations:
+            time.sleep(effective_sleep_seconds)
+
+    return {
+        "live": True,
+        "iterations_requested": iterations,
+        "iterations_completed": len(iteration_outputs),
+        "submitted_count": submitted_count,
+        "effective_sleep_seconds": effective_sleep_seconds,
+        "iterations": iteration_outputs,
+        "mutating_request_delegate": "weex-trader-skill",
     }
 
 
@@ -464,40 +564,70 @@ def submit_price_order(
     if not confirm_live:
         raise MonitorInputError("submit-price-order requires --confirm-live")
     submitted_at_ms = now_ms if now_ms is not None else _now_ms()
-    task = normalize_task(raw_task)
-    if task["task_type"] != "symbol_price_monitor":
-        raise MonitorInputError("submit-price-order requires symbol_price_monitor")
-    if task.get("status") != "active":
-        raise MonitorInputError("submit-price-order requires an active monitor task")
+    task = _load_confirmed_active_task(raw_task, expected_task_type="symbol_price_monitor")
 
     price_order = build_price_tp_sl_order_body(task)
-    preview = _run_json_command(
-        _trader_script_command(
-            "weex_trade_guard.py",
-            "preview-tp-sl",
-            "--profile",
-            task["profile"],
-            "--tp-sl-json",
-            json.dumps(price_order, ensure_ascii=False, separators=(",", ":")),
-            "--ttl-seconds",
-            "300",
-            "--pretty",
+    live_position_blocker = _price_live_position_blocker(task)
+    if live_position_blocker is not None:
+        return _mark_task_review_required(
+            task,
+            reason=live_position_blocker["reason"],
+            detail=live_position_blocker["detail"],
+            event_type="live_price_order_failed",
+            now_ms=submitted_at_ms,
+            extra={"price_order": price_order},
         )
-    )
-    intent_id = _required_delegate_field(preview, "intent_id")
-    risk_signature = _required_delegate_field(preview, "risk_signature")
-    exchange_response = _run_json_command(
-        _trader_script_command(
-            "weex_trade_guard.py",
-            "confirm-tp-sl",
-            "--intent-id",
-            intent_id,
-            "--risk-signature",
-            risk_signature,
-            "--confirm-live",
-            "--pretty",
+    if not claim_task_for_execution(task, now_ms=submitted_at_ms):
+        output = _price_not_submitted_output(task, "execution_already_claimed")
+        _append_live_event(task["task_id"], "live_price_order_skipped", output, submitted_at_ms)
+        return output
+    try:
+        preview = _run_json_command(
+            _trader_script_command(
+                "weex_trade_guard.py",
+                "preview-tp-sl",
+                "--profile",
+                task["profile"],
+                "--tp-sl-json",
+                json.dumps(price_order, ensure_ascii=False, separators=(",", ":")),
+                "--ttl-seconds",
+                "300",
+                "--pretty",
+            )
         )
-    )
+        intent_id = _required_delegate_field(preview, "intent_id")
+        risk_signature = _required_delegate_field(preview, "risk_signature")
+    except MonitorInputError as exc:
+        return _mark_task_review_required(
+            task,
+            reason="live_price_order_preview_failed",
+            detail=str(exc),
+            event_type="live_price_order_failed",
+            now_ms=submitted_at_ms,
+            extra={"price_order": price_order},
+        )
+    try:
+        exchange_response = _run_json_command(
+            _trader_script_command(
+                "weex_trade_guard.py",
+                "confirm-tp-sl",
+                "--intent-id",
+                intent_id,
+                "--risk-signature",
+                risk_signature,
+                "--confirm-live",
+                "--pretty",
+            )
+        )
+    except MonitorInputError as exc:
+        return _mark_task_review_required(
+            task,
+            reason="live_price_order_confirm_failed",
+            detail=str(exc),
+            event_type="live_price_order_failed",
+            now_ms=submitted_at_ms,
+            extra={"preview": preview, "price_order": price_order},
+        )
 
     updated_task = dict(task)
     updated_task["status"] = "submitted"
@@ -530,6 +660,48 @@ def submit_price_order(
     return output
 
 
+def _load_confirmed_active_task(
+    raw_task: dict[str, Any],
+    *,
+    expected_task_type: str,
+) -> dict[str, Any]:
+    requested = normalize_task(raw_task)
+    if requested["task_type"] != expected_task_type:
+        raise MonitorInputError(f"submit-price-order requires {expected_task_type}")
+
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT task_json
+            FROM monitor_tasks
+            WHERE task_id = ? AND status = 'active'
+            """,
+            (requested["task_id"],),
+        ).fetchone()
+        if row is None:
+            raise MonitorInputError(
+                "confirmed active monitor task was not found or is no longer active"
+            )
+        stored_task = _merge_normalized_task(json.loads(row["task_json"]), now_ms=_now_ms())
+        if stored_task["task_type"] != expected_task_type:
+            raise MonitorInputError(f"confirmed active monitor task is not {expected_task_type}")
+        if _confirmation_fingerprint(stored_task) != _confirmation_fingerprint(requested):
+            raise MonitorInputError("task details do not match the confirmed active monitor task")
+        confirmation_row = conn.execute(
+            """
+            SELECT 1
+            FROM monitor_confirmations
+            WHERE task_id = ? AND task_hash = ? AND used_at_ms IS NOT NULL
+            """,
+            (stored_task["task_id"], _confirmation_fingerprint(stored_task)),
+        ).fetchone()
+        if confirmation_row is None:
+            raise MonitorInputError(
+                "confirmed active monitor task was not found or is no longer active"
+            )
+    return stored_task
+
+
 def run_live_once(
     *,
     confirm_live: bool,
@@ -547,6 +719,19 @@ def run_live_once(
         if task_id is not None and task.get("task_id") != task_id:
             continue
         if task.get("task_type") != "position_pnl_monitor":
+            continue
+        try:
+            task = _load_confirmed_active_task(task, expected_task_type="position_pnl_monitor")
+        except MonitorInputError as exc:
+            outputs.append(
+                _mark_task_review_required(
+                    task,
+                    reason="missing_monitor_confirmation",
+                    detail=str(exc),
+                    event_type="live_order_failed",
+                    now_ms=evaluated_at_ms,
+                )
+            )
             continue
 
         first_payload = _collect_live_account_payload(task)
@@ -591,35 +776,66 @@ def run_live_once(
 
         close_order = dict(recheck_result["close_order"])
         close_order["new_client_order_id"] = _live_client_order_id(task["task_id"])
-        preview = _run_json_command(
-            _trader_script_command(
-                "weex_trade_guard.py",
-                "preview-order",
-                "--profile",
-                task["profile"],
-                "--market",
-                task["market"],
-                "--order-json",
-                json.dumps(close_order, ensure_ascii=False, separators=(",", ":")),
-                "--ttl-seconds",
-                "300",
-                "--pretty",
+        if not claim_task_for_execution(task, now_ms=evaluated_at_ms):
+            output = _live_not_executed_output(task, "execution_already_claimed")
+            _append_live_event(task["task_id"], "live_execution_skipped", output, evaluated_at_ms)
+            outputs.append(output)
+            continue
+        try:
+            preview = _run_json_command(
+                _trader_script_command(
+                    "weex_trade_guard.py",
+                    "preview-order",
+                    "--profile",
+                    task["profile"],
+                    "--market",
+                    task["market"],
+                    "--order-json",
+                    json.dumps(close_order, ensure_ascii=False, separators=(",", ":")),
+                    "--ttl-seconds",
+                    "300",
+                    "--pretty",
+                )
             )
-        )
-        intent_id = _required_delegate_field(preview, "intent_id")
-        risk_signature = _required_delegate_field(preview, "risk_signature")
-        exchange_response = _run_json_command(
-            _trader_script_command(
-                "weex_trade_guard.py",
-                "confirm-order",
-                "--intent-id",
-                intent_id,
-                "--risk-signature",
-                risk_signature,
-                "--confirm-live",
-                "--pretty",
+            intent_id = _required_delegate_field(preview, "intent_id")
+            risk_signature = _required_delegate_field(preview, "risk_signature")
+        except MonitorInputError as exc:
+            outputs.append(
+                _mark_task_review_required(
+                    task,
+                    reason="live_order_preview_failed",
+                    detail=str(exc),
+                    event_type="live_order_failed",
+                    now_ms=evaluated_at_ms,
+                    extra={"result": recheck_result, "close_order": close_order},
+                )
             )
-        )
+            continue
+        try:
+            exchange_response = _run_json_command(
+                _trader_script_command(
+                    "weex_trade_guard.py",
+                    "confirm-order",
+                    "--intent-id",
+                    intent_id,
+                    "--risk-signature",
+                    risk_signature,
+                    "--confirm-live",
+                    "--pretty",
+                )
+            )
+        except MonitorInputError as exc:
+            outputs.append(
+                _mark_task_review_required(
+                    task,
+                    reason="live_order_confirm_failed",
+                    detail=str(exc),
+                    event_type="live_order_failed",
+                    now_ms=evaluated_at_ms,
+                    extra={"preview": preview, "result": recheck_result, "close_order": close_order},
+                )
+            )
+            continue
         output = {
             "task_id": task["task_id"],
             "status": "completed",
@@ -652,6 +868,98 @@ def _required_delegate_field(payload: dict[str, Any], key: str) -> str:
     return str(value).strip()
 
 
+def claim_task_for_execution(raw_task: dict[str, Any], *, now_ms: int | None = None) -> bool:
+    claimed_at_ms = now_ms if now_ms is not None else _now_ms()
+    task = _merge_normalized_task(raw_task, now_ms=claimed_at_ms)
+    executing_task = dict(task)
+    executing_task["status"] = "executing"
+    executing_task["executing_at_ms"] = claimed_at_ms
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE monitor_tasks
+            SET status = ?, updated_at_ms = ?, task_json = ?
+            WHERE task_id = ? AND status = 'active'
+            """,
+            (
+                "executing",
+                claimed_at_ms,
+                json.dumps(executing_task, ensure_ascii=False, sort_keys=True),
+                task["task_id"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task["task_id"],
+            "live_execution_claimed",
+            {"status": "executing", "task": executing_task},
+            created_at_ms=claimed_at_ms,
+        )
+    return True
+
+
+def _mark_task_review_required(
+    raw_task: dict[str, Any],
+    *,
+    reason: str,
+    detail: str,
+    event_type: str,
+    now_ms: int,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    task = _merge_normalized_task(raw_task, now_ms=now_ms)
+    task["status"] = "review_required"
+    task["review_required_at_ms"] = now_ms
+    task["last_failure"] = {
+        "reason": reason,
+        "detail": detail,
+    }
+    result = {
+        "triggered": False,
+        "reason": reason,
+        "detail": detail,
+        "execution_delegate": "weex-trader-skill",
+    }
+    output: dict[str, Any] = {
+        "task_id": task["task_id"],
+        "status": "review_required",
+        "result": result,
+        "thread_report": render_live_thread_report(task, result, None),
+    }
+    if extra:
+        output["delegate_context"] = extra
+        task["last_failure"]["extra"] = extra
+    with _connect() as conn:
+        _upsert_task(conn, task, updated_at_ms=now_ms)
+        _append_event(conn, task["task_id"], event_type, output, created_at_ms=now_ms)
+    return output
+
+
+def _merge_normalized_task(raw_task: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+    created_at_ms = raw_task.get("created_at_ms", now_ms)
+    try:
+        created_at_int = int(created_at_ms)
+    except (TypeError, ValueError):
+        created_at_int = now_ms
+    normalized = normalize_task(raw_task, now_ms=created_at_int)
+    task = dict(raw_task)
+    task.update(normalized)
+    return task
+
+
+def _minimum_active_pnl_frequency_seconds(*, task_id: str | None = None) -> int:
+    frequencies = [
+        int(task.get("frequency_seconds", DEFAULT_FREQUENCY_SECONDS))
+        for task in load_tasks()
+        if task.get("status") == "active"
+        and task.get("task_type") == "position_pnl_monitor"
+        and (task_id is None or task.get("task_id") == task_id)
+    ]
+    return min(frequencies) if frequencies else DEFAULT_FREQUENCY_SECONDS
+
+
 def _collect_live_account_payload(task: dict[str, Any]) -> dict[str, Any]:
     payload = _run_json_command(
         _trader_script_command(
@@ -678,6 +986,37 @@ def _positions_from_account_payload(payload: dict[str, Any]) -> list[dict[str, A
     return [item for item in positions if isinstance(item, dict)]
 
 
+def _price_live_position_blocker(task: dict[str, Any]) -> dict[str, str] | None:
+    try:
+        payload = _collect_live_account_payload(task)
+    except MonitorInputError as exc:
+        return {"reason": "live_position_revalidation_failed", "detail": str(exc)}
+
+    blocker = _live_payload_blocker(payload)
+    if blocker is not None:
+        return {"reason": blocker, "detail": blocker}
+
+    target = _find_position(task, _positions_from_account_payload(payload))
+    if target is None:
+        return {
+            "reason": "live_position_not_found",
+            "detail": "confirmed price monitor position was not found in live account snapshot",
+        }
+
+    try:
+        live_size = Decimal(_position_size(target))
+        requested_size = Decimal(task["action"]["quantity"])
+    except (MonitorInputError, InvalidOperation, ValueError) as exc:
+        return {"reason": "live_position_invalid", "detail": str(exc)}
+
+    if live_size < requested_size:
+        return {
+            "reason": "live_position_size_too_small",
+            "detail": f"live position size {live_size} is smaller than requested close quantity {requested_size}",
+        }
+    return None
+
+
 def _live_payload_blocker(payload: dict[str, Any]) -> str | None:
     if payload.get("partial"):
         return "live_data_partial"
@@ -698,6 +1037,22 @@ def _live_not_executed_output(task: dict[str, Any], reason: str) -> dict[str, An
         "status": "active",
         "result": result,
         "thread_report": render_live_thread_report(task, result, None),
+    }
+
+
+def _price_not_submitted_output(task: dict[str, Any], reason: str) -> dict[str, Any]:
+    result = {
+        "triggered": False,
+        "reason": reason,
+        "execution_delegate": "weex-trader-skill",
+    }
+    return {
+        "task_id": task["task_id"],
+        "status": "active",
+        "result": result,
+        "thread_report": (
+            f"WEEX monitor {task['task_id']} price TP/SL was not submitted: {reason}."
+        ),
     }
 
 
@@ -766,13 +1121,21 @@ def render_thread_report(output: dict[str, Any]) -> str:
     )
 
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect() -> Any:
     home = monitor_home()
     home.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -802,8 +1165,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_confirmations (
+            confirmation_token TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            task_hash TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            used_at_ms INTEGER,
+            task_json TEXT NOT NULL,
+            confirmation_text TEXT NOT NULL
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_tasks_status ON monitor_tasks(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_events_task_id ON monitor_events(task_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_confirmations_task_id ON monitor_confirmations(task_id)")
 
 
 def _upsert_task(conn: sqlite3.Connection, task: dict[str, Any], *, updated_at_ms: int) -> None:
@@ -855,6 +1232,93 @@ def _append_event(
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
         ),
     )
+
+
+def _store_confirmation(
+    conn: sqlite3.Connection,
+    *,
+    confirmation_token: str,
+    task: dict[str, Any],
+    task_hash: str,
+    confirmation_text: str,
+    created_at_ms: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO monitor_confirmations (
+            confirmation_token, task_id, task_hash, created_at_ms, used_at_ms, task_json, confirmation_text
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?)
+        ON CONFLICT(confirmation_token) DO UPDATE SET
+            task_id = excluded.task_id,
+            task_hash = excluded.task_hash,
+            created_at_ms = excluded.created_at_ms,
+            used_at_ms = NULL,
+            task_json = excluded.task_json,
+            confirmation_text = excluded.confirmation_text
+        """,
+        (
+            confirmation_token,
+            task["task_id"],
+            task_hash,
+            created_at_ms,
+            json.dumps(task, ensure_ascii=False, sort_keys=True),
+            confirmation_text,
+        ),
+    )
+
+
+def _consume_confirmation_token(
+    conn: sqlite3.Connection,
+    *,
+    confirmation_token: str,
+    task: dict[str, Any],
+    used_at_ms: int,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT task_id, task_hash, used_at_ms
+        FROM monitor_confirmations
+        WHERE confirmation_token = ?
+        """,
+        (confirmation_token,),
+    ).fetchone()
+    if row is None:
+        raise MonitorInputError("confirmation-token was not rendered by confirm-text")
+    if row["used_at_ms"] is not None:
+        raise MonitorInputError("confirmation-token has already been used")
+    if row["task_id"] != task["task_id"]:
+        raise MonitorInputError("confirmation-token does not match task_id")
+    if row["task_hash"] != _confirmation_fingerprint(task):
+        raise MonitorInputError("confirmation-token does not match monitor task details")
+    conn.execute(
+        "UPDATE monitor_confirmations SET used_at_ms = ? WHERE confirmation_token = ?",
+        (used_at_ms, confirmation_token),
+    )
+
+
+def _confirmation_fingerprint(raw_task: dict[str, Any]) -> str:
+    task = normalize_task(raw_task)
+    payload: dict[str, Any] = {
+        "task_id": task["task_id"],
+        "task_type": task["task_type"],
+        "profile": task["profile"],
+        "market": task["market"],
+        "symbol": task["symbol"],
+        "position_side": task["position_side"],
+        "frequency_seconds": task["frequency_seconds"],
+        "condition": task["condition"],
+        "action": task["action"],
+        "callback": task["callback"],
+    }
+    if task["task_type"] == "symbol_price_monitor":
+        payload["trigger_price_type"] = task.get("trigger_price_type", "CONTRACT_PRICE")
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _new_confirmation_token() -> str:
+    return f"mconf_{uuid.uuid4().hex}"
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
@@ -1062,6 +1526,7 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--task-file")
         if name == "confirm":
             sub.add_argument("--confirm-monitor", action="store_true")
+            sub.add_argument("--confirmation-token")
 
     eval_pnl = subparsers.add_parser("evaluate-pnl")
     eval_pnl.add_argument("--task-json")
@@ -1086,9 +1551,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_loop = subparsers.add_parser("run-loop")
     run_loop.add_argument("--dry-run", action="store_true")
+    run_loop.add_argument("--confirm-live", action="store_true")
     run_loop.add_argument("--task-id")
     run_loop.add_argument("--iterations", type=int, default=1)
-    run_loop.add_argument("--sleep-seconds", type=float, default=0)
+    run_loop.add_argument("--sleep-seconds", type=float)
     run_loop.add_argument("--positions-sequence-json")
     run_loop.add_argument("--positions-sequence-file")
 
@@ -1112,13 +1578,19 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(normalize_task(task))
         elif args.command == "confirm":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
-            _print_json(confirm_task(task, confirm_monitor=args.confirm_monitor))
+            _print_json(
+                confirm_task(
+                    task,
+                    confirm_monitor=args.confirm_monitor,
+                    confirmation_token=args.confirmation_token,
+                )
+            )
         elif args.command == "build-price-order":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
             _print_json(build_price_tp_sl_order_body(task))
         elif args.command == "confirm-text":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
-            _print_json({"confirmation_text": render_confirmation_text(task)})
+            _print_json(prepare_confirmation(task))
         elif args.command == "evaluate-pnl":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
             positions = _read_json_arg(args.positions_json, args.positions_file, name="positions")
@@ -1135,21 +1607,33 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "run-live-once":
             _print_json(run_live_once(confirm_live=args.confirm_live, task_id=args.task_id))
         elif args.command == "run-loop":
-            if not args.dry_run:
-                raise MonitorInputError("run-loop currently requires --dry-run")
-            positions_sequence = _read_json_arg(
-                args.positions_sequence_json,
-                args.positions_sequence_file,
-                name="positions-sequence",
-            )
-            _print_json(
-                run_loop_dry_run(
-                    positions_sequence,
-                    iterations=args.iterations,
-                    task_id=args.task_id,
-                    sleep_seconds=args.sleep_seconds,
+            if args.dry_run and args.confirm_live:
+                raise MonitorInputError("run-loop uses either --dry-run or --confirm-live, not both")
+            if args.confirm_live:
+                _print_json(
+                    run_live_loop(
+                        confirm_live=True,
+                        iterations=args.iterations,
+                        task_id=args.task_id,
+                        sleep_seconds=args.sleep_seconds,
+                    )
                 )
-            )
+            else:
+                if not args.dry_run:
+                    raise MonitorInputError("run-loop requires --dry-run or --confirm-live")
+                positions_sequence = _read_json_arg(
+                    args.positions_sequence_json,
+                    args.positions_sequence_file,
+                    name="positions-sequence",
+                )
+                _print_json(
+                    run_loop_dry_run(
+                        positions_sequence,
+                        iterations=args.iterations,
+                        task_id=args.task_id,
+                        sleep_seconds=args.sleep_seconds,
+                    )
+                )
         elif args.command == "cancel":
             _print_json(cancel_task(args.task_id))
         elif args.command == "submit-price-order":

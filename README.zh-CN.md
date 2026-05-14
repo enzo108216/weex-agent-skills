@@ -123,6 +123,10 @@ npx skills add https://github.com/weex-labs/weex-trader-skill --all
 python3 tools/install_local_skills.py --all --agent codex
 ```
 
+Claude Code 请使用 `--agent claude-code`。本地安装工具会校验 `gh skill install` 当前支持的 agent；如果你的宿主不在支持列表里，请用 `--dir` 安装到该宿主期望的 skills 目录。
+
+`weex-monitor-skill` 的实时账户读取和实时执行委托依赖 `weex-trader-skill`。从本地安装器单独安装 `weex-monitor-skill` 时会自动带上 `weex-trader-skill`；普通使用仍建议安装全部 skills。
+
 大多数用户只需要使用 [从这里开始](#从这里开始) 中的 GitHub 安装命令。
 
 ## 使用前请注意

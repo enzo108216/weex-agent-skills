@@ -5,5 +5,6 @@ alwaysApply: true
 
 - Use `skills/weex-trader-skill` for WEEX execution, profile, vault, and live REST workflows.
 - Use `skills/weex-analysis-skill` for read-only analysis of normalized snapshots and fills.
+- Use `skills/weex-monitor-skill` for WEEX automated monitor workflows that create, confirm, evaluate, run, list, or cancel local PnL/price monitor tasks while delegating live execution to trader.
 - Never send mutating WEEX requests without explicit user confirmation.
 - Prefer secret transport that avoids putting credentials or vault passwords directly on argv.

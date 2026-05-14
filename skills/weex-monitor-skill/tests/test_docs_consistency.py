@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parents[1]
 SKILL = ROOT / "SKILL.md"
 MANIFEST = ROOT / "manifest.json"
 FILE_INDEX = ROOT / "file-index.json"
@@ -55,12 +56,26 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("不要下单", skill_text)
         self.assertIn("BTCUSDT 多单未实现盈利大于 50", skill_text)
 
+    def test_root_agent_routing_mentions_monitor_skill(self) -> None:
+        for relative_path in (
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".github/copilot-instructions.md",
+            ".cursor/rules/weex-safety.mdc",
+        ):
+            text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("weex-monitor-skill", text, relative_path)
+            self.assertIn("automated monitor", text.lower(), relative_path)
+
     def test_file_index_covers_script_and_script_avoids_trader_imports(self) -> None:
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
         script_text = SCRIPT.read_text(encoding="utf-8")
         tree = ast.parse(script_text)
 
         self.assertIn("scripts/weex_monitor_cli.py", file_index["file_guide"])
+        self.assertIn("file-index.json", file_index["file_guide"])
+        self.assertIn("tests/test_weex_monitor_cli.py", file_index["file_guide"])
+        self.assertIn("tests/test_docs_consistency.py", file_index["file_guide"])
         imports = {
             alias.name
             for node in ast.walk(tree)
