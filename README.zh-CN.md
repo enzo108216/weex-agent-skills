@@ -85,13 +85,12 @@ npx skills add https://github.com/weex-labs/weex-trader-skill --all
 
 当 AI 工具需要把自然语言 WEEX 监控指令整理成已确认的本地监控任务时，使用 [`weex-monitor-skill`](skills/weex-monitor-skill/SKILL.md)。
 
-这个 skill 是自动化监控编排层。它负责起草、确认、存储、评估、通过 `weex-trader-skill` 执行并回报监控任务，但不保存 API 凭证、不解锁 vault、不签名、不直接提交 REST。价格 TP/SL 提交和收益触发后的市价平仓都仍需要明确的 `--confirm-live`。
+这个 skill 是本地仓位收益监控编排层。它负责起草、确认、存储、评估、通过 `weex-trader-skill` 执行并回报收益监控任务，但不保存 API 凭证、不解锁 vault、不签名、不直接提交 REST。收益触发后的市价平仓仍需要用户明确授权使用真实账户并提交真实平仓委托。价格条件平仓请改用 WEEX 官方条件单，并通过 `weex-trader-skill` 处理，不再由 `weex-monitor-skill` 创建本地价格监控。
 
 适合：
 
 - 按未实现盈亏监控单个合约仓位
-- 当收益阈值触发且提供 `--confirm-live` 时，通过 `weex-trader-skill` 执行方向级市价平仓
-- 当价格条件任务确认且提供 `--confirm-live` 时，通过 `weex-trader-skill` 提交方向级交易所原生 TP/SL 条件单
+- 当收益阈值触发且用户授权真实账户执行时，通过 `weex-trader-skill` 执行方向级市价平仓
 - 使用本地仓位快照做 dry-run 监控演练
 - 查看、审计和取消本地监控任务
 
@@ -99,8 +98,7 @@ npx skills add https://github.com/weex-labs/weex-trader-skill --all
 
 | 场景 | 提示词 |
 |---|---|
-| 收益监控 | `使用 $weex-monitor-skill 监控 BTCUSDT 多单，未实现盈利大于 50 USDT 时在 live 确认后市价平多。` |
-| 价格监控 | `使用 $weex-monitor-skill 监控 ETHUSDT 空单，价格小于 2500 时在 live 确认后按数量 0.2 提交市价平空 TP/SL。` |
+| 收益监控 | `使用 $weex-monitor-skill 监控 BTCUSDT 多单，先核对真实持仓，未实现盈利大于 50 USDT 时在我授权后市价平多。` |
 | 查看监控 | `使用 $weex-monitor-skill 列出我的本地监控任务和最近事件。` |
 
 ## 我应该用哪个 Skill？
@@ -111,7 +109,8 @@ npx skills add https://github.com/weex-labs/weex-trader-skill --all
 | 查询实时私有账户、余额、订单或仓位数据 | `weex-trader-skill` |
 | 设置或使用已保存的 WEEX API profile | `weex-trader-skill` |
 | 预览、下单、撤单或检查实时订单 | `weex-trader-skill` |
-| 创建或查看收益/价格条件的本地自动化监控 | `weex-monitor-skill` |
+| 创建或查看收益条件的本地自动化监控 | `weex-monitor-skill` |
+| 创建交易所原生价格条件平仓 | `weex-trader-skill` |
 | 分析已有的 WEEX JSON 文件或粘贴的 JSON 数据 | `weex-analysis-skill` |
 | 分析实时账户历史 | 先用 `weex-trader-skill` 采集数据，再用 `weex-analysis-skill` 分析 |
 

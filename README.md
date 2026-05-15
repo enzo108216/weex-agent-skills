@@ -85,13 +85,12 @@ Example prompts:
 
 Use [`weex-monitor-skill`](skills/weex-monitor-skill/SKILL.md) when the AI tool needs to turn a natural-language WEEX monitor request into a confirmed local monitor task.
 
-This skill is an orchestration layer. It drafts, confirms, stores, evaluates, executes through `weex-trader-skill`, and reports monitor tasks. It does not own API credentials, vault unlock, signing, or direct REST submission. Live price TP/SL submission and live PnL-triggered market close still require explicit `--confirm-live`.
+This skill is an orchestration layer for local position-PnL monitors. It drafts, confirms, stores, evaluates, executes through `weex-trader-skill`, and reports PnL monitor tasks. It does not own API credentials, vault unlock, signing, or direct REST submission. Live PnL-triggered market close still requires explicit authorization to use the real account and submit real close orders. For price-based conditional closes, use WEEX official conditional orders through `weex-trader-skill` instead of `weex-monitor-skill`.
 
 Good for:
 
 - monitoring one futures position by unrealized PnL
-- executing a direction-specific market close through `weex-trader-skill` when a PnL threshold is reached and `--confirm-live` is provided
-- submitting a direction-specific exchange-native TP/SL order through `weex-trader-skill` for a symbol price condition and `--confirm-live` is provided
+- executing a direction-specific market close through `weex-trader-skill` when a PnL threshold is reached and the user authorizes real account execution
 - running dry-run monitor checks with local position snapshots
 - listing, reviewing, and cancelling local monitor tasks
 
@@ -99,8 +98,7 @@ Example prompts:
 
 | Scenario | Prompt |
 |---|---|
-| Monitor PnL | `"Use $weex-monitor-skill to monitor my BTCUSDT long; if unrealized profit is greater than 50 USDT, close it at market after live confirmation."` |
-| Monitor price | `"Use $weex-monitor-skill to close my ETHUSDT short with a market TP/SL order if price goes below 2500, quantity 0.2, after live confirmation."` |
+| Monitor PnL | `"Use $weex-monitor-skill to monitor my BTCUSDT long; first verify the real position, then if unrealized profit is greater than 50 USDT, close it at market after I authorize real account execution."` |
 | Review monitors | `"Use $weex-monitor-skill to list my local monitor tasks and recent events."` |
 
 ## Which Skill Should I Use?
@@ -111,7 +109,8 @@ Example prompts:
 | check live private account, balance, order, or position data | `weex-trader-skill` |
 | set up or use a saved WEEX API profile | `weex-trader-skill` |
 | preview, place, cancel, or check a live order | `weex-trader-skill` |
-| create or review a local automated monitor for PnL or price conditions | `weex-monitor-skill` |
+| create or review a local automated monitor for PnL conditions | `weex-monitor-skill` |
+| create an exchange-native price conditional close | `weex-trader-skill` |
 | analyze an existing WEEX JSON file or pasted JSON data | `weex-analysis-skill` |
 | analyze live account history | collect data with `weex-trader-skill`, then analyze it with `weex-analysis-skill` |
 
