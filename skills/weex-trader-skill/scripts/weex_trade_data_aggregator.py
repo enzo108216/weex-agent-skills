@@ -719,7 +719,9 @@ def _normalize_orders(payload: Any, market: str) -> list[dict[str, Any]]:
             "symbol": str(_pick(row, "symbol") or "UNKNOWN"),
             "order_id": _normalize_order_identifier(row),
             "algo_id": str(_pick(row, "algoId") or ""),
-            "client_order_id": str(_pick(row, "client_order_id", "clientOrderId", "origClientOrderId") or ""),
+            "client_order_id": str(
+                _pick(row, "client_order_id", "clientOrderId", "clientAlgoId", "origClientOrderId") or ""
+            ),
             "side": str(_pick(row, "side") or "unknown").lower(),
             "position_side": str(_pick(row, "position_side", "positionSide") or "").lower() or None,
             "margin_type": _normalize_margin_type(_pick(row, "marginType", "margin_type")),
