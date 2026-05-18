@@ -66,6 +66,8 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("confirm-text-live", skill_text)
         self.assertIn("combined confirmation", skill_text)
         self.assertIn("matched live position", skill_text)
+        self.assertIn("detailed live position snapshot", skill_text)
+        self.assertIn("未返回", skill_text)
         self.assertIn("finite `duration_seconds`", skill_text)
         self.assertIn("--duration-seconds", skill_text)
         self.assertNotIn("运行 720 轮", skill_text)

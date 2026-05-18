@@ -220,6 +220,7 @@ def prepare_confirmation(raw_task: dict[str, Any], *, now_ms: int | None = None)
         "confirmation_fingerprint": fingerprint,
     }
     with _connect() as conn:
+        _ensure_can_write_draft_task(conn, task)
         _upsert_task(conn, task, updated_at_ms=rendered_at_ms)
         _store_confirmation(
             conn,
@@ -252,7 +253,12 @@ def prepare_live_confirmation(
 
     task = normalize_task(raw_task, now_ms=rendered_at_ms)
     duration_seconds_float = _normalize_duration_seconds(duration_seconds)
-    live_position_confirmation = _collect_live_position_confirmation(task)
+    with _connect() as conn:
+        _ensure_can_write_draft_task(conn, task)
+    live_position_confirmation = _collect_live_position_confirmation(
+        task,
+        snapshot_at_ms=rendered_at_ms,
+    )
     task["status"] = "draft"
     task["live_position_confirmation"] = live_position_confirmation
     task["live_run_duration_seconds"] = duration_seconds_float
@@ -273,6 +279,7 @@ def prepare_live_confirmation(
         "duration_seconds": duration_seconds_float,
     }
     with _connect() as conn:
+        _ensure_can_write_draft_task(conn, task)
         _upsert_task(conn, task, updated_at_ms=rendered_at_ms)
         _store_confirmation(
             conn,
@@ -386,6 +393,7 @@ def render_confirmation_text(
                 f"当前未实现盈亏: {position_snapshot.get('unrealized_pnl', 'unknown')}"
             ),
         )
+        parts.insert(5, _position_detail_line(position_snapshot))
         current_condition_line = _current_condition_line(position_snapshot)
         if current_condition_line is not None:
             for index, part in enumerate(parts):
@@ -537,7 +545,6 @@ def run_live_loop(
     if sleep_seconds is not None and sleep_seconds < 0:
         raise MonitorInputError("sleep_seconds must be >= 0")
 
-    loop_started_at_ms = now_ms if now_ms is not None else _now_ms()
     effective_sleep_seconds = (
         sleep_seconds
         if sleep_seconds is not None
@@ -546,10 +553,11 @@ def run_live_loop(
     iteration_outputs: list[dict[str, Any]] = []
     submitted_count = 0
     for index in range(iterations):
+        evaluated_at_ms = now_ms + index if now_ms is not None else _now_ms()
         results = run_live_once(
             confirm_live=True,
             task_id=task_id,
-            now_ms=loop_started_at_ms + index,
+            now_ms=evaluated_at_ms,
         )
         submitted_count += sum(1 for item in results if item.get("status") == "completed")
         iteration_outputs.append(
@@ -558,6 +566,8 @@ def run_live_loop(
                 "results": results,
             }
         )
+        if not _has_active_pnl_tasks(task_id=task_id):
+            break
         if effective_sleep_seconds and index + 1 < iterations:
             time.sleep(effective_sleep_seconds)
 
@@ -593,13 +603,14 @@ def confirm_and_run_live_loop(
         raise MonitorInputError("confirm-and-run-loop requires position_pnl_monitor")
     if not isinstance(raw_task.get("live_position_confirmation"), dict):
         raise MonitorInputError("live position confirmation is required before starting live monitor")
+    _validate_live_confirmation_token(raw_task, confirmation_token, duration_seconds=duration_seconds_float)
     iterations = _iterations_for_duration_seconds(
         duration_seconds_float,
         requested["frequency_seconds"],
     )
 
     confirmed = confirm_task(
-        requested,
+        raw_task,
         confirm_monitor=confirm_monitor,
         confirmation_token=confirmation_token,
         now_ms=now_ms,
@@ -701,6 +712,7 @@ def run_live_once(
         raise MonitorInputError("run-live-once requires --confirm-live")
     evaluated_at_ms = now_ms if now_ms is not None else _now_ms()
     outputs: list[dict[str, Any]] = []
+    claimed_position_buckets: set[tuple[str, str, str, str]] = set()
 
     for task in load_tasks():
         if task.get("status") != "active":
@@ -708,6 +720,24 @@ def run_live_once(
         if task_id is not None and task.get("task_id") != task_id:
             continue
         if task.get("task_type") != "position_pnl_monitor":
+            continue
+        position_bucket = _position_execution_key(task)
+        if position_bucket in claimed_position_buckets:
+            current_task = _load_task_by_id(str(task["task_id"])) or task
+            failure = current_task.get("last_failure")
+            reason = "position_execution_already_claimed"
+            detail = None
+            if isinstance(failure, dict):
+                reason = str(failure.get("reason") or reason)
+                detail = failure.get("detail")
+            outputs.append(
+                _live_not_executed_output(
+                    current_task,
+                    reason,
+                    status=str(current_task.get("status") or "review_required"),
+                    detail=str(detail) if detail is not None else None,
+                )
+            )
             continue
         try:
             task = _load_confirmed_active_task(task, expected_task_type="position_pnl_monitor")
@@ -770,6 +800,7 @@ def run_live_once(
             _append_live_event(task["task_id"], "live_execution_skipped", output, evaluated_at_ms)
             outputs.append(output)
             continue
+        claimed_position_buckets.add(position_bucket)
         try:
             preview = _run_json_command(
                 _trader_script_command(
@@ -879,6 +910,59 @@ def claim_task_for_execution(raw_task: dict[str, Any], *, now_ms: int | None = N
         )
         if cursor.rowcount != 1:
             return False
+        duplicate_rows = conn.execute(
+            """
+            SELECT task_json
+            FROM monitor_tasks
+            WHERE task_id <> ?
+              AND status = 'active'
+              AND task_type = 'position_pnl_monitor'
+              AND profile = ?
+              AND symbol = ?
+              AND position_side = ?
+            ORDER BY created_at_ms, task_id
+            """,
+            (
+                task["task_id"],
+                task["profile"],
+                task["symbol"],
+                task["position_side"],
+            ),
+        ).fetchall()
+        for row in duplicate_rows:
+            duplicate_task = _merge_normalized_task(
+                json.loads(row["task_json"]),
+                now_ms=claimed_at_ms,
+            )
+            duplicate_task["status"] = "review_required"
+            duplicate_task["review_required_at_ms"] = claimed_at_ms
+            duplicate_task["last_failure"] = {
+                "reason": "position_execution_already_claimed",
+                "detail": (
+                    "another active monitor for this profile/symbol/position_side "
+                    f"was claimed by {task['task_id']}"
+                ),
+            }
+            result = {
+                "triggered": False,
+                "reason": "position_execution_already_claimed",
+                "detail": duplicate_task["last_failure"]["detail"],
+                "execution_delegate": "weex-trader-skill",
+            }
+            output = {
+                "task_id": duplicate_task["task_id"],
+                "status": "review_required",
+                "result": result,
+                "thread_report": render_live_thread_report(duplicate_task, result, None),
+            }
+            _upsert_task(conn, duplicate_task, updated_at_ms=claimed_at_ms)
+            _append_event(
+                conn,
+                duplicate_task["task_id"],
+                "live_execution_skipped",
+                output,
+                created_at_ms=claimed_at_ms,
+            )
         _append_event(
             conn,
             task["task_id"],
@@ -949,6 +1033,15 @@ def _minimum_active_pnl_frequency_seconds(*, task_id: str | None = None) -> int:
     return min(frequencies) if frequencies else DEFAULT_FREQUENCY_SECONDS
 
 
+def _has_active_pnl_tasks(*, task_id: str | None = None) -> bool:
+    return any(
+        task.get("status") == "active"
+        and task.get("task_type") == "position_pnl_monitor"
+        and (task_id is None or task.get("task_id") == task_id)
+        for task in load_tasks()
+    )
+
+
 def _collect_live_account_payload(task: dict[str, Any]) -> dict[str, Any]:
     payload = _run_json_command(
         _trader_script_command(
@@ -975,7 +1068,11 @@ def _positions_from_account_payload(payload: dict[str, Any]) -> list[dict[str, A
     return [item for item in positions if isinstance(item, dict)]
 
 
-def _collect_live_position_confirmation(task: dict[str, Any]) -> dict[str, Any]:
+def _collect_live_position_confirmation(
+    task: dict[str, Any],
+    *,
+    snapshot_at_ms: int | None = None,
+) -> dict[str, Any]:
     payload = _collect_live_account_payload(task)
     blocker = _live_payload_blocker(payload)
     if blocker is not None:
@@ -984,7 +1081,7 @@ def _collect_live_position_confirmation(task: dict[str, Any]) -> dict[str, Any]:
     if target is None:
         raise MonitorInputError("live position confirmation failed: live position not found")
 
-    return _position_snapshot_for_task(task, target, account_payload=payload)
+    return _position_snapshot_for_task(task, target, account_payload=payload, snapshot_at_ms=snapshot_at_ms)
 
 
 def _position_snapshot_for_task(
@@ -992,12 +1089,34 @@ def _position_snapshot_for_task(
     position: dict[str, Any],
     *,
     account_payload: dict[str, Any] | None = None,
+    snapshot_at_ms: int | None = None,
 ) -> dict[str, Any]:
     quantity = _position_size(position)
     snapshot: dict[str, Any] = {
         "symbol": task["symbol"],
         "position_side": task["position_side"],
         "quantity": quantity,
+        "entry_price": _snapshot_value(_entry_price_for_position(position)),
+        "current_price": _snapshot_value(_current_price_for_position(position, account_payload)),
+        "leverage": _snapshot_value(_first_present(position, ("leverage",))),
+        "margin_type": _snapshot_value(_first_present(position, ("margin_type", "marginType"))),
+        "available_quantity": _snapshot_value(
+            _first_present(
+                position,
+                ("available_quantity", "availableQuantity", "availableQty", "availQty", "available"),
+            )
+        ),
+        "liquidation_price": _snapshot_value(
+            _first_present(
+                position,
+                ("liquidation_price", "liquidationPrice", "liq_price", "liqPrice"),
+            )
+        ),
+        "position_updated_time": _snapshot_value(
+            _first_present(position, ("updated_time", "updatedTime", "updateTime", "updated_at_ms"))
+        ),
+        "account_available_balance": _snapshot_value(_account_available_balance(account_payload)),
+        "confirmation_snapshot_time": _snapshot_time_label(snapshot_at_ms),
     }
     pnl_value = _first_present(position, ("unrealizePnl", "unrealizedPnl", "unrealized_pnl"))
     if pnl_value is not None and str(pnl_value).strip() != "":
@@ -1034,6 +1153,74 @@ def _condition_snapshot_for_task(
     }
 
 
+def _entry_price_for_position(position: dict[str, Any]) -> Any:
+    direct_value = _first_present(
+        position,
+        (
+            "entry_price",
+            "entryPrice",
+            "avg_entry_price",
+            "avgEntryPrice",
+            "avgOpenPrice",
+            "averageOpenPrice",
+            "open_price",
+            "openPrice",
+        ),
+    )
+    if direct_value is not None:
+        return direct_value
+
+    notional_value = _first_present(position, ("openValue", "notional"))
+    quantity_value = _first_present(position, ("size", "quantity", "qty"))
+    try:
+        notional = _decimal_from_any(notional_value, "position.notional")
+        quantity = _decimal_from_any(quantity_value, "position.quantity")
+    except MonitorInputError:
+        return None
+    if quantity <= 0:
+        return None
+    return str(notional / quantity)
+
+
+def _current_price_for_position(
+    position: dict[str, Any],
+    account_payload: dict[str, Any] | None,
+) -> Any:
+    position_value = _first_present(
+        position,
+        ("mark_price", "markPrice", "last_price", "lastPrice", "current_price", "price"),
+    )
+    if position_value is not None:
+        return position_value
+    if not isinstance(account_payload, dict):
+        return None
+    market_snapshot = account_payload.get("market_snapshot")
+    if not isinstance(market_snapshot, dict):
+        return None
+    return _first_present(market_snapshot, ("current_price", "currentPrice", "markPrice", "lastPrice", "price"))
+
+
+def _account_available_balance(account_payload: dict[str, Any] | None) -> Any:
+    if not isinstance(account_payload, dict):
+        return None
+    account_snapshot = account_payload.get("account_snapshot")
+    if not isinstance(account_snapshot, dict):
+        return None
+    return _first_present(account_snapshot, ("available_balance", "availableBalance"))
+
+
+def _snapshot_value(value: Any) -> str:
+    if value is None or str(value).strip() == "":
+        return "未返回"
+    return str(value).strip()
+
+
+def _snapshot_time_label(snapshot_at_ms: int | None) -> str:
+    if snapshot_at_ms is None:
+        return "未返回"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snapshot_at_ms / 1000))
+
+
 def _live_payload_blocker(payload: dict[str, Any]) -> str | None:
     if payload.get("partial"):
         return "live_data_partial"
@@ -1043,15 +1230,23 @@ def _live_payload_blocker(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def _live_not_executed_output(task: dict[str, Any], reason: str) -> dict[str, Any]:
+def _live_not_executed_output(
+    task: dict[str, Any],
+    reason: str,
+    *,
+    status: str = "active",
+    detail: str | None = None,
+) -> dict[str, Any]:
     result = {
         "triggered": False,
         "reason": reason,
         "execution_delegate": "weex-trader-skill",
     }
+    if detail:
+        result["detail"] = detail
     return {
         "task_id": task["task_id"],
-        "status": "active",
+        "status": status,
         "result": result,
         "thread_report": render_live_thread_report(task, result, None),
     }
@@ -1200,6 +1395,30 @@ def _upsert_task(conn: sqlite3.Connection, task: dict[str, Any], *, updated_at_m
     )
 
 
+def _ensure_can_write_draft_task(conn: sqlite3.Connection, task: dict[str, Any]) -> None:
+    row = conn.execute(
+        "SELECT status FROM monitor_tasks WHERE task_id = ?",
+        (task["task_id"],),
+    ).fetchone()
+    if row is not None and row["status"] != "draft":
+        raise MonitorInputError(
+            f"task_id {task['task_id']} already exists as non-draft status {row['status']}"
+        )
+
+
+def _load_task_by_id(task_id: str) -> dict[str, Any] | None:
+    if not db_path().exists():
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT task_json FROM monitor_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row["task_json"])
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1284,6 +1503,49 @@ def _consume_confirmation_token(
     )
 
 
+def _validate_live_confirmation_token(
+    raw_task: dict[str, Any],
+    confirmation_token: str | None,
+    *,
+    duration_seconds: float,
+) -> None:
+    if confirmation_token is None or str(confirmation_token).strip() == "":
+        raise MonitorInputError("live confirmation token is required before starting live monitor")
+    rendered_live_snapshot = raw_task.get("live_position_confirmation")
+    if not isinstance(rendered_live_snapshot, dict):
+        raise MonitorInputError("live confirmation snapshot is required before starting live monitor")
+
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT task_id, task_hash, used_at_ms, task_json
+            FROM monitor_confirmations
+            WHERE confirmation_token = ?
+            """,
+            (str(confirmation_token).strip(),),
+        ).fetchone()
+    if row is None:
+        raise MonitorInputError("live confirmation token was not rendered by confirm-text-live")
+    if row["used_at_ms"] is not None:
+        raise MonitorInputError("live confirmation token has already been used")
+
+    stored_task = json.loads(row["task_json"])
+    if row["task_id"] != normalize_task(raw_task)["task_id"]:
+        raise MonitorInputError("live confirmation token does not match task_id")
+    if row["task_hash"] != _confirmation_fingerprint(raw_task):
+        raise MonitorInputError("live confirmation token does not match monitor task details")
+    stored_live_snapshot = stored_task.get("live_position_confirmation")
+    if not isinstance(stored_live_snapshot, dict):
+        raise MonitorInputError("live confirmation token was not rendered by confirm-text-live")
+    if stored_live_snapshot != rendered_live_snapshot:
+        raise MonitorInputError("live confirmation snapshot does not match rendered confirmation")
+    stored_duration = stored_task.get("live_run_duration_seconds")
+    if stored_duration is None:
+        raise MonitorInputError("live confirmation duration is missing from rendered confirmation")
+    if Decimal(str(stored_duration)) != Decimal(str(duration_seconds)):
+        raise MonitorInputError("live confirmation duration does not match rendered confirmation")
+
+
 def _confirmation_fingerprint(raw_task: dict[str, Any]) -> str:
     task = normalize_task(raw_task)
     payload: dict[str, Any] = {
@@ -1305,6 +1567,16 @@ def _confirmation_fingerprint(raw_task: dict[str, Any]) -> str:
 
 def _new_confirmation_token() -> str:
     return f"mconf_{uuid.uuid4().hex}"
+
+
+def _position_execution_key(raw_task: dict[str, Any]) -> tuple[str, str, str, str]:
+    task = normalize_task(raw_task)
+    return (
+        task["profile"],
+        task["market"],
+        task["symbol"],
+        task["position_side"],
+    )
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
@@ -1438,9 +1710,32 @@ def _current_condition_line(position_snapshot: dict[str, Any]) -> str | None:
     return f"当前{label}: {current_value}"
 
 
+def _position_detail_line(position_snapshot: dict[str, Any]) -> str:
+    detail_fields = (
+        ("开仓均价", "entry_price"),
+        ("标记/最新价", "current_price"),
+        ("杠杆", "leverage"),
+        ("保证金模式", "margin_type"),
+        ("可平数量", "available_quantity"),
+        ("强平价", "liquidation_price"),
+        ("仓位更新时间", "position_updated_time"),
+        ("账户可用余额", "account_available_balance"),
+        ("确认快照时间", "confirmation_snapshot_time"),
+    )
+    details = [
+        f"{label}: {_snapshot_value(position_snapshot.get(key))}"
+        for label, key in detail_fields
+    ]
+    return "仓位明细: " + ", ".join(details)
+
+
 def _action_label(action: dict[str, str]) -> str:
     if action["type"] == "market_close":
-        return f"提交真实市价平{_position_side_label(action['target'])}"
+        if action.get("quantity"):
+            quantity_label = action["quantity"]
+        else:
+            quantity_label = "触发时匹配持仓数量"
+        return f"提交真实市价平{_position_side_label(action['target'])}，平仓数量: {quantity_label}"
     return action["type"]
 
 
