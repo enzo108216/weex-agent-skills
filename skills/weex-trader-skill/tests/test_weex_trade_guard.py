@@ -263,7 +263,7 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIn("回复：确认", payload["user_confirmation"]["reply_instruction"])
         self.assertNotIn("确认下单", payload["user_confirmation"]["reply_instruction"])
 
-    def test_preview_order_keeps_chinese_reply_token_for_english_prompt(self) -> None:
+    def test_preview_order_adds_english_reply_confirmation_prompt(self) -> None:
         args = mock.Mock(
             profile="demo",
             market="futures",
@@ -301,9 +301,9 @@ class TradeGuardTests(unittest.TestCase):
         payload = json.loads(stream.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["user_confirmation"]["language"], "en")
-        self.assertEqual(payload["user_confirmation"]["reply_text"], "确认")
-        self.assertIn("reply: 确认", payload["user_confirmation"]["reply_instruction"])
-        self.assertNotIn("reply: confirm", payload["user_confirmation"]["reply_instruction"])
+        self.assertEqual(payload["user_confirmation"]["reply_text"], "confirm")
+        self.assertIn("reply: confirm", payload["user_confirmation"]["reply_instruction"])
+        self.assertNotIn("确认", payload["user_confirmation"]["reply_instruction"])
 
     def test_confirm_order_rejects_expired_intent(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)

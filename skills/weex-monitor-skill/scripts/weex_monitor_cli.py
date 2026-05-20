@@ -26,7 +26,11 @@ VALID_POSITION_SIDES = {"LONG", "SHORT"}
 VALID_OPERATORS = {">", ">=", "<", "<="}
 VALID_CALLBACK_TYPES = {"current_thread"}
 VALID_MARKETS = {"futures"}
-CONFIRMATION_REPLY_TEXT = "确认"
+CONFIRMATION_REPLY_TEXT_BY_LANGUAGE = {
+    "zh": "确认",
+    "en": "confirm",
+}
+VALID_LANGUAGES = {"zh", "en"}
 
 
 class MonitorInputError(ValueError):
@@ -207,11 +211,21 @@ def evaluate_pnl_task(task: dict[str, Any], positions: list[dict[str, Any]]) -> 
     }
 
 
-def prepare_confirmation(raw_task: dict[str, Any], *, now_ms: int | None = None) -> dict[str, Any]:
+def prepare_confirmation(
+    raw_task: dict[str, Any],
+    *,
+    now_ms: int | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
     rendered_at_ms = now_ms if now_ms is not None else _now_ms()
+    resolved_language = _normalize_language(language)
     task = normalize_task(raw_task, now_ms=rendered_at_ms)
     task["status"] = "draft"
-    confirmation_text = render_confirmation_text(task, now_ms=rendered_at_ms)
+    confirmation_text = render_confirmation_text(
+        task,
+        now_ms=rendered_at_ms,
+        language=resolved_language,
+    )
     confirmation_token = _new_confirmation_token()
     fingerprint = _confirmation_fingerprint(task)
     output = {
@@ -246,8 +260,10 @@ def prepare_live_confirmation(
     *,
     duration_seconds: Any = None,
     now_ms: int | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     rendered_at_ms = now_ms if now_ms is not None else _now_ms()
+    resolved_language = _normalize_language(language)
     task_type = _required_string(raw_task, "task_type")
     if task_type != "position_pnl_monitor":
         raise MonitorInputError("live position confirmation requires position_pnl_monitor")
@@ -259,6 +275,7 @@ def prepare_live_confirmation(
     live_position_confirmation = _collect_live_position_confirmation(
         task,
         snapshot_at_ms=rendered_at_ms,
+        language=resolved_language,
     )
     task["status"] = "draft"
     task["live_position_confirmation"] = live_position_confirmation
@@ -268,6 +285,7 @@ def prepare_live_confirmation(
         now_ms=rendered_at_ms,
         position_snapshot=live_position_confirmation,
         duration_seconds=duration_seconds_float,
+        language=resolved_language,
     )
     confirmation_token = _new_confirmation_token()
     fingerprint = _confirmation_fingerprint(task)
@@ -361,7 +379,10 @@ def render_confirmation_text(
     now_ms: int | None = None,
     position_snapshot: dict[str, Any] | None = None,
     duration_seconds: float | None = None,
+    language: str | None = None,
 ) -> str:
+    resolved_language = _normalize_language(language)
+    reply_text = _confirmation_reply_text(resolved_language)
     task = normalize_task(raw_task, now_ms=now_ms)
     condition = task["condition"]
     action = task["action"]
@@ -371,35 +392,64 @@ def render_confirmation_text(
         if duration_seconds is not None
         else raw_task.get("live_run_duration_seconds")
     )
-    parts = [
-        "自动化监控确认",
-        f"任务编号: {task['task_id']}",
-        f"账户: {task['profile']}",
-        f"监控对象: {task['symbol']} {_position_side_label(task['position_side'])}",
-        f"触发条件: {_condition_label(condition)}",
-        f"触发动作: {_action_label(action)}",
-        f"回报位置: {task['callback']['type']}",
-        "确认后会先保存本地监控规则；只有在你授权使用真实账户后，才会读取真实仓位并在触发时提交真实委托。",
-        f"如果你确认上述监控设置与授权，请回复：{CONFIRMATION_REPLY_TEXT}",
-    ]
-    parts.insert(6, f"检查频率: 每 {task['frequency_seconds']} 秒")
+    if resolved_language == "en":
+        parts = [
+            "Automated Monitor Confirmation",
+            f"Task ID: {task['task_id']}",
+            f"Account: {task['profile']}",
+            f"Monitor target: {task['symbol']} {_position_side_label(task['position_side'], language=resolved_language)}",
+            f"Trigger condition: {_condition_label(condition, language=resolved_language)}",
+            f"Trigger action: {_action_label(action, language=resolved_language)}",
+            f"Callback: {task['callback']['type']}",
+            "After confirmation, the local monitor rule will be saved; real positions will be read and a real order will be submitted only after you authorize real-account access.",
+            f"If you confirm the monitor settings and authorization above, Reply: {reply_text}",
+        ]
+        parts.insert(6, f"Check frequency: every {task['frequency_seconds']} seconds")
+    else:
+        parts = [
+            "自动化监控确认",
+            f"任务编号: {task['task_id']}",
+            f"账户: {task['profile']}",
+            f"监控对象: {task['symbol']} {_position_side_label(task['position_side'])}",
+            f"触发条件: {_condition_label(condition)}",
+            f"触发动作: {_action_label(action)}",
+            f"回报位置: {task['callback']['type']}",
+            "确认后会先保存本地监控规则；只有在你授权使用真实账户后，才会读取真实仓位并在触发时提交真实委托。",
+            f"如果你确认上述监控设置与授权，请回复：{reply_text}",
+        ]
+        parts.insert(6, f"检查频率: 每 {task['frequency_seconds']} 秒")
     if duration_seconds is not None:
-        parts.insert(7, f"运行时长: {_duration_label(float(duration_seconds))}")
+        if resolved_language == "en":
+            parts.insert(7, f"Run duration: {_duration_label(float(duration_seconds), language=resolved_language)}")
+        else:
+            parts.insert(7, f"运行时长: {_duration_label(float(duration_seconds))}")
     if position_snapshot is not None:
-        parts.insert(
-            4,
-            (
-                "已匹配真实持仓: "
-                f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'])}, "
-                f"持仓数量: {position_snapshot['quantity']}, "
-                f"当前未实现盈亏: {position_snapshot.get('unrealized_pnl', 'unknown')}"
-            ),
-        )
-        parts.insert(5, _position_detail_line(position_snapshot))
-        current_condition_line = _current_condition_line(position_snapshot)
+        if resolved_language == "en":
+            parts.insert(
+                4,
+                (
+                    "Matched live position: "
+                    f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'], language=resolved_language)}, "
+                    f"position size: {position_snapshot['quantity']}, "
+                    f"current unrealized PnL: {position_snapshot.get('unrealized_pnl', 'unknown')}"
+                ),
+            )
+        else:
+            parts.insert(
+                4,
+                (
+                    "已匹配真实持仓: "
+                    f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'])}, "
+                    f"持仓数量: {position_snapshot['quantity']}, "
+                    f"当前未实现盈亏: {position_snapshot.get('unrealized_pnl', 'unknown')}"
+                ),
+            )
+        parts.insert(5, _position_detail_line(position_snapshot, language=resolved_language))
+        current_condition_line = _current_condition_line(position_snapshot, language=resolved_language)
         if current_condition_line is not None:
             for index, part in enumerate(parts):
-                if part.startswith("触发条件:"):
+                condition_prefix = "Trigger condition:" if resolved_language == "en" else "触发条件:"
+                if part.startswith(condition_prefix):
                     parts.insert(index + 1, current_condition_line)
                     break
     return "\n".join(parts)
@@ -1074,6 +1124,7 @@ def _collect_live_position_confirmation(
     task: dict[str, Any],
     *,
     snapshot_at_ms: int | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     payload = _collect_live_account_payload(task)
     blocker = _live_payload_blocker(payload)
@@ -1083,7 +1134,13 @@ def _collect_live_position_confirmation(
     if target is None:
         raise MonitorInputError("live position confirmation failed: live position not found")
 
-    return _position_snapshot_for_task(task, target, account_payload=payload, snapshot_at_ms=snapshot_at_ms)
+    return _position_snapshot_for_task(
+        task,
+        target,
+        account_payload=payload,
+        snapshot_at_ms=snapshot_at_ms,
+        language=language,
+    )
 
 
 def _position_snapshot_for_task(
@@ -1092,33 +1149,38 @@ def _position_snapshot_for_task(
     *,
     account_payload: dict[str, Any] | None = None,
     snapshot_at_ms: int | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
+    resolved_language = _normalize_language(language)
     quantity = _position_size(position)
     snapshot: dict[str, Any] = {
         "symbol": task["symbol"],
         "position_side": task["position_side"],
         "quantity": quantity,
-        "entry_price": _snapshot_value(_entry_price_for_position(position)),
-        "current_price": _snapshot_value(_current_price_for_position(position, account_payload)),
-        "leverage": _snapshot_value(_first_present(position, ("leverage",))),
-        "margin_type": _snapshot_value(_first_present(position, ("margin_type", "marginType"))),
+        "entry_price": _snapshot_value(_entry_price_for_position(position), language=resolved_language),
+        "current_price": _snapshot_value(_current_price_for_position(position, account_payload), language=resolved_language),
+        "leverage": _snapshot_value(_first_present(position, ("leverage",)), language=resolved_language),
+        "margin_type": _snapshot_value(_first_present(position, ("margin_type", "marginType")), language=resolved_language),
         "available_quantity": _snapshot_value(
             _first_present(
                 position,
                 ("available_quantity", "availableQuantity", "availableQty", "availQty", "available"),
-            )
+            ),
+            language=resolved_language,
         ),
         "liquidation_price": _snapshot_value(
             _first_present(
                 position,
                 ("liquidation_price", "liquidationPrice", "liq_price", "liqPrice"),
-            )
+            ),
+            language=resolved_language,
         ),
         "position_updated_time": _snapshot_value(
-            _first_present(position, ("updated_time", "updatedTime", "updateTime", "updated_at_ms"))
+            _first_present(position, ("updated_time", "updatedTime", "updateTime", "updated_at_ms")),
+            language=resolved_language,
         ),
-        "account_available_balance": _snapshot_value(_account_available_balance(account_payload)),
-        "confirmation_snapshot_time": _snapshot_time_label(snapshot_at_ms),
+        "account_available_balance": _snapshot_value(_account_available_balance(account_payload), language=resolved_language),
+        "confirmation_snapshot_time": _snapshot_time_label(snapshot_at_ms, language=resolved_language),
     }
     pnl_value = _first_present(position, ("unrealizePnl", "unrealizedPnl", "unrealized_pnl"))
     if pnl_value is not None and str(pnl_value).strip() != "":
@@ -1127,6 +1189,7 @@ def _position_snapshot_for_task(
         task,
         position,
         account_payload=account_payload,
+        language=resolved_language,
     )
     if condition_snapshot is not None:
         snapshot["condition_snapshot"] = condition_snapshot
@@ -1138,7 +1201,9 @@ def _condition_snapshot_for_task(
     position: dict[str, Any],
     *,
     account_payload: dict[str, Any] | None = None,
+    language: str | None = None,
 ) -> dict[str, str] | None:
+    resolved_language = _normalize_language(language)
     metric = task["condition"]["metric"]
     current_value: Any | None = None
     if metric == "unrealized_pnl":
@@ -1150,7 +1215,7 @@ def _condition_snapshot_for_task(
         return None
     return {
         "metric": metric,
-        "label": _metric_label(metric),
+        "label": _metric_label(metric, language=resolved_language),
         "current_value": str(current_value).strip(),
     }
 
@@ -1211,15 +1276,20 @@ def _account_available_balance(account_payload: dict[str, Any] | None) -> Any:
     return _first_present(account_snapshot, ("available_balance", "availableBalance"))
 
 
-def _snapshot_value(value: Any) -> str:
-    if value is None or str(value).strip() == "":
-        return "未返回"
-    return str(value).strip()
+def _missing_value_label(language: str = "zh") -> str:
+    return "not returned" if _normalize_language(language) == "en" else "未返回"
 
 
-def _snapshot_time_label(snapshot_at_ms: int | None) -> str:
+def _snapshot_value(value: Any, *, language: str = "zh") -> str:
+    text = "" if value is None else str(value).strip()
+    if text in {"", "未返回", "not returned"}:
+        return _missing_value_label(language)
+    return text
+
+
+def _snapshot_time_label(snapshot_at_ms: int | None, *, language: str = "zh") -> str:
     if snapshot_at_ms is None:
-        return "未返回"
+        return _missing_value_label(language)
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snapshot_at_ms / 1000))
 
 
@@ -1296,7 +1366,7 @@ def render_thread_report(output: dict[str, Any]) -> str:
             f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
             f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
             f"Planned close order: {close_order}. "
-            "需要你授权使用真实账户后，才会提交真实委托。"
+            "Real-account authorization is required before a real order can be submitted. "
             "No live order was submitted by weex-monitor-skill."
         )
     return (
@@ -1677,29 +1747,46 @@ def _normalize_duration_seconds(value: Any) -> float:
     return float(duration)
 
 
+def _normalize_language(value: str | None) -> str:
+    language = str(value or "zh").strip().lower()
+    if language not in VALID_LANGUAGES:
+        raise MonitorInputError("language must be zh or en")
+    return language
+
+
+def _confirmation_reply_text(language: str) -> str:
+    return CONFIRMATION_REPLY_TEXT_BY_LANGUAGE[_normalize_language(language)]
+
+
 def _iterations_for_duration_seconds(duration_seconds: float, frequency_seconds: int) -> int:
     if frequency_seconds < 1:
         raise MonitorInputError("frequency_seconds must be >= 1")
     return max(1, math.ceil(duration_seconds / frequency_seconds))
 
 
-def _position_side_label(position_side: str) -> str:
+def _position_side_label(position_side: str, *, language: str = "zh") -> str:
+    if language == "en":
+        return "long position" if position_side == "LONG" else "short position"
     return "多单" if position_side == "LONG" else "空单"
 
 
-def _metric_label(metric: str) -> str:
+def _metric_label(metric: str, *, language: str = "zh") -> str:
     metric_labels = {
         "unrealized_pnl": "未实现盈亏",
     }
+    if language == "en":
+        metric_labels = {
+            "unrealized_pnl": "Unrealized PnL",
+        }
     return metric_labels.get(metric, metric)
 
 
-def _condition_label(condition: dict[str, str]) -> str:
-    metric = _metric_label(condition["metric"])
+def _condition_label(condition: dict[str, str], *, language: str = "zh") -> str:
+    metric = _metric_label(condition["metric"], language=language)
     return f"{metric} {condition['operator']} {condition['threshold']}"
 
 
-def _current_condition_line(position_snapshot: dict[str, Any]) -> str | None:
+def _current_condition_line(position_snapshot: dict[str, Any], *, language: str = "zh") -> str | None:
     condition_snapshot = position_snapshot.get("condition_snapshot")
     if not isinstance(condition_snapshot, dict):
         return None
@@ -1709,10 +1796,12 @@ def _current_condition_line(position_snapshot: dict[str, Any]) -> str | None:
     current_value = condition_snapshot.get("current_value")
     if label is None or current_value is None or str(current_value).strip() == "":
         return None
+    if language == "en":
+        return f"Current {label}: {current_value}"
     return f"当前{label}: {current_value}"
 
 
-def _position_detail_line(position_snapshot: dict[str, Any]) -> str:
+def _position_detail_line(position_snapshot: dict[str, Any], *, language: str = "zh") -> str:
     detail_fields = (
         ("开仓均价", "entry_price"),
         ("标记/最新价", "current_price"),
@@ -1724,30 +1813,56 @@ def _position_detail_line(position_snapshot: dict[str, Any]) -> str:
         ("账户可用余额", "account_available_balance"),
         ("确认快照时间", "confirmation_snapshot_time"),
     )
+    if language == "en":
+        detail_fields = (
+            ("entry price", "entry_price"),
+            ("mark/latest price", "current_price"),
+            ("leverage", "leverage"),
+            ("margin mode", "margin_type"),
+            ("closable quantity", "available_quantity"),
+            ("liquidation price", "liquidation_price"),
+            ("position update time", "position_updated_time"),
+            ("account available balance", "account_available_balance"),
+            ("confirmation snapshot time", "confirmation_snapshot_time"),
+        )
     details = [
-        f"{label}: {_snapshot_value(position_snapshot.get(key))}"
+        f"{label}: {_snapshot_value(position_snapshot.get(key), language=language)}"
         for label, key in detail_fields
     ]
+    if language == "en":
+        return "Position details: " + ", ".join(details)
     return "仓位明细: " + ", ".join(details)
 
 
-def _action_label(action: dict[str, str]) -> str:
+def _action_label(action: dict[str, str], *, language: str = "zh") -> str:
     if action["type"] == "market_close":
         if action.get("quantity"):
             quantity_label = action["quantity"]
         else:
-            quantity_label = "触发时匹配持仓数量"
+            quantity_label = "matched position size at trigger time" if language == "en" else "触发时匹配持仓数量"
+        if language == "en":
+            side_label = "long" if action["target"] == "LONG" else "short"
+            return f"Submit a real market close-{side_label} order, close quantity: {quantity_label}"
         return f"提交真实市价平{_position_side_label(action['target'])}，平仓数量: {quantity_label}"
     return action["type"]
 
 
-def _duration_label(duration_seconds: float) -> str:
+def _duration_label(duration_seconds: float, *, language: str = "zh") -> str:
     if duration_seconds % 3600 == 0:
         hours = duration_seconds / 3600
+        if language == "en":
+            unit = "hour" if hours == 1 else "hours"
+            return f"{hours:g} {unit}"
         return f"{hours:g} 小时"
     if duration_seconds % 60 == 0:
         minutes = duration_seconds / 60
+        if language == "en":
+            unit = "minute" if minutes == 1 else "minutes"
+            return f"{minutes:g} {unit}"
         return f"{minutes:g} 分钟"
+    if language == "en":
+        unit = "second" if duration_seconds == 1 else "seconds"
+        return f"{duration_seconds:g} {unit}"
     return f"{duration_seconds:g} 秒"
 
 
@@ -1842,6 +1957,8 @@ def build_parser() -> argparse.ArgumentParser:
         sub = subparsers.add_parser(name)
         sub.add_argument("--task-json")
         sub.add_argument("--task-file")
+        if name == "confirm-text":
+            sub.add_argument("--language", choices=("zh", "en"), default=None)
         if name == "confirm":
             sub.add_argument("--confirm-monitor", action="store_true")
             sub.add_argument("--confirmation-token")
@@ -1850,6 +1967,7 @@ def build_parser() -> argparse.ArgumentParser:
     live_confirm.add_argument("--task-json")
     live_confirm.add_argument("--task-file")
     live_confirm.add_argument("--duration-seconds", type=float)
+    live_confirm.add_argument("--language", choices=("zh", "en"), default=None)
 
     eval_pnl = subparsers.add_parser("evaluate-pnl")
     eval_pnl.add_argument("--task-json")
@@ -1914,10 +2032,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "confirm-text":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
-            _print_json(prepare_confirmation(task))
+            _print_json(prepare_confirmation(task, language=args.language))
         elif args.command == "confirm-text-live":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
-            _print_json(prepare_live_confirmation(task, duration_seconds=args.duration_seconds))
+            _print_json(
+                prepare_live_confirmation(
+                    task,
+                    duration_seconds=args.duration_seconds,
+                    language=args.language,
+                )
+            )
         elif args.command == "evaluate-pnl":
             task = _read_json_arg(args.task_json, args.task_file, name="task")
             positions = _read_json_arg(args.positions_json, args.positions_file, name="positions")

@@ -55,8 +55,9 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("profile is always required", skill_text)
         self.assertIn("metric must be `unrealized_pnl`", skill_text)
         self.assertIn("dry-run commands still write local SQLite task state and events", skill_text)
-        self.assertIn("不要下单", skill_text)
-        self.assertIn("BTCUSDT 多单未实现盈利大于 50", skill_text)
+        self.assertIn("Do not submit orders", skill_text)
+        self.assertIn("Close the BTCUSDT long position automatically", skill_text)
+        self.assertIn("unrealized PnL is above 50", skill_text)
 
     def test_skill_documents_combined_monitor_and_live_run_flow(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
@@ -67,14 +68,20 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("combined confirmation", skill_text)
         self.assertIn("matched live position", skill_text)
         self.assertIn("detailed live position snapshot", skill_text)
-        self.assertIn("未返回", skill_text)
+        self.assertIn("not returned", skill_text)
         self.assertIn("finite `duration_seconds`", skill_text)
         self.assertIn("--duration-seconds", skill_text)
-        self.assertNotIn("运行 720 轮", skill_text)
+        self.assertNotIn("720 iterations", skill_text)
         self.assertIn(
             "confirm-and-run-loop",
             manifest["routing"]["domains"]["pnl_live_runner"]["commands"],
         )
+
+    def test_skill_body_uses_english_except_localized_confirmation_word(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        without_allowed_reply_word = skill_text.replace("确认", "")
+
+        self.assertIsNone(re.search(r"[\u4e00-\u9fff]", without_allowed_reply_word))
 
     def test_skill_documents_price_threshold_tasks_are_routed_out(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")

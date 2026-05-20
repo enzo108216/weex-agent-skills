@@ -23,15 +23,14 @@ from weex_profile_language import resolve_language
 from weex_trade_data_aggregator import AggregationInputError, TradeDataAggregator
 
 
-CONFIRMATION_REPLY_TEXT = "确认"
-
-
 CONFIRMATION_PROMPTS = {
     "zh": {
-        "reply_instruction": f"如果你接受上述风险并要继续，请回复：{CONFIRMATION_REPLY_TEXT}",
+        "reply_text": "确认",
+        "reply_instruction": "如果你接受上述风险并要继续，请回复：确认",
     },
     "en": {
-        "reply_instruction": f"If you accept the risks and want to continue, reply: {CONFIRMATION_REPLY_TEXT}",
+        "reply_text": "confirm",
+        "reply_instruction": "If you accept the risks and want to continue, reply: confirm",
     },
 }
 
@@ -69,7 +68,7 @@ def _build_user_confirmation(language: str | None) -> dict[str, str]:
     prompt = CONFIRMATION_PROMPTS[resolved_language]
     return {
         "language": resolved_language,
-        "reply_text": CONFIRMATION_REPLY_TEXT,
+        "reply_text": prompt["reply_text"],
         "reply_instruction": prompt["reply_instruction"],
     }
 

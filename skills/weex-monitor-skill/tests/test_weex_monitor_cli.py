@@ -311,6 +311,35 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertNotIn("--confirm-monitor", text)
         self.assertNotIn("--confirm-live", text)
 
+    def test_english_confirmation_text_uses_simple_localized_reply_word(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": "<",
+                "threshold": "0",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        text = monitor.render_confirmation_text(task_json, now_ms=1000, language="en")
+
+        self.assertIn("Automated Monitor Confirmation", text)
+        self.assertIn("Monitor target: BTCUSDT long position", text)
+        self.assertIn("Trigger condition: Unrealized PnL < 0", text)
+        self.assertIn("Reply: confirm", text)
+        self.assertNotIn("Reply: 确认", text)
+        self.assertNotIn("请回复", text)
+        self.assertNotIn("--confirm-monitor", text)
+        self.assertNotIn("--confirm-live", text)
+
     def test_confirmation_text_binds_close_quantity_semantics(self) -> None:
         fixed_quantity_task = {
             "task_type": "position_pnl_monitor",
@@ -469,6 +498,59 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("可平数量: 未返回", prepared["confirmation_text"])
         self.assertIn("强平价: 未返回", prepared["confirmation_text"])
         self.assertIn("账户可用余额: 未返回", prepared["confirmation_text"])
+
+    def test_english_live_confirmation_marks_missing_position_details_as_not_returned(self) -> None:
+        task_json = {
+            "task_id": "mon_live_confirm_missing_details_en",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "frequency_seconds": 5,
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.01",
+                    "unrealized_pnl": "12.34",
+                }
+            ],
+            "degraded_reasons": [],
+            "partial": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(monitor, "_run_json_command", return_value=account_payload):
+                    prepared = monitor.prepare_live_confirmation(
+                        task_json,
+                        duration_seconds=3600,
+                        now_ms=1000,
+                        language="en",
+                    )
+
+        self.assertIn("entry price: not returned", prepared["confirmation_text"])
+        self.assertIn("mark/latest price: not returned", prepared["confirmation_text"])
+        self.assertIn("leverage: not returned", prepared["confirmation_text"])
+        self.assertIn("margin mode: not returned", prepared["confirmation_text"])
+        self.assertIn("closable quantity: not returned", prepared["confirmation_text"])
+        self.assertIn("liquidation price: not returned", prepared["confirmation_text"])
+        self.assertIn("account available balance: not returned", prepared["confirmation_text"])
+        self.assertNotIn("未返回", prepared["confirmation_text"])
+        self.assertEqual(prepared["live_position_confirmation"]["entry_price"], "not returned")
+        self.assertEqual(prepared["live_position_confirmation"]["account_available_balance"], "not returned")
 
     def test_live_confirmation_requires_matching_live_position(self) -> None:
         task_json = {
@@ -750,7 +832,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(loop_result["triggered_count"], 1)
         self.assertEqual(tasks[0]["status"], "triggered")
         self.assertIn("thread_report", loop_result["iterations"][0]["results"][0])
-        self.assertIn("授权使用真实账户", loop_result["iterations"][0]["results"][0]["thread_report"])
+        self.assertIn("Real-account authorization is required", loop_result["iterations"][0]["results"][0]["thread_report"])
+        self.assertNotIn("授权使用真实账户", loop_result["iterations"][0]["results"][0]["thread_report"])
         self.assertEqual(
             [event["event_type"] for event in events],
             ["task_confirmation_rendered", "task_confirmed", "dry_run_evaluated", "dry_run_triggered"],
