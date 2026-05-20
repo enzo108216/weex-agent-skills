@@ -83,6 +83,7 @@ Do not expand this skill to price-threshold monitors, open positions, add margin
 ## Operating Rules
 
 - A task starts as `draft`; `confirm-text` renders localized monitor confirmation text, including the required simple reply word (`确认` or `confirm`), writes the draft locally, and returns a `confirmation_token`.
+- Always pass `--language zh` for Chinese user copy. Always pass `--language en` for English user copy when calling `confirm-text` or `confirm-text-live`; choose from the current user's language context, and do not rely on the script default language for user-facing confirmation copy.
 - A task becomes `active` only after the caller passes both `--confirm-monitor` and the matching `--confirmation-token`; do not activate a task that has not first gone through `confirm-text`.
 - PnL monitors default to `5` seconds and reject values below `3` seconds.
 - Do not create local price-threshold monitors. WEEX official conditional orders should be used for price-based conditional closes.

@@ -83,6 +83,13 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
 
         self.assertIsNone(re.search(r"[\u4e00-\u9fff]", without_allowed_reply_word))
 
+    def test_skill_requires_explicit_confirmation_language_selection(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("Always pass `--language zh` for Chinese user copy", skill_text)
+        self.assertIn("Always pass `--language en` for English user copy", skill_text)
+        self.assertIn("do not rely on the script default language", skill_text)
+
     def test_skill_documents_price_threshold_tasks_are_routed_out(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
