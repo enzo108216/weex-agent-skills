@@ -124,7 +124,7 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 
 - Never send mutating requests without `--confirm-live`
 - Every natural-language order preview flow must return structured risk output before the order can be confirmed
-- For natural-language confirmations, show only the localized `user_confirmation.reply_text` to the user and keep `intent_id` plus `risk_signature` internal to the execution step
+- For natural-language confirmations, show only `user_confirmation.reply_text` to the user and keep `intent_id` plus `risk_signature` internal to the execution step. The reply text is standardized across every UI language; language selection only changes surrounding explanatory text.
 - Pending order intents expire after a short TTL and must be regenerated when they are stale
 - Confirmation must bind to the latest preview via `intent_id` and `risk_signature`; do not reuse old confirmation tokens
 - Default flow is direct live execution; there is no mandatory dry-run phase

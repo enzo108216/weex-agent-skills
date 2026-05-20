@@ -306,6 +306,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("多单", text)
         self.assertIn("未实现盈亏 > 50", text)
         self.assertIn("授权使用真实账户", text)
+        self.assertIn("请回复：确认", text)
+        self.assertNotIn("确认启动监控", text)
         self.assertNotIn("--confirm-monitor", text)
         self.assertNotIn("--confirm-live", text)
 
@@ -410,6 +412,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("账户可用余额: 123.45", prepared["confirmation_text"])
         self.assertIn("确认快照时间:", prepared["confirmation_text"])
         self.assertIn("授权使用真实账户", prepared["confirmation_text"])
+        self.assertIn("请回复：确认", prepared["confirmation_text"])
+        self.assertNotIn("确认启动监控", prepared["confirmation_text"])
         self.assertNotIn("--confirm-live", prepared["confirmation_text"])
         self.assertNotIn("--confirm-monitor", prepared["confirmation_text"])
         self.assertEqual(tasks[0]["live_position_confirmation"]["quantity"], "0.01")
@@ -1243,7 +1247,8 @@ class MonitorTaskTests(unittest.TestCase):
     def test_run_live_loop_records_actual_iteration_timestamps(self) -> None:
         with mock.patch.object(monitor, "_now_ms", side_effect=[2000, 7000]):
             with mock.patch.object(monitor, "run_live_once", return_value=[]) as run_once:
-                monitor.run_live_loop(confirm_live=True, iterations=2, sleep_seconds=0)
+                with mock.patch.object(monitor, "_has_active_pnl_tasks", side_effect=[True, False]):
+                    monitor.run_live_loop(confirm_live=True, iterations=2, sleep_seconds=0)
 
         self.assertEqual(
             [call.kwargs["now_ms"] for call in run_once.call_args_list],

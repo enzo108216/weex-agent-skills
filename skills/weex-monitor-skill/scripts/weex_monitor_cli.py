@@ -26,6 +26,7 @@ VALID_POSITION_SIDES = {"LONG", "SHORT"}
 VALID_OPERATORS = {">", ">=", "<", "<="}
 VALID_CALLBACK_TYPES = {"current_thread"}
 VALID_MARKETS = {"futures"}
+CONFIRMATION_REPLY_TEXT = "确认"
 
 
 class MonitorInputError(ValueError):
@@ -379,6 +380,7 @@ def render_confirmation_text(
         f"触发动作: {_action_label(action)}",
         f"回报位置: {task['callback']['type']}",
         "确认后会先保存本地监控规则；只有在你授权使用真实账户后，才会读取真实仓位并在触发时提交真实委托。",
+        f"如果你确认上述监控设置与授权，请回复：{CONFIRMATION_REPLY_TEXT}",
     ]
     parts.insert(6, f"检查频率: 每 {task['frequency_seconds']} 秒")
     if duration_seconds is not None:

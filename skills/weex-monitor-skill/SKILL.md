@@ -10,7 +10,7 @@ Read `manifest.json` for routing rules. Open `file-index.json` only when you nee
 
 This skill owns WEEX position-PnL automated monitor orchestration. It converts a constrained PnL monitor intent into a task DSL, renders an `自动化监控` confirmation with a confirmation token, requires explicit monitor confirmation, stores local task state in SQLite, appends audit events, evaluates local PnL triggers, can activate and start a bounded live PnL loop from one combined user confirmation, can run live PnL checks or a bounded live loop through `weex-trader-skill`, and reports results to the current thread.
 
-This skill does not own API credentials, profile storage, vault unlock, REST signing, or direct REST submission. Those capabilities stay in `weex-trader-skill`. Live monitor commands are orchestration wrappers around `weex-trader-skill` guard flows and require internal live-execution flags. Do not use internal flag names in user-facing wording; tell the user plainly that they are authorizing real account access and, if triggered, a real close order. A single user confirmation may authorize monitor activation and live execution only when the confirmation text includes the matched live position, close action, final task details, and real-account/order authority; PnL live loops must also include a finite live duration.
+This skill does not own API credentials, profile storage, vault unlock, REST signing, or direct REST submission. Those capabilities stay in `weex-trader-skill`. Live monitor commands are orchestration wrappers around `weex-trader-skill` guard flows and require internal live-execution flags. Do not use internal flag names in user-facing wording; tell the user plainly that they are authorizing real account access and, if triggered, a real close order. A single user confirmation may authorize monitor activation and live execution only when the confirmation text includes the matched live position, close action, final task details, and real-account/order authority; PnL live loops must also include a finite live duration. User-facing monitor confirmation must ask for exactly `确认`; do not ask for longer phrases such as `确认启动监控`.
 
 ## AI natural-language parsing
 
@@ -33,7 +33,7 @@ Examples:
 - User: `BTCUSDT 多单未实现盈利大于 50 时自动平多，每 5 秒检查一次。`
   - DSL: `position_pnl_monitor`, `profile=<saved-profile>`, `symbol=BTCUSDT`, `position_side=LONG`, `condition.metric=unrealized_pnl`, `condition.operator=>`, `condition.threshold=50`, `action.target=LONG`, `frequency_seconds=5`.
 - User: `创建并启动 BTCUSDT 多单收益监控，未实现盈利大于 50 时自动平多，运行 1 小时。`
-  - DSL: same `position_pnl_monitor` as above plus live run scope `duration_seconds=3600`; first call `confirm-text-live` so the user sees the matched live position, then after the user confirms the plain-language summary, use `confirm-and-run-loop` with the internal confirmation token and live-execution flag.
+  - DSL: same `position_pnl_monitor` as above plus live run scope `duration_seconds=3600`; first call `confirm-text-live` so the user sees the matched live position, then after the user replies exactly `确认` to the plain-language summary, use `confirm-and-run-loop` with the internal confirmation token and live-execution flag.
 
 ## Supported Scenarios
 
@@ -82,7 +82,7 @@ Do not expand this skill to price-threshold monitors, open positions, add margin
 
 ## Operating Rules
 
-- A task starts as `draft`; `confirm-text` renders the `自动化监控` confirmation text, writes the draft locally, and returns a `confirmation_token`.
+- A task starts as `draft`; `confirm-text` renders the `自动化监控` confirmation text, including `请回复：确认`, writes the draft locally, and returns a `confirmation_token`.
 - A task becomes `active` only after the caller passes both `--confirm-monitor` and the matching `--confirmation-token`; do not activate a task that has not first gone through `confirm-text`.
 - PnL monitors default to `5` seconds and reject values below `3` seconds.
 - Do not create local price-threshold monitors. WEEX official conditional orders should be used for price-based conditional closes.
@@ -93,7 +93,7 @@ Do not expand this skill to price-threshold monitors, open positions, add margin
 - `run-once` requires `--dry-run` and must never submit a live order.
 - `run-loop --dry-run` consumes caller-supplied position snapshots and must never submit a live order.
 - Live `run-loop` runs a bounded live loop for active PnL monitors. It uses the smallest active task `frequency_seconds` as the default sleep interval unless `--sleep-seconds` is provided, delegates every live account read and order action to `weex-trader-skill`, and requires explicit user authorization for real account access and real order execution.
-- If the user asks to create and start a PnL monitor in one flow, prefer one combined confirmation summary over separate chat confirmations. The summary must include the exact matched live position, detailed live position snapshot fields, task DSL details, finite `duration_seconds` or absolute expiry time, real-account/order authority, and one-shot close behavior. Use `confirm-text-live` to collect the live position and render that summary; after the user confirms it, call `confirm-and-run-loop` with the internal confirmation token, live-execution flag, and duration.
+- If the user asks to create and start a PnL monitor in one flow, prefer one combined confirmation summary over separate chat confirmations. The summary must include the exact matched live position, detailed live position snapshot fields, task DSL details, finite `duration_seconds` or absolute expiry time, real-account/order authority, and one-shot close behavior, and it must ask the user to reply exactly `确认`. Use `confirm-text-live` to collect the live position and render that summary; after the user replies `确认`, call `confirm-and-run-loop` with the internal confirmation token, live-execution flag, and duration.
 - `confirm-and-run-loop` is only for `position_pnl_monitor`, requires a matching monitor confirmation token from `confirm-text-live`, requires internal live-execution authorization, requires finite `--duration-seconds > 0`, converts duration to internal iterations from `frequency_seconds`, activates the task, then runs only that task through the bounded live loop.
 - Triggered dry-runs may produce a live delegate plan, but that plan is only a summary for `weex-trader-skill` and is not an execution request.
 - `run-live-once` requires internal live-execution authorization; it only runs active PnL tasks that still match a consumed monitor confirmation token, collects live account risk data through `weex-trader-skill`, evaluates active PnL monitors, re-collects and revalidates the target position before submission, atomically claims the task as `executing`, then executes the market close through `weex-trader-skill preview-order` and `confirm-order`.

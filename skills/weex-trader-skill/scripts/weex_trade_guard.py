@@ -23,14 +23,15 @@ from weex_profile_language import resolve_language
 from weex_trade_data_aggregator import AggregationInputError, TradeDataAggregator
 
 
+CONFIRMATION_REPLY_TEXT = "确认"
+
+
 CONFIRMATION_PROMPTS = {
     "zh": {
-        "reply_text": "确认",
-        "reply_instruction": "如果你接受上述风险并要继续，请回复：确认",
+        "reply_instruction": f"如果你接受上述风险并要继续，请回复：{CONFIRMATION_REPLY_TEXT}",
     },
     "en": {
-        "reply_text": "confirm",
-        "reply_instruction": "If you accept the risks and want to continue, reply: confirm",
+        "reply_instruction": f"If you accept the risks and want to continue, reply: {CONFIRMATION_REPLY_TEXT}",
     },
 }
 
@@ -68,7 +69,7 @@ def _build_user_confirmation(language: str | None) -> dict[str, str]:
     prompt = CONFIRMATION_PROMPTS[resolved_language]
     return {
         "language": resolved_language,
-        "reply_text": prompt["reply_text"],
+        "reply_text": CONFIRMATION_REPLY_TEXT,
         "reply_instruction": prompt["reply_instruction"],
     }
 
@@ -188,7 +189,9 @@ def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, A
             "quantity": raw_order["quantity"],
             "price": raw_order.get("price"),
             "timeInForce": raw_order.get("time_in_force"),
-            "newClientOrderId": raw_order.get("new_client_order_id") or raw_order.get("newClientOrderId"),
+            "newClientOrderId": raw_order.get("new_client_order_id")
+            or raw_order.get("newClientOrderId")
+            or contract_api.generate_client_oid(),
             "tpTriggerPrice": raw_order.get("tp_trigger_price"),
             "slTriggerPrice": raw_order.get("sl_trigger_price"),
         }
