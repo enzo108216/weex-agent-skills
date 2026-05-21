@@ -450,6 +450,147 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["live_position_confirmation"]["current_price"], "78123.4")
         self.assertEqual(events[0]["payload"]["live_position_confirmation"]["quantity"], "0.01")
 
+    def test_live_confirmation_defaults_codex_reporting_to_one_minute(self) -> None:
+        task_json = {
+            "task_id": "mon_live_report_default",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "frequency_seconds": 5,
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.01",
+                    "unrealized_pnl": "12.34",
+                }
+            ],
+            "degraded_reasons": [],
+            "partial": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(monitor, "_run_json_command", return_value=account_payload):
+                    prepared = monitor.prepare_live_confirmation(
+                        task_json,
+                        duration_seconds=3600,
+                        now_ms=1000,
+                    )
+
+        reporting = prepared["reporting"]
+        agent_reporting = prepared["agent_reporting"]
+        self.assertTrue(reporting["enabled"])
+        self.assertEqual(reporting["interval_seconds"], 60)
+        self.assertEqual(prepared["task"]["codex_reporting"]["interval_seconds"], 60)
+        self.assertEqual(prepared["task"]["agent_reporting"]["interval_seconds"], 60)
+        self.assertIn("状态汇报: 每 1 分钟", prepared["confirmation_text"])
+        self.assertIn("mon_live_report_default", reporting["heartbeat_prompt"])
+        self.assertIn("events --task-id mon_live_report_default", reporting["heartbeat_prompt"])
+        self.assertIn("Do not output HTML entities", reporting["heartbeat_prompt"])
+        self.assertIn("less than", reporting["heartbeat_prompt"])
+        self.assertIn("小于", reporting["heartbeat_prompt"])
+        self.assertNotIn("&lt;", reporting["heartbeat_prompt"])
+        self.assertNotIn("&gt;", reporting["heartbeat_prompt"])
+        self.assertIn("codex", agent_reporting["runtimes"])
+        self.assertIn("claude_code", agent_reporting["runtimes"])
+        self.assertIn("openclaw", agent_reporting["runtimes"])
+        self.assertEqual(agent_reporting["runtimes"]["claude_code"]["type"], "claude_code_loop")
+        self.assertIn("/loop 1m", agent_reporting["runtimes"]["claude_code"]["loop_command"])
+        self.assertIn(
+            "events --task-id mon_live_report_default",
+            agent_reporting["runtimes"]["claude_code"]["loop_prompt"],
+        )
+        self.assertIn(
+            "Do not output HTML entities",
+            agent_reporting["runtimes"]["claude_code"]["loop_prompt"],
+        )
+        self.assertEqual(agent_reporting["runtimes"]["openclaw"]["type"], "openclaw_cron")
+        self.assertEqual(
+            agent_reporting["runtimes"]["openclaw"]["create_job_args"][:8],
+            [
+                "openclaw",
+                "cron",
+                "add",
+                "--name",
+                "WEEX monitor mon_live_report_default status",
+                "--every",
+                "1m",
+                "--session",
+            ],
+        )
+        self.assertIn(
+            "events --task-id mon_live_report_default",
+            agent_reporting["runtimes"]["openclaw"]["message"],
+        )
+        self.assertIn(
+            "Do not output HTML entities",
+            agent_reporting["runtimes"]["openclaw"]["message"],
+        )
+
+    def test_live_confirmation_accepts_explicit_codex_reporting_interval(self) -> None:
+        task_json = {
+            "task_id": "mon_live_report_explicit",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "frequency_seconds": 5,
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.01",
+                    "unrealized_pnl": "12.34",
+                }
+            ],
+            "degraded_reasons": [],
+            "partial": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(monitor, "_run_json_command", return_value=account_payload):
+                    prepared = monitor.prepare_live_confirmation(
+                        task_json,
+                        duration_seconds=3600,
+                        reporting_interval_seconds=120,
+                        now_ms=1000,
+                    )
+
+        self.assertEqual(prepared["reporting"]["interval_seconds"], 120)
+        self.assertEqual(prepared["reporting"]["rrule"], "FREQ=MINUTELY;INTERVAL=2")
+        self.assertEqual(prepared["agent_reporting"]["runtimes"]["claude_code"]["interval"], "2m")
+        self.assertIn("/loop 2m", prepared["agent_reporting"]["runtimes"]["claude_code"]["loop_command"])
+        self.assertIn("--every", prepared["agent_reporting"]["runtimes"]["openclaw"]["create_job_args"])
+        self.assertIn("2m", prepared["agent_reporting"]["runtimes"]["openclaw"]["create_job_args"])
+        self.assertIn("状态汇报: 每 2 分钟", prepared["confirmation_text"])
+
     def test_live_confirmation_text_marks_missing_position_details_as_not_returned(self) -> None:
         task_json = {
             "task_id": "mon_live_confirm_missing_details",
@@ -1170,6 +1311,9 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(result["loop_result"]["live"], True)
         self.assertEqual(result["loop_result"]["iterations_requested"], 3)
         self.assertEqual(result["loop_result"]["submitted_count"], 0)
+        self.assertTrue(result["reporting"]["enabled"])
+        self.assertEqual(result["reporting"]["interval_seconds"], 60)
+        self.assertIn("mon_pnl_combined", result["reporting"]["heartbeat_prompt"])
         self.assertEqual(runner.call_count, 3)
         self.assertEqual(tasks[0]["status"], "active")
         self.assertIn("task_confirmed", [event["event_type"] for event in events])

@@ -77,6 +77,24 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
             manifest["routing"]["domains"]["pnl_live_runner"]["commands"],
         )
 
+    def test_skill_documents_codex_heartbeat_status_reporting(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("Codex heartbeat", skill_text)
+        self.assertIn("default reporting interval is `60` seconds", skill_text)
+        self.assertIn("reporting_interval_seconds", skill_text)
+        self.assertIn("automation_update", skill_text)
+        self.assertIn("agent_reporting", skill_text)
+        self.assertIn("Claude Code", skill_text)
+        self.assertIn("`/loop`", skill_text)
+        self.assertIn("OpenClaw", skill_text)
+        self.assertIn("`openclaw cron add`", skill_text)
+        self.assertIn("current value", skill_text)
+        self.assertIn("terminal task state", skill_text)
+        self.assertIn("Do not output HTML entities", skill_text)
+        self.assertIn("`&lt;`", skill_text)
+        self.assertIn("less than", skill_text)
+
     def test_skill_body_uses_english_except_localized_confirmation_word(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
         without_allowed_reply_word = skill_text.replace("确认", "")

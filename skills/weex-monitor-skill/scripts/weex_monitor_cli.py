@@ -19,6 +19,10 @@ from typing import Any
 
 MIN_FREQUENCY_SECONDS = 3
 DEFAULT_FREQUENCY_SECONDS = 5
+DEFAULT_AGENT_REPORTING_INTERVAL_SECONDS = 60
+MIN_AGENT_REPORTING_INTERVAL_SECONDS = 60
+DEFAULT_CODEX_REPORTING_INTERVAL_SECONDS = DEFAULT_AGENT_REPORTING_INTERVAL_SECONDS
+MIN_CODEX_REPORTING_INTERVAL_SECONDS = MIN_AGENT_REPORTING_INTERVAL_SECONDS
 TASK_STORE_FILENAME = "monitor-tasks.json"
 TASK_DB_FILENAME = "monitor-tasks.sqlite3"
 VALID_TASK_TYPES = {"position_pnl_monitor"}
@@ -259,6 +263,7 @@ def prepare_live_confirmation(
     raw_task: dict[str, Any],
     *,
     duration_seconds: Any = None,
+    reporting_interval_seconds: Any = None,
     now_ms: int | None = None,
     language: str | None = None,
 ) -> dict[str, Any]:
@@ -280,6 +285,11 @@ def prepare_live_confirmation(
     task["status"] = "draft"
     task["live_position_confirmation"] = live_position_confirmation
     task["live_run_duration_seconds"] = duration_seconds_float
+    reporting_interval = _normalize_reporting_interval_seconds(reporting_interval_seconds)
+    agent_reporting = build_agent_reporting_metadata(task, interval_seconds=reporting_interval)
+    reporting = agent_reporting["runtimes"]["codex"]
+    task["codex_reporting"] = reporting
+    task["agent_reporting"] = agent_reporting
     confirmation_text = render_confirmation_text(
         task,
         now_ms=rendered_at_ms,
@@ -296,6 +306,8 @@ def prepare_live_confirmation(
         "confirmation_fingerprint": fingerprint,
         "live_position_confirmation": live_position_confirmation,
         "duration_seconds": duration_seconds_float,
+        "reporting": reporting,
+        "agent_reporting": agent_reporting,
     }
     with _connect() as conn:
         _ensure_can_write_draft_task(conn, task)
@@ -423,6 +435,17 @@ def render_confirmation_text(
             parts.insert(7, f"Run duration: {_duration_label(float(duration_seconds), language=resolved_language)}")
         else:
             parts.insert(7, f"运行时长: {_duration_label(float(duration_seconds))}")
+    reporting = raw_task.get("codex_reporting")
+    if isinstance(reporting, dict) and reporting.get("enabled"):
+        interval_seconds = _normalize_codex_reporting_interval_seconds(reporting.get("interval_seconds"))
+        reporting_line = (
+            f"Status reporting: every {_duration_label(float(interval_seconds), language=resolved_language)} "
+            "via Codex thread heartbeat"
+            if resolved_language == "en"
+            else f"状态汇报: 每 {_duration_label(float(interval_seconds))}，通过 Codex thread heartbeat"
+        )
+        insert_index = 8 if duration_seconds is not None else 7
+        parts.insert(insert_index, reporting_line)
     if position_snapshot is not None:
         if resolved_language == "en":
             parts.insert(
@@ -641,6 +664,7 @@ def confirm_and_run_live_loop(
     confirmation_token: str | None,
     confirm_live: bool,
     duration_seconds: Any = None,
+    reporting_interval_seconds: Any = None,
     sleep_seconds: float | None = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
@@ -674,13 +698,138 @@ def confirm_and_run_live_loop(
         sleep_seconds=sleep_seconds,
         now_ms=now_ms,
     )
+    agent_reporting = _agent_reporting_metadata_from_task(
+        confirmed,
+        reporting_interval_seconds=reporting_interval_seconds,
+    )
+    reporting = agent_reporting["runtimes"]["codex"]
     return {
         "combined_confirmation": True,
         "duration_seconds": duration_seconds_float,
         "derived_iterations": iterations,
         "confirmed_task": confirmed,
         "loop_result": loop_result,
+        "reporting": reporting,
+        "agent_reporting": agent_reporting,
     }
+
+
+def build_agent_reporting_metadata(raw_task: dict[str, Any], *, interval_seconds: int) -> dict[str, Any]:
+    task = normalize_task(raw_task)
+    interval = _normalize_reporting_interval_seconds(interval_seconds)
+    return {
+        "enabled": True,
+        "type": "agent_status_reporting",
+        "interval_seconds": interval,
+        "task_id": task["task_id"],
+        "status_prompt": _build_status_reporting_prompt(task, runtime_label="agent session"),
+        "runtimes": {
+            "codex": build_codex_reporting_metadata(task, interval_seconds=interval),
+            "claude_code": build_claude_code_reporting_metadata(task, interval_seconds=interval),
+            "openclaw": build_openclaw_reporting_metadata(task, interval_seconds=interval),
+        },
+    }
+
+
+def build_codex_reporting_metadata(raw_task: dict[str, Any], *, interval_seconds: int) -> dict[str, Any]:
+    task = normalize_task(raw_task)
+    interval = _normalize_reporting_interval_seconds(interval_seconds)
+    interval_minutes = interval // 60
+    task_id = task["task_id"]
+    prompt = _build_status_reporting_prompt(task, runtime_label="Codex thread")
+    return {
+        "enabled": True,
+        "type": "codex_thread_heartbeat",
+        "interval_seconds": interval,
+        "rrule": f"FREQ=MINUTELY;INTERVAL={interval_minutes}",
+        "name": f"WEEX monitor {task_id} status",
+        "task_id": task_id,
+        "heartbeat_prompt": prompt,
+    }
+
+
+def build_claude_code_reporting_metadata(raw_task: dict[str, Any], *, interval_seconds: int) -> dict[str, Any]:
+    task = normalize_task(raw_task)
+    interval = _normalize_reporting_interval_seconds(interval_seconds)
+    interval_label = _minute_interval_token(interval)
+    task_id = task["task_id"]
+    prompt = _build_status_reporting_prompt(task, runtime_label="Claude Code session")
+    return {
+        "enabled": True,
+        "type": "claude_code_loop",
+        "interval_seconds": interval,
+        "interval": interval_label,
+        "task_id": task_id,
+        "name": f"WEEX monitor {task_id} status",
+        "loop_prompt": prompt,
+        "loop_command": f"/loop {interval_label} {_one_line(prompt)}",
+        "list_instruction": "Ask Claude Code: what scheduled tasks do I have?",
+        "cancel_instruction": f"Ask Claude Code to cancel the WEEX monitor {task_id} status loop.",
+    }
+
+
+def build_openclaw_reporting_metadata(raw_task: dict[str, Any], *, interval_seconds: int) -> dict[str, Any]:
+    task = normalize_task(raw_task)
+    interval = _normalize_reporting_interval_seconds(interval_seconds)
+    interval_label = _minute_interval_token(interval)
+    task_id = task["task_id"]
+    name = f"WEEX monitor {task_id} status"
+    prompt = _build_status_reporting_prompt(task, runtime_label="OpenClaw session")
+    return {
+        "enabled": True,
+        "type": "openclaw_cron",
+        "interval_seconds": interval,
+        "interval": interval_label,
+        "task_id": task_id,
+        "name": name,
+        "message": prompt,
+        "create_job_args": [
+            "openclaw",
+            "cron",
+            "add",
+            "--name",
+            name,
+            "--every",
+            interval_label,
+            "--session",
+            "current",
+            "--message",
+            prompt,
+        ],
+        "list_jobs_args": ["openclaw", "cron", "list"],
+        "recent_runs_args": ["openclaw", "cron", "runs", "--id", "<job-id>", "--limit", "20"],
+        "remove_job_args": ["openclaw", "cron", "remove", "<job-id>"],
+        "heartbeat_fallback": {
+            "file": "HEARTBEAT.md",
+            "task_name": name,
+            "note": "Use only when the OpenClaw heartbeat cadence can satisfy the requested interval.",
+            "message": prompt,
+        },
+    }
+
+
+def _build_status_reporting_prompt(raw_task: dict[str, Any], *, runtime_label: str) -> str:
+    task = normalize_task(raw_task)
+    skill_root = Path(__file__).resolve().parents[1]
+    task_id = task["task_id"]
+    return (
+        f"Report WEEX monitor status for the current {runtime_label}.\n"
+        f"Task id: {task_id}\n"
+        f"Skill directory: {skill_root}\n"
+        "Read-only commands to run from the skill directory:\n"
+        f"- python3 scripts/weex_monitor_cli.py list\n"
+        f"- python3 scripts/weex_monitor_cli.py events --task-id {task_id}\n"
+        "Find the task by task_id. Summarize task status, symbol, position side, condition, "
+        "latest evaluated current_value, threshold, trigger state, and reason. If the latest "
+        "events include exchange_response, live_order_result, close_order, or error details, "
+        "include those. Do not output HTML entities or entity spellings for less-than, greater-than, or "
+        "ampersand characters; render "
+        "comparison operators as readable words in the response language, for example less than "
+        "or 小于 for '<', greater than or 大于 for '>', greater than or equal to for '>=', and "
+        "less than or equal to for '<='. Do not submit, amend, or cancel WEEX orders. If task status is not "
+        "active or executing, report the final state and stop or pause this status reporting job "
+        "when the runtime automation tool allows it."
+    )
 
 
 def build_live_delegate_plan(
@@ -1747,6 +1896,69 @@ def _normalize_duration_seconds(value: Any) -> float:
     return float(duration)
 
 
+def _normalize_reporting_interval_seconds(value: Any) -> int:
+    if value is None:
+        return DEFAULT_AGENT_REPORTING_INTERVAL_SECONDS
+    try:
+        interval = int(value)
+    except (TypeError, ValueError) as exc:
+        raise MonitorInputError("reporting_interval_seconds must be an integer") from exc
+    if interval < MIN_AGENT_REPORTING_INTERVAL_SECONDS:
+        raise MonitorInputError(
+            f"reporting_interval_seconds must be >= {MIN_AGENT_REPORTING_INTERVAL_SECONDS}"
+        )
+    if interval % 60 != 0:
+        raise MonitorInputError("reporting_interval_seconds must be a whole-minute interval")
+    return interval
+
+
+def _normalize_codex_reporting_interval_seconds(value: Any) -> int:
+    return _normalize_reporting_interval_seconds(value)
+
+
+def _minute_interval_token(interval_seconds: int) -> str:
+    interval = _normalize_reporting_interval_seconds(interval_seconds)
+    return f"{interval // 60}m"
+
+
+def _one_line(value: str) -> str:
+    return " ".join(str(value).split())
+
+
+def _agent_reporting_metadata_from_task(
+    raw_task: dict[str, Any],
+    *,
+    reporting_interval_seconds: Any = None,
+) -> dict[str, Any]:
+    if reporting_interval_seconds is not None:
+        return build_agent_reporting_metadata(
+            raw_task,
+            interval_seconds=_normalize_reporting_interval_seconds(reporting_interval_seconds),
+        )
+    agent_reporting = raw_task.get("agent_reporting")
+    if isinstance(agent_reporting, dict) and agent_reporting.get("enabled"):
+        return dict(agent_reporting)
+    reporting = raw_task.get("codex_reporting")
+    if isinstance(reporting, dict) and reporting.get("enabled"):
+        interval = _normalize_reporting_interval_seconds(reporting.get("interval_seconds"))
+        return build_agent_reporting_metadata(raw_task, interval_seconds=interval)
+    return build_agent_reporting_metadata(
+        raw_task,
+        interval_seconds=DEFAULT_AGENT_REPORTING_INTERVAL_SECONDS,
+    )
+
+
+def _reporting_metadata_from_task(
+    raw_task: dict[str, Any],
+    *,
+    reporting_interval_seconds: Any = None,
+) -> dict[str, Any]:
+    return _agent_reporting_metadata_from_task(
+        raw_task,
+        reporting_interval_seconds=reporting_interval_seconds,
+    )["runtimes"]["codex"]
+
+
 def _normalize_language(value: str | None) -> str:
     language = str(value or "zh").strip().lower()
     if language not in VALID_LANGUAGES:
@@ -1967,6 +2179,7 @@ def build_parser() -> argparse.ArgumentParser:
     live_confirm.add_argument("--task-json")
     live_confirm.add_argument("--task-file")
     live_confirm.add_argument("--duration-seconds", type=float)
+    live_confirm.add_argument("--reporting-interval-seconds", type=int)
     live_confirm.add_argument("--language", choices=("zh", "en"), default=None)
 
     eval_pnl = subparsers.add_parser("evaluate-pnl")
@@ -2006,6 +2219,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_and_run.add_argument("--confirmation-token")
     confirm_and_run.add_argument("--confirm-live", action="store_true")
     confirm_and_run.add_argument("--duration-seconds", type=float, required=True)
+    confirm_and_run.add_argument("--reporting-interval-seconds", type=int)
     confirm_and_run.add_argument("--sleep-seconds", type=float)
 
     cancel = subparsers.add_parser("cancel")
@@ -2039,6 +2253,7 @@ def main(argv: list[str] | None = None) -> int:
                 prepare_live_confirmation(
                     task,
                     duration_seconds=args.duration_seconds,
+                    reporting_interval_seconds=args.reporting_interval_seconds,
                     language=args.language,
                 )
             )
@@ -2094,6 +2309,7 @@ def main(argv: list[str] | None = None) -> int:
                     confirmation_token=args.confirmation_token,
                     confirm_live=args.confirm_live,
                     duration_seconds=args.duration_seconds,
+                    reporting_interval_seconds=args.reporting_interval_seconds,
                     sleep_seconds=args.sleep_seconds,
                 )
             )
