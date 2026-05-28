@@ -123,7 +123,7 @@ Use this safety order for live trading tasks:
 - run `skill.preflight` first so profile, runtime, env, and GUI-routing facts are fresh before private actions
 - use a saved profile for private REST access instead of pasting credentials into ad hoc commands
 - preview the order risk first and review the returned alerts plus `user_confirmation`
-- in natural-language flows, ask the user to reply with exactly `user_confirmation.reply_text`; this value is intentionally simple and localized, such as `确认` for Chinese or `confirm` for English. Do not ask them to copy `intent_id`, `risk_signature`, or longer phrases such as "confirm order"
+- in natural-language flows, ask the user to reply with exactly `user_confirmation.reply_text`; this value is intentionally simple and localized — a single word in the user's language, such as `confirm` for English. Do not ask them to copy `intent_id`, `risk_signature`, or longer phrases such as "confirm order"
 - keep `intent_id` and `risk_signature` internal for the execution step
 - confirm only with the latest preview output plus `--confirm-live`; stale or mismatched confirmation tokens must be regenerated
 - use account-risk scan when the user wants current exposure review without an order payload

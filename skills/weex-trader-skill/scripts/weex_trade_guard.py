@@ -178,35 +178,44 @@ def _build_spot_client(profile_name: str) -> tuple[Any, Any]:
 def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
     normalized_market = str(market).strip().lower()
     if normalized_market == "futures":
+        position_side = raw_order.get("position_side") or raw_order.get("positionSide")
+        order_type = raw_order.get("order_type") or raw_order.get("type")
+        if not position_side:
+            raise AggregationInputError("futures order requires positionSide")
+        if not order_type:
+            raise AggregationInputError("futures order requires type")
         contract_api, client = _build_contract_client(profile_name)
         endpoint = contract_api.ENDPOINTS[contract_api.find_endpoint_key_by_doc_suffix("PlaceOrder")]
         body = {
             "symbol": contract_api.normalize_contract_trade_symbol(str(raw_order["symbol"])),
             "side": str(raw_order["side"]).upper(),
-            "positionSide": str(raw_order["position_side"]).upper(),
-            "type": str(raw_order["order_type"]).upper(),
+            "positionSide": str(position_side).upper(),
+            "type": str(order_type).upper(),
             "quantity": raw_order["quantity"],
             "price": raw_order.get("price"),
-            "timeInForce": raw_order.get("time_in_force"),
+            "timeInForce": raw_order.get("time_in_force") or raw_order.get("timeInForce"),
             "newClientOrderId": raw_order.get("new_client_order_id")
             or raw_order.get("newClientOrderId")
             or contract_api.generate_client_oid(),
-            "tpTriggerPrice": raw_order.get("tp_trigger_price"),
-            "slTriggerPrice": raw_order.get("sl_trigger_price"),
+            "tpTriggerPrice": raw_order.get("tp_trigger_price") or raw_order.get("tpTriggerPrice"),
+            "slTriggerPrice": raw_order.get("sl_trigger_price") or raw_order.get("slTriggerPrice"),
         }
         body = {key: value for key, value in body.items() if value not in (None, "")}
         prepared = client.prepare_request(endpoint, query={}, body=body)
         response = client.send(prepared)
     elif normalized_market == "spot":
+        order_type = raw_order.get("order_type") or raw_order.get("type")
+        if not order_type:
+            raise AggregationInputError("spot order requires type")
         spot_api, client = _build_spot_client(profile_name)
         endpoint = spot_api.ENDPOINTS[spot_api.find_endpoint_key_by_doc_suffix("PlaceOrder")]
         body = {
             "symbol": spot_api.normalize_spot_symbol(str(raw_order["symbol"])),
             "side": str(raw_order["side"]).upper(),
-            "type": str(raw_order["order_type"]).upper(),
+            "type": str(order_type).upper(),
             "quantity": raw_order["quantity"],
             "price": raw_order.get("price"),
-            "timeInForce": raw_order.get("time_in_force"),
+            "timeInForce": raw_order.get("time_in_force") or raw_order.get("timeInForce"),
         }
         body = {key: value for key, value in body.items() if value not in (None, "")}
         prepared = client.prepare_request(endpoint, query={}, body=body)

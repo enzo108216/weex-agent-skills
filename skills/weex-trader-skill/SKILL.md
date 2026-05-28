@@ -1,9 +1,10 @@
 ---
-name: weex-trader-skill
-description: Use when the user wants WEEX REST automation for contract or spot trading, market or account queries, or secure saved-profile setup and management.
 compatibility: Requires Python with requirements.lock installed, network access for WEEX REST calls, and Tk through an explicitly prepared managed GUI runtime for Windows/macOS GUI profile and vault flows.
+description: Use when the user wants WEEX REST automation for contract or spot trading, market or account queries, or secure saved-profile setup and management.
+metadata:
+    local-path: /var/folders/25/vzbzcnfx6jx58c7c00nckb8r0000gn/T/weex-local-skills-qhr5kqcc/repo/skills/weex-trader-skill
+name: weex-trader-skill
 ---
-
 # WEEX Trader Skill
 
 Read `manifest.json` for routing rules. Open `file-index.json` only for file-level guidance.
@@ -124,7 +125,7 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 
 - Never send mutating requests without `--confirm-live`
 - Every natural-language order preview flow must return structured risk output before the order can be confirmed
-- For natural-language confirmations, show only `user_confirmation.reply_text` to the user and keep `intent_id` plus `risk_signature` internal to the execution step. The reply text is intentionally simple and localized, such as `确认` for Chinese or `confirm` for English.
+- For natural-language confirmations, show only `user_confirmation.reply_text` to the user and keep `intent_id` plus `risk_signature` internal to the execution step. The reply text is intentionally simple and localized — a single word such as `confirm` for English.
 - Pending order intents expire after a short TTL and must be regenerated when they are stale
 - Confirmation must bind to the latest preview via `intent_id` and `risk_signature`; do not reuse old confirmation tokens
 - Default flow is direct live execution; there is no mandatory dry-run phase
