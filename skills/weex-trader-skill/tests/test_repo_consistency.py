@@ -313,6 +313,7 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("actions/setup-python@v6", workflow_text)
         self.assertIn("GH_CLI_VERSION", workflow_text)
         self.assertIn("Install GitHub CLI with skill support", workflow_text)
+        self.assertIn("--allow-downgrades", workflow_text)
         self.assertIn("gh skill --help", workflow_text)
         self.assertIn("python3 -m pip install --require-hashes -r skills/weex-trader-skill/requirements.lock", workflow_text)
         self.assertIn("tools/run_skill_tests.py", workflow_text)
