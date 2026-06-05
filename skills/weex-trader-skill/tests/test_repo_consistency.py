@@ -416,6 +416,77 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertEqual(invalid, [])
         self.assertIn("spot.market.get_ticker_info", spot_reference_text)
 
+    def test_contract_definitions_include_futures_demo_endpoints(self) -> None:
+        definitions = json.loads((ROOT / "references" / "contract-api-definitions.json").read_text(encoding="utf-8"))
+        by_key = {definition["key"]: definition for definition in definitions["definitions"]}
+
+        expected = {
+            "sim.account.get_account_balance": ("GET", "/capi/v3/sim/balance", "USER_DATA", 5, 10),
+            "sim.transaction.place_order": ("POST", "/capi/v3/sim/order", "TRADE", 2, 5),
+            "sim.account.get_all_positions": ("GET", "/capi/v3/sim/position/allPosition", "USER_DATA", 10, 15),
+            "sim.transaction.get_order_history": ("GET", "/capi/v3/sim/order/history", "USER_DATA", 10, 10),
+        }
+
+        for key, (method, path, permission, weight_ip, weight_uid) in expected.items():
+            with self.subTest(key=key):
+                definition = by_key[key]
+                self.assertEqual(definition["category"], "sim")
+                self.assertEqual(definition["method"], method)
+                self.assertEqual(definition["path"], path)
+                self.assertTrue(definition["requires_auth"])
+                self.assertEqual(definition["permission"], permission)
+                self.assertEqual(definition["weight_ip"], weight_ip)
+                self.assertEqual(definition["weight_uid"], weight_uid)
+
+        order_params = {
+            row["name"]: row
+            for row in by_key["sim.transaction.place_order"]["request_params"]
+        }
+        self.assertEqual(order_params["newClientOrderId"]["required"], "Yes")
+        self.assertIn("TpWorkingType", order_params)
+        self.assertIn("SlWorkingType", order_params)
+
+    def test_contract_demo_api_uses_contract_definition_catalog(self) -> None:
+        demo_reference = "references/contract-demo-api.zh-CN.md"
+        skill_text = SKILL.read_text(encoding="utf-8")
+        readme_text = README.read_text(encoding="utf-8")
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        compact_reference = (ROOT / "references" / "contract-endpoints.md").read_text(encoding="utf-8")
+        definitions = json.loads((ROOT / "references" / "contract-api-definitions.json").read_text(encoding="utf-8"))
+        definitions_md = (ROOT / "references" / "contract-api-definitions.md").read_text(encoding="utf-8")
+
+        self.assertFalse((ROOT / demo_reference).exists())
+        self.assertNotIn(demo_reference, skill_text)
+        self.assertNotIn(demo_reference, readme_text)
+        self.assertNotIn(demo_reference, compact_reference)
+        self.assertNotIn(demo_reference, manifest["routing"]["domains"]["contract"]["open_first"])
+        self.assertNotIn(demo_reference, json.dumps(file_index, ensure_ascii=False))
+        self.assertNotIn(demo_reference, file_index["file_guide"]["scripts/weex_contract_api.py"]["depends_on"])
+        for definition in definitions["definitions"]:
+            if definition["key"].startswith("sim."):
+                with self.subTest(key=definition["key"]):
+                    self.assertTrue(definition["doc_url"].startswith("https://www.weex.com/api-doc/"))
+        self.assertIn("sim.transaction.place_order", definitions_md)
+        self.assertIn("Demo is not a local dry-run", definitions_md)
+
+    def test_contract_api_definition_markdown_keeps_grouped_contents(self) -> None:
+        definitions_md = (ROOT / "references" / "contract-api-definitions.md").read_text(encoding="utf-8")
+
+        for expected in (
+            "- `account.*` endpoint sections",
+            "- `market.*` endpoint sections",
+            "- `sim.*` endpoint sections",
+            "- `transaction.*` endpoint sections",
+            "Use in-page search with the exact endpoint key from the summary table",
+            "## Account Endpoint Sections",
+            "## Market Endpoint Sections",
+            "## Sim Endpoint Sections",
+            "## Transaction Endpoint Sections",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, definitions_md)
+
     def test_skill_ships_root_readme(self) -> None:
         self.assertTrue(README.exists())
 

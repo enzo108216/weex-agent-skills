@@ -155,6 +155,7 @@ If an AI or automation host launches the GUI, prefer `scripts/weex_gui_launcher.
 - `profiles.meta.json` is not the encrypted vault. It can still reveal account names, descriptions, default-profile choices, and custom base URLs.
 - `manual_once` is the supported Linux vault mode. Lock it again after sensitive work when appropriate.
 - `--confirm-live` sends real order or cancel requests to the real account. Start with least-privilege keys and a small or non-critical account whenever possible.
+- `--trading-mode demo --confirm-demo` sends demo futures orders to the WEEX simulated futures account; it is not a local dry-run.
 - `preview-order` returns localized `user_confirmation.reply_text` for the human reply, while `intent_id` plus `risk_signature` remain internal execution-binding values.
 - `confirm-order` expects the `intent_id` and `risk_signature` returned by `preview-order`; if either is missing or mismatched, regenerate the preview instead of forcing the old confirmation through.
 

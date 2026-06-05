@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -536,6 +538,131 @@ runpy.run_path(script_path, run_name="__main__")
             client.prepare_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
 
         self.assertEqual(str(exc_info.exception), contract.GET_BODY_UNSUPPORTED_MESSAGE)
+
+    def test_contract_demo_order_dry_run_uses_sim_path_and_environment(self) -> None:
+        import weex_contract_api as contract
+
+        client = contract.WeexContractClient(
+            base_url=contract.DEFAULT_BASE_URL,
+            timeout=contract.DEFAULT_TIMEOUT,
+            locale=contract.DEFAULT_LOCALE,
+            api_key="api-key",
+            api_secret="api-secret",
+            api_passphrase="api-passphrase",
+        )
+        body = {
+            "symbol": "BTCSUSDT",
+            "side": "BUY",
+            "positionSide": "LONG",
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+            "quantity": "0.01",
+            "price": "69000",
+            "newClientOrderId": "demo-order-1",
+            "TpWorkingType": "CONTRACT_PRICE",
+            "SlWorkingType": "MARK_PRICE",
+        }
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = contract.execute_endpoint(
+                client=client,
+                endpoint_key="sim.transaction.place_order",
+                query={},
+                body=body,
+                dry_run=True,
+                confirm_live=False,
+                confirm_demo=True,
+                trading_mode="demo",
+                pretty=False,
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["url"].endswith("/capi/v3/sim/order"))
+        self.assertEqual(payload["endpoint"], "sim.transaction.place_order")
+        self.assertEqual(payload["body"], body)
+        self.assertEqual(payload["environment"]["trading_mode"], "demo")
+        self.assertFalse(payload["environment"]["uses_real_funds"])
+        self.assertEqual(payload["headers"]["ACCESS-SIGN"], "***")
+
+    def test_contract_demo_endpoint_rejects_live_mode_before_preparing_request(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+
+        with self.assertRaises(SystemExit) as exc_info:
+            contract.execute_endpoint(
+                client=client,
+                endpoint_key="sim.transaction.place_order",
+                query={},
+                body={"newClientOrderId": "demo-order-1"},
+                dry_run=True,
+                confirm_live=True,
+                confirm_demo=False,
+                trading_mode="live",
+                pretty=False,
+            )
+
+        self.assertIn("demo_endpoint_requires_demo_mode", str(exc_info.exception))
+        client.prepare_request.assert_not_called()
+
+    def test_contract_rejects_mismatched_confirm_flag_for_demo_mutation(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+
+        with self.assertRaises(SystemExit) as exc_info:
+            contract.execute_endpoint(
+                client=client,
+                endpoint_key="sim.transaction.place_order",
+                query={},
+                body={"newClientOrderId": "demo-order-1"},
+                dry_run=False,
+                confirm_live=True,
+                confirm_demo=False,
+                trading_mode="demo",
+                pretty=False,
+            )
+
+        self.assertIn("confirm_flag_mode_mismatch", str(exc_info.exception))
+        client.prepare_request.assert_not_called()
+
+    def test_contract_demo_place_order_routes_to_sim_endpoint_and_preserves_official_fields(self) -> None:
+        import weex_contract_api as contract
+
+        args = types.SimpleNamespace(
+            symbol="BTCSUSDT",
+            side="BUY",
+            position_side="LONG",
+            order_type="LIMIT",
+            quantity="0.01",
+            price="69000",
+            time_in_force="GTC",
+            new_client_order_id="demo-order-1",
+            tp_trigger_price="70000",
+            sl_trigger_price="68000",
+            tp_working_type="CONTRACT_PRICE",
+            sl_working_type="MARK_PRICE",
+            dry_run=True,
+            confirm_live=False,
+            confirm_demo=True,
+            trading_mode="demo",
+            pretty=True,
+        )
+
+        with mock.patch.object(contract, "execute_endpoint", return_value=0) as execute_mock:
+            exit_code = contract.cmd_place_order(args, client=object())
+
+        self.assertEqual(exit_code, 0)
+        call_kwargs = execute_mock.call_args.kwargs
+        self.assertEqual(call_kwargs["endpoint_key"], "sim.transaction.place_order")
+        self.assertEqual(call_kwargs["trading_mode"], "demo")
+        self.assertTrue(call_kwargs["confirm_demo"])
+        self.assertFalse(call_kwargs["confirm_live"])
+        self.assertEqual(call_kwargs["body"]["newClientOrderId"], "demo-order-1")
+        self.assertEqual(call_kwargs["body"]["TpWorkingType"], "CONTRACT_PRICE")
+        self.assertEqual(call_kwargs["body"]["SlWorkingType"], "MARK_PRICE")
 
     def test_spot_prepare_request_rejects_body_for_get(self) -> None:
         import weex_spot_api as spot

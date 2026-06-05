@@ -37,14 +37,14 @@ These auto-detect language from `agent-init.json`.
 
 ## Routing
 
-- Contract/futures tasks: use `scripts/weex_contract_api.py`
+- Contract/futures tasks: use `scripts/weex_contract_api.py`; simulated futures trading uses explicit `--trading-mode demo` and the 4 official `sim.*` endpoints documented in `references/contract-api-definitions.json`
 - Spot tasks: use `scripts/weex_spot_api.py`
 - Replay, profile, or order-risk inputs for the analysis skill: collect live data with `scripts/weex_trade_data_aggregator.py`, then pass the normalized JSON into `weex-analysis-skill`
 - Order preview, TP/SL preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
 - Windows/macOS setup or editing: prefer the visual profile manager
 - Linux interactive setup: prefer the Linux wizard
 - Open `README.md` for the broad usage/install summary
-- Open `references/profile-manager.md`, `references/profile-onboarding.md`, `references/linux-vault.md`, `references/auth-and-signing.md`, `references/script-operations.md`, `references/trade-data-schema.md`, and `references/troubleshooting.md` as needed
+- Open `references/profile-manager.md`, `references/profile-onboarding.md`, `references/linux-vault.md`, `references/auth-and-signing.md`, `references/script-operations.md`, `references/trade-data-schema.md`, `references/contract-api-definitions.md`, and `references/troubleshooting.md` as needed
 
 ## Runtime Prerequisites
 
@@ -123,7 +123,8 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 
 ## Safety Policy
 
-- Never send mutating requests without `--confirm-live`
+- Never send live mutating requests without `--confirm-live`; never send demo mutating requests without `--trading-mode demo --confirm-demo`
+- Demo futures orders are not local dry-runs; they are mutating requests to the WEEX simulated futures account environment
 - Every natural-language order preview flow must return structured risk output before the order can be confirmed
 - For natural-language confirmations, show only `user_confirmation.reply_text` to the user and keep `intent_id` plus `risk_signature` internal to the execution step. The reply text is intentionally simple and localized — a single word such as `confirm` for English.
 - Pending order intents expire after a short TTL and must be regenerated when they are stale
