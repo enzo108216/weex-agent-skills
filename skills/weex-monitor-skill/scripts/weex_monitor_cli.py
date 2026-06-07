@@ -30,6 +30,13 @@ VALID_POSITION_SIDES = {"LONG", "SHORT"}
 VALID_OPERATORS = {">", ">=", "<", "<="}
 VALID_CALLBACK_TYPES = {"current_thread"}
 VALID_MARKETS = {"futures"}
+DEFAULT_TRADING_MODE = "live"
+VALID_TRADING_MODES = {"live", "demo"}
+DEMO_EXECUTION_ALLOWED_DEGRADED_REASONS = {
+    "demo_futures_open_orders_unavailable",
+    "demo_futures_conditional_orders_unavailable",
+    "demo_futures_tp_sl_state_unavailable",
+}
 CONFIRMATION_REPLY_TEXT_BY_LANGUAGE = {
     "zh": "确认",
     "en": "confirm",
@@ -77,6 +84,54 @@ def _run_json_command(command: list[str]) -> Any:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise MonitorInputError("delegated command did not return JSON") from exc
+
+
+def _normalize_trading_mode(value: Any) -> str:
+    mode = str(value or DEFAULT_TRADING_MODE).strip().lower()
+    if mode not in VALID_TRADING_MODES:
+        raise MonitorInputError("trading_mode must be live or demo")
+    return mode
+
+
+def _environment_for_trading_mode(trading_mode: str, market: str) -> dict[str, Any]:
+    mode = _normalize_trading_mode(trading_mode)
+    if mode == "demo":
+        return {
+            "trading_mode": "demo",
+            "label": "demo",
+            "market": market,
+            "uses_real_funds": False,
+            "notice": "This monitor targets the WEEX simulated futures account environment.",
+        }
+    return {
+        "trading_mode": "live",
+        "label": "live",
+        "market": market,
+        "uses_real_funds": True,
+        "notice": "This monitor targets the real WEEX futures account environment.",
+    }
+
+
+def _confirm_flag_for_trading_mode(trading_mode: str) -> str:
+    return "--confirm-demo" if _normalize_trading_mode(trading_mode) == "demo" else "--confirm-live"
+
+
+def _validate_execution_authorization(
+    trading_mode: str,
+    *,
+    confirm_live: bool,
+    confirm_demo: bool,
+    command_name: str,
+) -> None:
+    if confirm_live and confirm_demo:
+        raise MonitorInputError(f"{command_name} accepts only one matching confirmation flag")
+    mode = _normalize_trading_mode(trading_mode)
+    if mode == "demo":
+        if not confirm_demo or confirm_live:
+            raise MonitorInputError(f"{command_name} for demo trading_mode requires --confirm-demo")
+        return
+    if not confirm_live or confirm_demo:
+        raise MonitorInputError(f"{command_name} for live trading_mode requires --confirm-live")
 
 
 def load_tasks() -> list[dict[str, Any]]:
@@ -137,6 +192,7 @@ def normalize_task(raw_task: dict[str, Any], *, now_ms: int | None = None) -> di
 
     profile = _required_string(raw_task, "profile")
     market = _normalize_market(raw_task.get("market"))
+    trading_mode = _normalize_trading_mode(raw_task.get("trading_mode", DEFAULT_TRADING_MODE))
     symbol = _required_string(raw_task, "symbol").upper()
     position_side = _normalize_position_side(raw_task.get("position_side"))
     condition = _normalize_condition(raw_task.get("condition"), task_type)
@@ -151,6 +207,8 @@ def normalize_task(raw_task: dict[str, Any], *, now_ms: int | None = None) -> di
         "task_type": task_type,
         "profile": profile,
         "market": market,
+        "trading_mode": trading_mode,
+        "environment": _environment_for_trading_mode(trading_mode, market),
         "symbol": symbol,
         "position_side": position_side,
         "frequency_seconds": frequency_seconds,
@@ -405,28 +463,32 @@ def render_confirmation_text(
         else raw_task.get("live_run_duration_seconds")
     )
     if resolved_language == "en":
+        funds_text = "uses real funds" if task["environment"]["uses_real_funds"] else "does not use real funds"
         parts = [
             "Automated Monitor Confirmation",
             f"Task ID: {task['task_id']}",
             f"Account: {task['profile']}",
+            f"Trading environment: {task['trading_mode']} ({funds_text})",
             f"Monitor target: {task['symbol']} {_position_side_label(task['position_side'], language=resolved_language)}",
             f"Trigger condition: {_condition_label(condition, language=resolved_language)}",
-            f"Trigger action: {_action_label(action, language=resolved_language)}",
+            f"Trigger action: {_action_label(action, language=resolved_language, trading_mode=task['trading_mode'])}",
             f"Callback: {task['callback']['type']}",
-            "After confirmation, the local monitor rule will be saved; real positions will be read and a real order will be submitted only after you authorize real-account access.",
+            "After confirmation, the local monitor rule will be saved; account positions will be read and an order will be submitted only after you authorize the matching trading environment and real account access when applicable.",
             f"If you confirm the monitor settings and authorization above, Reply: {reply_text}",
         ]
         parts.insert(6, f"Check frequency: every {task['frequency_seconds']} seconds")
     else:
+        funds_text = "会使用真实资金" if task["environment"]["uses_real_funds"] else "不会使用真实资金"
         parts = [
             "自动化监控确认",
             f"任务编号: {task['task_id']}",
             f"账户: {task['profile']}",
+            f"交易环境: {task['trading_mode']}（{funds_text}）",
             f"监控对象: {task['symbol']} {_position_side_label(task['position_side'])}",
             f"触发条件: {_condition_label(condition)}",
-            f"触发动作: {_action_label(action)}",
+            f"触发动作: {_action_label(action, trading_mode=task['trading_mode'])}",
             f"回报位置: {task['callback']['type']}",
-            "确认后会先保存本地监控规则；只有在你授权使用真实账户后，才会读取真实仓位并在触发时提交真实委托。",
+            "确认后会先保存本地监控规则；只有在你授权使用真实账户或匹配的模拟盘环境后，才会读取仓位并在触发时提交委托。",
             f"如果你确认上述监控设置与授权，请回复：{reply_text}",
         ]
         parts.insert(6, f"检查频率: 每 {task['frequency_seconds']} 秒")
@@ -484,6 +546,7 @@ def build_idempotency_key(raw_task: dict[str, Any], purpose: str) -> str:
     task = normalize_task(raw_task)
     fingerprint_payload = {
         "task_type": task["task_type"],
+        "trading_mode": task["trading_mode"],
         "symbol": task["symbol"],
         "position_side": task["position_side"],
         "condition": task["condition"],
@@ -608,13 +671,16 @@ def run_loop_dry_run(
 def run_live_loop(
     *,
     confirm_live: bool,
+    confirm_demo: bool = False,
     iterations: int,
     task_id: str | None = None,
     sleep_seconds: float | None = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    if not confirm_live:
-        raise MonitorInputError("run-loop live mode requires --confirm-live")
+    if not confirm_live and not confirm_demo:
+        raise MonitorInputError("run-loop live mode requires --confirm-live or --confirm-demo")
+    if confirm_live and confirm_demo:
+        raise MonitorInputError("run-loop accepts only one matching confirmation flag")
     if iterations < 1:
         raise MonitorInputError("iterations must be >= 1")
     if sleep_seconds is not None and sleep_seconds < 0:
@@ -630,7 +696,8 @@ def run_live_loop(
     for index in range(iterations):
         evaluated_at_ms = now_ms + index if now_ms is not None else _now_ms()
         results = run_live_once(
-            confirm_live=True,
+            confirm_live=confirm_live,
+            confirm_demo=confirm_demo,
             task_id=task_id,
             now_ms=evaluated_at_ms,
         )
@@ -663,13 +730,12 @@ def confirm_and_run_live_loop(
     confirm_monitor: bool,
     confirmation_token: str | None,
     confirm_live: bool,
+    confirm_demo: bool = False,
     duration_seconds: Any = None,
     reporting_interval_seconds: Any = None,
     sleep_seconds: float | None = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    if not confirm_live:
-        raise MonitorInputError("confirm-and-run-loop requires --confirm-live")
     duration_seconds_float = _normalize_duration_seconds(duration_seconds)
     if sleep_seconds is not None and sleep_seconds < 0:
         raise MonitorInputError("sleep_seconds must be >= 0")
@@ -677,6 +743,12 @@ def confirm_and_run_live_loop(
     requested = normalize_task(raw_task)
     if requested["task_type"] != "position_pnl_monitor":
         raise MonitorInputError("confirm-and-run-loop requires position_pnl_monitor")
+    _validate_execution_authorization(
+        requested["trading_mode"],
+        confirm_live=confirm_live,
+        confirm_demo=confirm_demo,
+        command_name="confirm-and-run-loop",
+    )
     if not isinstance(raw_task.get("live_position_confirmation"), dict):
         raise MonitorInputError("live position confirmation is required before starting live monitor")
     _validate_live_confirmation_token(raw_task, confirmation_token, duration_seconds=duration_seconds_float)
@@ -692,7 +764,8 @@ def confirm_and_run_live_loop(
         now_ms=now_ms,
     )
     loop_result = run_live_loop(
-        confirm_live=True,
+        confirm_live=confirm_live,
+        confirm_demo=confirm_demo,
         iterations=iterations,
         task_id=confirmed["task_id"],
         sleep_seconds=sleep_seconds,
@@ -815,6 +888,7 @@ def _build_status_reporting_prompt(raw_task: dict[str, Any], *, runtime_label: s
     return (
         f"Report WEEX monitor status for the current {runtime_label}.\n"
         f"Task id: {task_id}\n"
+        f"Trading mode: {task['trading_mode']}\n"
         f"Skill directory: {skill_root}\n"
         "Read-only commands to run from the skill directory:\n"
         f"- python3 scripts/weex_monitor_cli.py list\n"
@@ -847,17 +921,27 @@ def build_live_delegate_plan(
     if not isinstance(close_order, dict):
         raise MonitorInputError("triggered evaluation result is missing close_order")
 
+    is_live_mode = task["trading_mode"] == "live"
     return {
         "delegate_skill": "weex-trader-skill",
-        "requires_live_account_authorization": True,
+        "requires_account_authorization": True,
+        "requires_live_account_authorization": is_live_mode,
+        "requires_real_account_authorization": is_live_mode,
+        "requires_demo_account_authorization": not is_live_mode,
         "mutating_request_submitted": False,
         "task_id": task["task_id"],
         "profile": task["profile"],
         "market": task["market"],
+        "trading_mode": task["trading_mode"],
+        "environment": task["environment"],
         "idempotency_key": build_idempotency_key(task, purpose),
         "close_order": close_order,
         "trigger_snapshot": evaluation_result.get("trigger_snapshot", {}),
-        "instruction": "Submit only through weex-trader-skill after the user authorizes real account access and real order execution.",
+        "instruction": (
+            "Submit only through weex-trader-skill with "
+            f"--trading-mode {task['trading_mode']} and {_confirm_flag_for_trading_mode(task['trading_mode'])} "
+            "after the user authorizes the matching account environment and order execution."
+        ),
     }
 
 
@@ -906,14 +990,17 @@ def _load_confirmed_active_task(
 def run_live_once(
     *,
     confirm_live: bool,
+    confirm_demo: bool = False,
     task_id: str | None = None,
     now_ms: int | None = None,
 ) -> list[dict[str, Any]]:
-    if not confirm_live:
-        raise MonitorInputError("run-live-once requires --confirm-live")
+    if not confirm_live and not confirm_demo:
+        raise MonitorInputError("run-live-once requires --confirm-live or --confirm-demo")
+    if confirm_live and confirm_demo:
+        raise MonitorInputError("run-live-once accepts only one matching confirmation flag")
     evaluated_at_ms = now_ms if now_ms is not None else _now_ms()
     outputs: list[dict[str, Any]] = []
-    claimed_position_buckets: set[tuple[str, str, str, str]] = set()
+    claimed_position_buckets: set[tuple[str, str, str, str, str]] = set()
 
     for task in load_tasks():
         if task.get("status") != "active":
@@ -922,6 +1009,13 @@ def run_live_once(
             continue
         if task.get("task_type") != "position_pnl_monitor":
             continue
+        normalized_for_auth = normalize_task(task)
+        _validate_execution_authorization(
+            normalized_for_auth["trading_mode"],
+            confirm_live=confirm_live,
+            confirm_demo=confirm_demo,
+            command_name="run-live-once",
+        )
         position_bucket = _position_execution_key(task)
         if position_bucket in claimed_position_buckets:
             current_task = _load_task_by_id(str(task["task_id"])) or task
@@ -1011,6 +1105,8 @@ def run_live_once(
                     task["profile"],
                     "--market",
                     task["market"],
+                    "--trading-mode",
+                    task["trading_mode"],
                     "--order-json",
                     json.dumps(close_order, ensure_ascii=False, separators=(",", ":")),
                     "--ttl-seconds",
@@ -1041,7 +1137,9 @@ def run_live_once(
                     intent_id,
                     "--risk-signature",
                     risk_signature,
-                    "--confirm-live",
+                    "--trading-mode",
+                    task["trading_mode"],
+                    _confirm_flag_for_trading_mode(task["trading_mode"]),
                     "--pretty",
                 )
             )
@@ -1135,6 +1233,8 @@ def claim_task_for_execution(raw_task: dict[str, Any], *, now_ms: int | None = N
                 json.loads(row["task_json"]),
                 now_ms=claimed_at_ms,
             )
+            if duplicate_task["trading_mode"] != task["trading_mode"]:
+                continue
             duplicate_task["status"] = "review_required"
             duplicate_task["review_required_at_ms"] = claimed_at_ms
             duplicate_task["last_failure"] = {
@@ -1252,6 +1352,8 @@ def _collect_live_account_payload(task: dict[str, Any]) -> dict[str, Any]:
             str(task["profile"]),
             "--market",
             str(task["market"]),
+            "--trading-mode",
+            str(task["trading_mode"]),
             "--symbol",
             str(task["symbol"]),
             "--pretty",
@@ -1443,10 +1545,21 @@ def _snapshot_time_label(snapshot_at_ms: int | None, *, language: str = "zh") ->
 
 
 def _live_payload_blocker(payload: dict[str, Any]) -> str | None:
+    degraded_reasons = payload.get("degraded_reasons")
+    reason_set = (
+        {str(reason) for reason in degraded_reasons if reason not in (None, "")}
+        if isinstance(degraded_reasons, list)
+        else set()
+    )
+    environment = payload.get("environment")
+    if not isinstance(environment, dict):
+        environment = {}
+    mode = _normalize_trading_mode(payload.get("trading_mode") or environment.get("trading_mode"))
+    if mode == "demo" and reason_set and reason_set.issubset(DEMO_EXECUTION_ALLOWED_DEGRADED_REASONS):
+        return None
     if payload.get("partial"):
         return "live_data_partial"
-    degraded_reasons = payload.get("degraded_reasons")
-    if isinstance(degraded_reasons, list) and degraded_reasons:
+    if reason_set:
         return "live_data_degraded"
     return None
 
@@ -1488,16 +1601,18 @@ def render_live_thread_report(
     result: dict[str, Any],
     exchange_response: dict[str, Any] | None,
 ) -> str:
+    mode_label = "Demo" if task.get("trading_mode") == "demo" else "Live"
+    check_label = "demo" if task.get("trading_mode") == "demo" else "live"
     if result.get("triggered") and exchange_response is not None:
         snapshot = result.get("trigger_snapshot", {})
         return (
-            f"WEEX monitor {task['task_id']} Live close order submitted: "
+            f"WEEX monitor {task['task_id']} {mode_label} close order submitted: "
             f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
             f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
             f"Exchange response: {exchange_response}."
         )
     return (
-        f"WEEX monitor {task['task_id']} live check did not submit a close order: "
+        f"WEEX monitor {task['task_id']} {check_label} check did not submit a close order: "
         f"{result.get('reason', 'unknown_reason')}."
     )
 
@@ -1507,6 +1622,27 @@ def render_thread_report(output: dict[str, Any]) -> str:
     result = output.get("result", {})
     if not isinstance(result, dict):
         raise MonitorInputError("result output must be a JSON object")
+    environment = output.get("environment")
+    if not isinstance(environment, dict):
+        environment = {}
+    delegate_plan = output.get("live_delegate_plan")
+    if not isinstance(delegate_plan, dict):
+        delegate_plan = {}
+    delegate_environment = delegate_plan.get("environment")
+    if not isinstance(delegate_environment, dict):
+        delegate_environment = {}
+    trading_mode = _normalize_trading_mode(
+        output.get("trading_mode")
+        or environment.get("trading_mode")
+        or delegate_plan.get("trading_mode")
+        or delegate_environment.get("trading_mode")
+    )
+    if trading_mode == "demo":
+        authorization_sentence = "Demo-account authorization is required before a demo order can be submitted. "
+        no_order_sentence = "No order was submitted by weex-monitor-skill."
+    else:
+        authorization_sentence = "Real-account authorization is required before a real order can be submitted. "
+        no_order_sentence = "No live order was submitted by weex-monitor-skill."
     if result.get("triggered"):
         snapshot = result.get("trigger_snapshot", {})
         close_order = result.get("close_order", {})
@@ -1515,13 +1651,13 @@ def render_thread_report(output: dict[str, Any]) -> str:
             f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
             f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
             f"Planned close order: {close_order}. "
-            "Real-account authorization is required before a real order can be submitted. "
-            "No live order was submitted by weex-monitor-skill."
+            f"{authorization_sentence}"
+            f"{no_order_sentence}"
         )
     return (
         f"WEEX monitor {task_id} dry-run not triggered: "
         f"{result.get('reason', 'unknown_reason')}. "
-        "No live order was submitted by weex-monitor-skill."
+        f"{no_order_sentence}"
     )
 
 
@@ -1774,6 +1910,7 @@ def _confirmation_fingerprint(raw_task: dict[str, Any]) -> str:
         "task_type": task["task_type"],
         "profile": task["profile"],
         "market": task["market"],
+        "trading_mode": task["trading_mode"],
         "symbol": task["symbol"],
         "position_side": task["position_side"],
         "frequency_seconds": task["frequency_seconds"],
@@ -1790,10 +1927,11 @@ def _new_confirmation_token() -> str:
     return f"mconf_{uuid.uuid4().hex}"
 
 
-def _position_execution_key(raw_task: dict[str, Any]) -> tuple[str, str, str, str]:
+def _position_execution_key(raw_task: dict[str, Any]) -> tuple[str, str, str, str, str]:
     task = normalize_task(raw_task)
     return (
         task["profile"],
+        task["trading_mode"],
         task["market"],
         task["symbol"],
         task["position_side"],
@@ -2046,16 +2184,19 @@ def _position_detail_line(position_snapshot: dict[str, Any], *, language: str = 
     return "仓位明细: " + ", ".join(details)
 
 
-def _action_label(action: dict[str, str], *, language: str = "zh") -> str:
+def _action_label(action: dict[str, str], *, language: str = "zh", trading_mode: str = DEFAULT_TRADING_MODE) -> str:
     if action["type"] == "market_close":
         if action.get("quantity"):
             quantity_label = action["quantity"]
         else:
             quantity_label = "matched position size at trigger time" if language == "en" else "触发时匹配持仓数量"
+        mode = _normalize_trading_mode(trading_mode)
         if language == "en":
             side_label = "long" if action["target"] == "LONG" else "short"
-            return f"Submit a real market close-{side_label} order, close quantity: {quantity_label}"
-        return f"提交真实市价平{_position_side_label(action['target'])}，平仓数量: {quantity_label}"
+            environment_label = "demo" if mode == "demo" else "real"
+            return f"Submit a {environment_label} market close-{side_label} order, close quantity: {quantity_label}"
+        environment_label = "模拟盘" if mode == "demo" else "真实"
+        return f"提交{environment_label}市价平{_position_side_label(action['target'])}，平仓数量: {quantity_label}"
     return action["type"]
 
 
@@ -2201,11 +2342,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_live_once_parser = subparsers.add_parser("run-live-once")
     run_live_once_parser.add_argument("--confirm-live", action="store_true")
+    run_live_once_parser.add_argument("--confirm-demo", action="store_true")
     run_live_once_parser.add_argument("--task-id")
 
     run_loop = subparsers.add_parser("run-loop")
     run_loop.add_argument("--dry-run", action="store_true")
     run_loop.add_argument("--confirm-live", action="store_true")
+    run_loop.add_argument("--confirm-demo", action="store_true")
     run_loop.add_argument("--task-id")
     run_loop.add_argument("--iterations", type=int, default=1)
     run_loop.add_argument("--sleep-seconds", type=float)
@@ -2218,6 +2361,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_and_run.add_argument("--confirm-monitor", action="store_true")
     confirm_and_run.add_argument("--confirmation-token")
     confirm_and_run.add_argument("--confirm-live", action="store_true")
+    confirm_and_run.add_argument("--confirm-demo", action="store_true")
     confirm_and_run.add_argument("--duration-seconds", type=float, required=True)
     confirm_and_run.add_argument("--reporting-interval-seconds", type=int)
     confirm_and_run.add_argument("--sleep-seconds", type=float)
@@ -2271,14 +2415,21 @@ def main(argv: list[str] | None = None) -> int:
             positions = _read_json_arg(args.positions_json, args.positions_file, name="positions")
             _print_json(run_once_dry_run(positions, task_id=args.task_id))
         elif args.command == "run-live-once":
-            _print_json(run_live_once(confirm_live=args.confirm_live, task_id=args.task_id))
+            _print_json(
+                run_live_once(
+                    confirm_live=args.confirm_live,
+                    confirm_demo=args.confirm_demo,
+                    task_id=args.task_id,
+                )
+            )
         elif args.command == "run-loop":
-            if args.dry_run and args.confirm_live:
-                raise MonitorInputError("run-loop uses either --dry-run or --confirm-live, not both")
-            if args.confirm_live:
+            if args.dry_run and (args.confirm_live or args.confirm_demo):
+                raise MonitorInputError("run-loop uses either --dry-run or one confirm flag, not both")
+            if args.confirm_live or args.confirm_demo:
                 _print_json(
                     run_live_loop(
-                        confirm_live=True,
+                        confirm_live=args.confirm_live,
+                        confirm_demo=args.confirm_demo,
                         iterations=args.iterations,
                         task_id=args.task_id,
                         sleep_seconds=args.sleep_seconds,
@@ -2308,6 +2459,7 @@ def main(argv: list[str] | None = None) -> int:
                     confirm_monitor=args.confirm_monitor,
                     confirmation_token=args.confirmation_token,
                     confirm_live=args.confirm_live,
+                    confirm_demo=args.confirm_demo,
                     duration_seconds=args.duration_seconds,
                     reporting_interval_seconds=args.reporting_interval_seconds,
                     sleep_seconds=args.sleep_seconds,

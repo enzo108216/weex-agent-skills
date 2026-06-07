@@ -16,6 +16,7 @@ It supports:
 - bill-adjusted replay/profile net PnL alongside episode-only PnL totals
 - pre-order risk analysis for preview-before-submit reminder flows
 - current account-risk analysis without an order preview
+- trading-environment display for trader-collected live or demo futures payloads
 
 ## Contents
 
@@ -49,6 +50,7 @@ If you only have live WEEX account data, collect or normalize it with `weex-trad
 
 - Prefer normalized JSON payloads over prose summaries.
 - Use the schema that matches the target command: snapshot, fills, replay, profile, order-risk, or account-risk.
+- Preserve `trading_mode`, `environment`, and `account_scope` when they come from `weex-trader-skill`; analysis is read-only and does not infer live or demo state from profile names.
 - If the replay payload is too large to review comfortably, run `prepare-replay` first.
 - Missing prices, leverage, or balance fields produce partial analysis instead of invented values.
 - Open [Snapshot schema](references/snapshot-schema.md) when you need the accepted input shapes or aliases.

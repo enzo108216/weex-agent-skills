@@ -443,6 +443,15 @@ def normalize_contract_trade_symbol(symbol: str) -> str:
     raise SystemExit(f"Unsupported symbol format: {symbol}. Expected like ETHUSDT.")
 
 
+def normalize_contract_demo_trade_symbol(symbol: str) -> str:
+    normalized = normalize_contract_trade_symbol(symbol)
+    if normalized.endswith("SUSDT"):
+        return normalized
+    if normalized.endswith("USDT"):
+        return f"{normalized[:-4]}SUSDT"
+    return normalized
+
+
 def normalize_contract_symbol(symbol: str) -> str:
     return normalize_contract_trade_symbol(symbol)
 
@@ -520,8 +529,14 @@ def cmd_call(args: argparse.Namespace, client: WeexContractClient) -> int:
 
 
 def cmd_place_order(args: argparse.Namespace, client: WeexContractClient) -> int:
+    mode = normalize_trading_mode(args.trading_mode)
+    body_symbol = (
+        normalize_contract_demo_trade_symbol(args.symbol)
+        if mode == "demo"
+        else normalize_contract_trade_symbol(args.symbol)
+    )
     body: Dict[str, Any] = {
-        "symbol": normalize_contract_trade_symbol(args.symbol),
+        "symbol": body_symbol,
         "side": args.side.upper(),
         "positionSide": args.position_side.upper(),
         "type": args.order_type.upper(),
@@ -554,7 +569,7 @@ def cmd_place_order(args: argparse.Namespace, client: WeexContractClient) -> int
 
     endpoint_key = (
         "sim.transaction.place_order"
-        if normalize_trading_mode(args.trading_mode) == "demo"
+        if mode == "demo"
         else find_endpoint_key_by_doc_suffix("PlaceOrder")
     )
 

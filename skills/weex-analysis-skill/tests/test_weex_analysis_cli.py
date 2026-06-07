@@ -112,6 +112,41 @@ class DisclaimerTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["disclaimer"], EXPECTED_STANDARD_DISCLAIMER)
 
+    def test_account_risk_analysis_preserves_and_renders_trading_environment(self) -> None:
+        payload = {
+            "trading_mode": "demo",
+            "environment": {
+                "trading_mode": "demo",
+                "label": "demo",
+                "market": "futures",
+                "uses_real_funds": False,
+                "notice": "This operation targets the WEEX simulated futures account environment.",
+            },
+            "mode": "account_scan",
+            "market": "futures",
+            "account_snapshot": {
+                "equity": 1000,
+                "available_balance": 900,
+                "account_scope": "sim_futures",
+            },
+            "positions": [],
+            "recent_orders": [],
+            "conditional_orders": [],
+            "open_orders": [],
+            "degraded_reasons": ["demo_futures_open_orders_unavailable"],
+            "constraints": [],
+        }
+
+        result = analysis.analyze_account_risk(payload)
+        text = analysis._render_text(result)
+
+        self.assertEqual(result["trading_mode"], "demo")
+        self.assertEqual(result["environment"]["trading_mode"], "demo")
+        self.assertEqual(result["environment"]["market"], "futures")
+        self.assertIn("Trading Environment: demo", text)
+        self.assertIn("Uses Real Funds: false", text)
+        self.assertIn("demo_futures_open_orders_unavailable", text)
+
 
 class SnapshotAnalysisTests(unittest.TestCase):
     def test_analyze_snapshot_reports_concentration_and_collateral_risk(self) -> None:

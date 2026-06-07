@@ -152,6 +152,30 @@ def _status_context(payload: Any) -> dict[str, Any]:
     }
 
 
+def _payload_environment_context(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    environment = payload.get("environment")
+    if not isinstance(environment, dict):
+        environment = {}
+    trading_mode = payload.get("trading_mode") or environment.get("trading_mode")
+    context: dict[str, Any] = {}
+    if trading_mode not in (None, ""):
+        context["trading_mode"] = str(trading_mode)
+    if environment:
+        context["environment"] = dict(environment)
+    return context
+
+
+def _attach_payload_context(result: dict[str, Any], payload: Any) -> dict[str, Any]:
+    context = _payload_environment_context(payload)
+    if not context:
+        return result
+    updated = dict(result)
+    updated.update(context)
+    return updated
+
+
 def _attach_standard_disclaimer(result: dict[str, Any]) -> dict[str, Any]:
     updated = dict(result)
     updated["disclaimer"] = STANDARD_ANALYSIS_DISCLAIMER
@@ -165,6 +189,29 @@ def _append_standard_disclaimer(lines: list[str], disclaimer: Any) -> None:
     if lines and lines[-1] != "":
         lines.append("")
     lines.append(text)
+
+
+def _environment_text_lines(result: dict[str, Any]) -> list[str]:
+    environment = result.get("environment")
+    if not isinstance(environment, dict):
+        return []
+    lines = [
+        f"Trading Environment: {environment.get('trading_mode') or result.get('trading_mode') or 'unknown'}",
+    ]
+    if environment.get("market") not in (None, ""):
+        lines.append(f"Environment Market: {environment['market']}")
+    if "uses_real_funds" in environment:
+        lines.append(f"Uses Real Funds: {str(bool(environment['uses_real_funds'])).lower()}")
+    if environment.get("notice"):
+        lines.append(f"Environment Notice: {environment['notice']}")
+    return lines
+
+
+def _prepend_environment_text(lines: list[str], result: dict[str, Any]) -> None:
+    environment_lines = _environment_text_lines(result)
+    if not environment_lines:
+        return
+    lines[:0] = [*environment_lines, ""]
 
 
 def _concentration_alert_is_material(
@@ -1950,11 +1997,17 @@ def _entry_order_notional(
 
 
 def analyze_order_risk(payload: Any) -> dict[str, Any]:
-    return _attach_standard_disclaimer(risk_review_core.analyze_order_risk(payload))
+    return _attach_payload_context(
+        _attach_standard_disclaimer(risk_review_core.analyze_order_risk(payload)),
+        payload,
+    )
 
 
 def analyze_account_risk(payload: Any) -> dict[str, Any]:
-    return _attach_standard_disclaimer(risk_review_core.analyze_account_risk(payload))
+    return _attach_payload_context(
+        _attach_standard_disclaimer(risk_review_core.analyze_account_risk(payload)),
+        payload,
+    )
 
 
 def _append_status_sections(
@@ -2093,6 +2146,7 @@ def _render_text(result: dict[str, Any]) -> str:
             degraded_reasons=degraded_reasons,
             constraints=constraints,
         )
+        _prepend_environment_text(lines, result)
         _append_standard_disclaimer(lines, disclaimer)
         return "\n".join(lines)
 
@@ -2134,6 +2188,7 @@ def _render_text(result: dict[str, Any]) -> str:
             degraded_reasons=degraded_reasons,
             constraints=constraints,
         )
+        _prepend_environment_text(lines, result)
         _append_standard_disclaimer(lines, disclaimer)
         return "\n".join(lines)
 
@@ -2219,6 +2274,7 @@ def _render_text(result: dict[str, Any]) -> str:
             degraded_reasons=degraded_reasons,
             constraints=constraints,
         )
+        _prepend_environment_text(lines, result)
         _append_standard_disclaimer(lines, disclaimer)
         return "\n".join(lines)
 
@@ -2251,6 +2307,7 @@ def _render_text(result: dict[str, Any]) -> str:
         degraded_reasons=degraded_reasons,
         constraints=constraints,
     )
+    _prepend_environment_text(lines, result)
     _append_standard_disclaimer(lines, disclaimer)
     return "\n".join(lines)
 
@@ -2295,7 +2352,7 @@ def main(argv: list[str] | None = None) -> int:
         result = analyze_order_risk(payload)
     else:
         result = analyze_account_risk(payload)
-    result = _attach_standard_disclaimer(result)
+    result = _attach_payload_context(_attach_standard_disclaimer(result), payload)
 
     if args.format == "text":
         print(_render_text(result))

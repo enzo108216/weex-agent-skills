@@ -628,11 +628,11 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertIn("confirm_flag_mode_mismatch", str(exc_info.exception))
         client.prepare_request.assert_not_called()
 
-    def test_contract_demo_place_order_routes_to_sim_endpoint_and_preserves_official_fields(self) -> None:
+    def test_contract_demo_place_order_routes_to_sim_endpoint_maps_symbol_and_preserves_official_fields(self) -> None:
         import weex_contract_api as contract
 
         args = types.SimpleNamespace(
-            symbol="BTCSUSDT",
+            symbol="BTCUSDT",
             side="BUY",
             position_side="LONG",
             order_type="LIMIT",
@@ -660,6 +660,7 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(call_kwargs["trading_mode"], "demo")
         self.assertTrue(call_kwargs["confirm_demo"])
         self.assertFalse(call_kwargs["confirm_live"])
+        self.assertEqual(call_kwargs["body"]["symbol"], "BTCSUSDT")
         self.assertEqual(call_kwargs["body"]["newClientOrderId"], "demo-order-1")
         self.assertEqual(call_kwargs["body"]["TpWorkingType"], "CONTRACT_PRICE")
         self.assertEqual(call_kwargs["body"]["SlWorkingType"], "MARK_PRICE")

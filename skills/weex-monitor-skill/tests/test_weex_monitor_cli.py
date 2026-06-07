@@ -83,11 +83,64 @@ class MonitorTaskTests(unittest.TestCase):
         task = monitor.normalize_task(base_task, now_ms=1000)
 
         self.assertEqual(task["frequency_seconds"], 5)
+        self.assertEqual(task["trading_mode"], "live")
+        self.assertEqual(task["environment"]["trading_mode"], "live")
 
         too_fast = dict(base_task)
         too_fast["frequency_seconds"] = 2
         with self.assertRaisesRegex(monitor.MonitorInputError, "frequency_seconds"):
             monitor.normalize_task(too_fast, now_ms=1000)
+
+    def test_position_pnl_monitor_accepts_explicit_demo_trading_mode(self) -> None:
+        task = monitor.normalize_task(
+            {
+                "task_type": "position_pnl_monitor",
+                "profile": "demo-profile",
+                "trading_mode": "demo",
+                "symbol": "BTCSUSDT",
+                "position_side": "LONG",
+                "condition": {
+                    "metric": "unrealized_pnl",
+                    "operator": ">",
+                    "threshold": "10",
+                },
+                "action": {
+                    "type": "market_close",
+                    "target": "LONG",
+                },
+                "callback": {"type": "current_thread"},
+            },
+            now_ms=1000,
+        )
+
+        self.assertEqual(task["trading_mode"], "demo")
+        self.assertEqual(task["environment"]["trading_mode"], "demo")
+        self.assertFalse(task["environment"]["uses_real_funds"])
+
+    def test_confirmation_fingerprint_binds_trading_mode(self) -> None:
+        base_task = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo-profile",
+            "symbol": "BTCSUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "10",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        live_task = dict(base_task, trading_mode="live")
+        demo_task = dict(base_task, trading_mode="demo")
+
+        self.assertNotEqual(
+            monitor._confirmation_fingerprint(live_task),
+            monitor._confirmation_fingerprint(demo_task),
+        )
 
     def test_pnl_trigger_builds_directional_market_close_plan_without_live_execution(self) -> None:
         task = monitor.normalize_task(
@@ -133,6 +186,82 @@ class MonitorTaskTests(unittest.TestCase):
                 "quantity": "0.2",
             },
         )
+
+    def test_live_delegate_plan_carries_trading_mode(self) -> None:
+        task = monitor.normalize_task(
+            {
+                "task_type": "position_pnl_monitor",
+                "profile": "demo-profile",
+                "trading_mode": "demo",
+                "symbol": "BTCSUSDT",
+                "position_side": "LONG",
+                "condition": {
+                    "metric": "unrealized_pnl",
+                    "operator": ">",
+                    "threshold": "10",
+                },
+                "action": {
+                    "type": "market_close",
+                    "target": "LONG",
+                },
+                "callback": {"type": "current_thread"},
+            },
+            now_ms=1000,
+        )
+        evaluation_result = {
+            "triggered": True,
+            "close_order": {
+                "symbol": "BTCSUSDT",
+                "side": "SELL",
+                "position_side": "LONG",
+                "order_type": "MARKET",
+                "quantity": "0.01",
+            },
+            "trigger_snapshot": {"unrealized_pnl": "11"},
+        }
+
+        plan = monitor.build_live_delegate_plan(task, evaluation_result, purpose="dry-run-trigger")
+
+        self.assertEqual(plan["trading_mode"], "demo")
+        self.assertEqual(plan["environment"]["trading_mode"], "demo")
+        self.assertEqual(plan["requires_account_authorization"], True)
+        self.assertEqual(plan["requires_live_account_authorization"], False)
+        self.assertEqual(plan["requires_demo_account_authorization"], True)
+        self.assertIn("--trading-mode demo", plan["instruction"])
+
+    def test_collect_live_account_payload_delegates_with_task_trading_mode(self) -> None:
+        task = monitor.normalize_task(
+            {
+                "task_type": "position_pnl_monitor",
+                "profile": "demo-profile",
+                "trading_mode": "demo",
+                "symbol": "BTCSUSDT",
+                "position_side": "LONG",
+                "condition": {
+                    "metric": "unrealized_pnl",
+                    "operator": ">",
+                    "threshold": "10",
+                },
+                "action": {
+                    "type": "market_close",
+                    "target": "LONG",
+                },
+                "callback": {"type": "current_thread"},
+            },
+            now_ms=1000,
+        )
+
+        with mock.patch.object(
+            monitor,
+            "_run_json_command",
+            return_value={"positions": [], "trading_mode": "demo"},
+        ) as run_mock:
+            payload = monitor._collect_live_account_payload(task)
+
+        command = run_mock.call_args.args[0]
+        self.assertEqual(payload["trading_mode"], "demo")
+        self.assertIn("--trading-mode", command)
+        self.assertIn("demo", command)
 
     def test_confirm_requires_explicit_monitor_confirmation_before_active_task_is_saved(self) -> None:
         task_json = {
@@ -310,6 +439,66 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertNotIn("确认启动监控", text)
         self.assertNotIn("--confirm-monitor", text)
         self.assertNotIn("--confirm-live", text)
+
+    def test_demo_confirmation_text_labels_demo_market_close_action(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "trading_mode": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": "<",
+                "threshold": "0",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+                "quantity": "0.001",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        text = monitor.render_confirmation_text(task_json, now_ms=1000)
+
+        self.assertIn("交易环境: demo（不会使用真实资金）", text)
+        self.assertIn("提交模拟盘市价平多单", text)
+        self.assertNotIn("提交真实市价平多单", text)
+
+    def test_demo_dry_run_thread_report_uses_demo_authorization_wording(self) -> None:
+        report = monitor.render_thread_report(
+            {
+                "task_id": "demo-task",
+                "live_delegate_plan": {
+                    "trading_mode": "demo",
+                    "environment": {
+                        "trading_mode": "demo",
+                        "uses_real_funds": False,
+                    },
+                },
+                "result": {
+                    "triggered": True,
+                    "trigger_snapshot": {
+                        "symbol": "BTCUSDT",
+                        "position_side": "LONG",
+                        "unrealized_pnl": "-1",
+                        "operator": "<",
+                        "threshold": "0",
+                    },
+                    "close_order": {
+                        "symbol": "BTCUSDT",
+                        "side": "SELL",
+                        "position_side": "LONG",
+                        "order_type": "MARKET",
+                        "quantity": "0.001",
+                    },
+                },
+            }
+        )
+
+        self.assertIn("Demo-account authorization is required", report)
+        self.assertNotIn("Real-account authorization is required", report)
 
     def test_english_confirmation_text_uses_simple_localized_reply_word(self) -> None:
         task_json = {
@@ -1113,6 +1302,65 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(preview_order["side"], "SELL")
         self.assertEqual(preview_order["position_side"], "LONG")
         self.assertEqual(preview_order["new_client_order_id"], "monitor_mon_pnl_live")
+
+    def test_run_live_once_allows_demo_known_degraded_payload_and_uses_confirm_demo(self) -> None:
+        task_json = {
+            "task_id": "mon_pnl_demo",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "trading_mode": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "-999999",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "trading_mode": "demo",
+            "environment": {"trading_mode": "demo", "uses_real_funds": False},
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.001",
+                    "unrealized_pnl": "-1.2",
+                }
+            ],
+            "degraded_reasons": [
+                "demo_futures_open_orders_unavailable",
+                "demo_futures_conditional_orders_unavailable",
+                "demo_futures_tp_sl_state_unavailable",
+            ],
+            "partial": True,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                self._prepare_and_confirm(task_json, now_ms=1000)
+                with mock.patch.object(
+                    monitor,
+                    "_run_json_command",
+                    side_effect=[
+                        account_payload,
+                        account_payload,
+                        {"intent_id": "intent-demo-close", "risk_signature": "sig-demo-close"},
+                        {"ok": True, "orderId": "demo-9001", "clientOrderId": "monitor_mon_pnl_demo"},
+                    ],
+                ) as runner:
+                    results = monitor.run_live_once(confirm_live=False, confirm_demo=True, now_ms=2000)
+
+        self.assertEqual(results[0]["status"], "completed")
+        self.assertIn("Demo close order submitted", results[0]["thread_report"])
+        confirm_command = runner.call_args_list[3].args[0]
+        self.assertIn("--confirm-demo", confirm_command)
+        self.assertNotIn("--confirm-live", confirm_command)
 
     def test_run_live_loop_uses_confirm_live_and_reuses_active_frequency(self) -> None:
         task_json = {
