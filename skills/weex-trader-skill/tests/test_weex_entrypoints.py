@@ -628,6 +628,36 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertIn("confirm_flag_mode_mismatch", str(exc_info.exception))
         client.prepare_request.assert_not_called()
 
+    def test_contract_rejects_generic_pending_order_for_directional_close(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        body = {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "positionSide": "LONG",
+            "type": "TAKE_PROFIT_MARKET",
+            "quantity": "0.0001",
+            "triggerPrice": "100000",
+            "clientAlgoId": "close-long-at-price",
+        }
+
+        with self.assertRaises(SystemExit) as exc_info:
+            contract.execute_endpoint(
+                client=client,
+                endpoint_key="transaction.place_pending_order",
+                query={},
+                body=body,
+                dry_run=True,
+                confirm_live=False,
+                confirm_demo=False,
+                trading_mode="live",
+                pretty=False,
+            )
+
+        self.assertIn("pending_close_requires_tp_sl", str(exc_info.exception))
+        client.prepare_request.assert_not_called()
+
     def test_contract_demo_place_order_routes_to_sim_endpoint_maps_symbol_and_preserves_official_fields(self) -> None:
         import weex_contract_api as contract
 

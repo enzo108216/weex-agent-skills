@@ -304,6 +304,10 @@ def prepare_replay_payload(
         "partial": partial,
         "degraded_reasons": degraded_reasons,
     }
+    for key in ("trading_mode", "environment", "account_scope"):
+        value = _copy_top_level_value(payload, key)
+        if value not in (None, ""):
+            prepared[key] = value
     for key in ("period", "focus", "time_range"):
         value = _copy_top_level_value(payload, key)
         if value not in (None, ""):

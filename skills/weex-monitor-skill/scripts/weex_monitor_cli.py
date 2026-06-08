@@ -510,20 +510,26 @@ def render_confirmation_text(
         parts.insert(insert_index, reporting_line)
     if position_snapshot is not None:
         if resolved_language == "en":
+            position_match_label = (
+                "Matched demo position"
+                if task["trading_mode"] == "demo"
+                else "Matched live position"
+            )
             parts.insert(
                 4,
                 (
-                    "Matched live position: "
+                    f"{position_match_label}: "
                     f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'], language=resolved_language)}, "
                     f"position size: {position_snapshot['quantity']}, "
                     f"current unrealized PnL: {position_snapshot.get('unrealized_pnl', 'unknown')}"
                 ),
             )
         else:
+            position_match_label = "已匹配模拟盘持仓" if task["trading_mode"] == "demo" else "已匹配真实持仓"
             parts.insert(
                 4,
                 (
-                    "已匹配真实持仓: "
+                    f"{position_match_label}: "
                     f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'])}, "
                     f"持仓数量: {position_snapshot['quantity']}, "
                     f"当前未实现盈亏: {position_snapshot.get('unrealized_pnl', 'unknown')}"
@@ -771,8 +777,15 @@ def confirm_and_run_live_loop(
         sleep_seconds=sleep_seconds,
         now_ms=now_ms,
     )
+    final_task = confirmed
+    if (
+        loop_result.get("submitted_count") == 0
+        and loop_result.get("iterations_completed", 0) >= loop_result.get("iterations_requested", 0)
+        and _has_active_pnl_tasks(task_id=confirmed["task_id"])
+    ):
+        final_task = cancel_task(confirmed["task_id"])
     agent_reporting = _agent_reporting_metadata_from_task(
-        confirmed,
+        final_task,
         reporting_interval_seconds=reporting_interval_seconds,
     )
     reporting = agent_reporting["runtimes"]["codex"]
@@ -780,7 +793,7 @@ def confirm_and_run_live_loop(
         "combined_confirmation": True,
         "duration_seconds": duration_seconds_float,
         "derived_iterations": iterations,
-        "confirmed_task": confirmed,
+        "confirmed_task": final_task,
         "loop_result": loop_result,
         "reporting": reporting,
         "agent_reporting": agent_reporting,

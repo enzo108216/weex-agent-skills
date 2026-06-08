@@ -841,6 +841,13 @@ class TradeGuardTests(unittest.TestCase):
                 intent = intent_state.build_intent(
                     profile_name="demo",
                     market="futures",
+                    environment={
+                        "trading_mode": "live",
+                        "label": "live",
+                        "market": "futures",
+                        "uses_real_funds": True,
+                        "notice": "custom live TP/SL environment",
+                    },
                     order_preview=tp_sl_order,
                     raw_order=tp_sl_order,
                     analysis_output={"alerts": []},
@@ -865,7 +872,13 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         submit_mock.assert_called_once_with(profile_name="demo", raw_order=tp_sl_order)
         self.assertIsNone(remaining_intent)
-        self.assertIn('"algoId": "7001"', stream.getvalue())
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(payload["algoId"], "7001")
+        self.assertEqual(payload["trading_mode"], "live")
+        self.assertEqual(payload["environment"]["trading_mode"], "live")
+        self.assertEqual(payload["environment"]["market"], "futures")
+        self.assertTrue(payload["environment"]["uses_real_funds"])
+        self.assertEqual(payload["environment"]["notice"], "custom live TP/SL environment")
 
     def test_confirm_order_requires_intent_id_and_risk_signature(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)

@@ -1658,7 +1658,7 @@
           "name": "symbol",
           "type": "String",
           "required": "No",
-          "description": "Filter by trading pair."
+          "description": "Optional trading pair filter. Omit by default for demo history because normal contract symbols such as BTCUSDT may be rejected unless the API accepts the exact simulated symbol filter."
         },
         {
           "name": "limit",

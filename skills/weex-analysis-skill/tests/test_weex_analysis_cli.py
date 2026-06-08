@@ -122,6 +122,7 @@ class DisclaimerTests(unittest.TestCase):
                 "uses_real_funds": False,
                 "notice": "This operation targets the WEEX simulated futures account environment.",
             },
+            "account_scope": "sim_futures",
             "mode": "account_scan",
             "market": "futures",
             "account_snapshot": {
@@ -143,6 +144,7 @@ class DisclaimerTests(unittest.TestCase):
         self.assertEqual(result["trading_mode"], "demo")
         self.assertEqual(result["environment"]["trading_mode"], "demo")
         self.assertEqual(result["environment"]["market"], "futures")
+        self.assertEqual(result["account_scope"], "sim_futures")
         self.assertIn("Trading Environment: demo", text)
         self.assertIn("Uses Real Funds: false", text)
         self.assertIn("demo_futures_open_orders_unavailable", text)
@@ -430,6 +432,39 @@ class FillAnalysisTests(unittest.TestCase):
 
 
 class ReplayAnalysisTests(unittest.TestCase):
+    def test_analyze_replay_preserves_trader_environment_context(self) -> None:
+        payload = {
+            "analysis_type": "replay",
+            "market": "futures",
+            "trading_mode": "demo",
+            "environment": {
+                "trading_mode": "demo",
+                "label": "demo",
+                "market": "futures",
+                "uses_real_funds": False,
+                "notice": "This operation targets the WEEX simulated futures account environment.",
+            },
+            "account_scope": "sim_futures",
+            "orders": [],
+            "fills": [],
+        }
+
+        result = analysis.analyze_replay(payload)
+        review = analysis.review_trades(payload)
+        text = analysis._render_text(result)
+        review_text = analysis._render_text(review)
+
+        self.assertEqual(result["trading_mode"], "demo")
+        self.assertEqual(result["environment"]["trading_mode"], "demo")
+        self.assertEqual(result["account_scope"], "sim_futures")
+        self.assertEqual(review["trading_mode"], "demo")
+        self.assertEqual(review["environment"]["trading_mode"], "demo")
+        self.assertEqual(review["account_scope"], "sim_futures")
+        self.assertIn("Trading Environment: demo", text)
+        self.assertIn("Uses Real Funds: false", text)
+        self.assertIn("Trading Environment: demo", review_text)
+        self.assertIn("Uses Real Funds: false", review_text)
+
     def test_analyze_replay_reconstructs_trade_episodes_and_metrics(self) -> None:
         payload = {
             "analysis_type": "replay",

@@ -159,11 +159,14 @@ def _payload_environment_context(payload: Any) -> dict[str, Any]:
     if not isinstance(environment, dict):
         environment = {}
     trading_mode = payload.get("trading_mode") or environment.get("trading_mode")
+    account_scope = payload.get("account_scope")
     context: dict[str, Any] = {}
     if trading_mode not in (None, ""):
         context["trading_mode"] = str(trading_mode)
     if environment:
         context["environment"] = dict(environment)
+    if account_scope not in (None, ""):
+        context["account_scope"] = str(account_scope)
     return context
 
 
@@ -1465,22 +1468,25 @@ def analyze_replay(payload: Any) -> dict[str, Any]:
 
     summary = _summarize_replay_patterns(tags)
 
-    return _attach_standard_disclaimer({
-        "summary": summary,
-        "top_pattern": tags[0],
-        "behavior_tags": tags[:5],
-        "evidence": evidence[:5],
-        "advice": advice[:5],
-        "trade_episodes": episodes,
-        "episode_count": len(episodes),
-        "sample_quality": "full" if len(complete_episodes) >= 20 else "limited" if len(complete_episodes) >= 10 else "minimal",
-        "metrics": metrics,
-        "quant_reports": dict(metrics),
-        "closed_trade_count": int(payload.get("closed_trade_count") or len(complete_episodes)),
-        "partial": partial,
-        "degraded_reasons": degraded_reasons,
-        "constraints": constraints,
-    })
+    return _attach_payload_context(
+        _attach_standard_disclaimer({
+            "summary": summary,
+            "top_pattern": tags[0],
+            "behavior_tags": tags[:5],
+            "evidence": evidence[:5],
+            "advice": advice[:5],
+            "trade_episodes": episodes,
+            "episode_count": len(episodes),
+            "sample_quality": "full" if len(complete_episodes) >= 20 else "limited" if len(complete_episodes) >= 10 else "minimal",
+            "metrics": metrics,
+            "quant_reports": dict(metrics),
+            "closed_trade_count": int(payload.get("closed_trade_count") or len(complete_episodes)),
+            "partial": partial,
+            "degraded_reasons": degraded_reasons,
+            "constraints": constraints,
+        }),
+        payload,
+    )
 
 
 def _episode_target_with_status(episode: dict[str, Any]) -> str:
@@ -1561,20 +1567,23 @@ def review_trades(payload: Any) -> dict[str, Any]:
     }
     episodes = list(replay_result.get("trade_episodes") or [])
 
-    return _attach_standard_disclaimer({
-        "review_type": "trade_review",
-        "summary": replay_result.get("summary"),
-        "episode_count": replay_result.get("episode_count", 0),
-        "closed_trade_count": replay_result.get("closed_trade_count", 0),
-        "sample_quality": replay_result.get("sample_quality"),
-        "episode_highlights": _build_episode_highlights(episodes),
-        "episodes": episodes,
-        "metrics": dict(replay_result.get("metrics") or {}),
-        "pattern_snapshot": pattern_snapshot,
-        "partial": bool(replay_result.get("partial")),
-        "degraded_reasons": list(replay_result.get("degraded_reasons") or []),
-        "constraints": list(replay_result.get("constraints") or []),
-    })
+    return _attach_payload_context(
+        _attach_standard_disclaimer({
+            "review_type": "trade_review",
+            "summary": replay_result.get("summary"),
+            "episode_count": replay_result.get("episode_count", 0),
+            "closed_trade_count": replay_result.get("closed_trade_count", 0),
+            "sample_quality": replay_result.get("sample_quality"),
+            "episode_highlights": _build_episode_highlights(episodes),
+            "episodes": episodes,
+            "metrics": dict(replay_result.get("metrics") or {}),
+            "pattern_snapshot": pattern_snapshot,
+            "partial": bool(replay_result.get("partial")),
+            "degraded_reasons": list(replay_result.get("degraded_reasons") or []),
+            "constraints": list(replay_result.get("constraints") or []),
+        }),
+        payload,
+    )
 
 
 def analyze_profile(payload: Any) -> dict[str, Any]:

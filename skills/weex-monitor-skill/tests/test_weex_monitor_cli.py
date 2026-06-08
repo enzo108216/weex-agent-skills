@@ -466,6 +466,49 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("提交模拟盘市价平多单", text)
         self.assertNotIn("提交真实市价平多单", text)
 
+    def test_demo_confirmation_text_labels_demo_position_snapshot(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "trading_mode": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "1",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        position_snapshot = {
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "quantity": "0.001",
+            "unrealized_pnl": "2",
+        }
+
+        zh_text = monitor.render_confirmation_text(
+            task_json,
+            now_ms=1000,
+            position_snapshot=position_snapshot,
+            language="zh",
+        )
+        en_text = monitor.render_confirmation_text(
+            task_json,
+            now_ms=1000,
+            position_snapshot=position_snapshot,
+            language="en",
+        )
+
+        self.assertIn("已匹配模拟盘持仓", zh_text)
+        self.assertNotIn("已匹配真实持仓", zh_text)
+        self.assertIn("Matched demo position", en_text)
+        self.assertNotIn("Matched live position", en_text)
+
     def test_demo_dry_run_thread_report_uses_demo_authorization_wording(self) -> None:
         report = monitor.render_thread_report(
             {
@@ -1554,7 +1597,7 @@ class MonitorTaskTests(unittest.TestCase):
                 tasks = monitor.load_tasks()
                 events = monitor.load_events(task_json["task_id"])
 
-        self.assertEqual(result["confirmed_task"]["status"], "active")
+        self.assertEqual(result["confirmed_task"]["status"], "cancelled")
         self.assertEqual(result["duration_seconds"], 11.0)
         self.assertEqual(result["loop_result"]["live"], True)
         self.assertEqual(result["loop_result"]["iterations_requested"], 3)
@@ -1563,8 +1606,9 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(result["reporting"]["interval_seconds"], 60)
         self.assertIn("mon_pnl_combined", result["reporting"]["heartbeat_prompt"])
         self.assertEqual(runner.call_count, 3)
-        self.assertEqual(tasks[0]["status"], "active")
+        self.assertEqual(tasks[0]["status"], "cancelled")
         self.assertIn("task_confirmed", [event["event_type"] for event in events])
+        self.assertIn("task_cancelled", [event["event_type"] for event in events])
         self.assertNotIn("live_order_submitted", [event["event_type"] for event in events])
 
     def test_confirm_and_run_live_loop_requires_finite_duration_before_activation(self) -> None:

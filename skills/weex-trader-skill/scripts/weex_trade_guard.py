@@ -563,7 +563,10 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         raw_order=dict(tp_sl_order),
     )
     clear_intent()
-    _output_json({"ok": True, **execution_payload}, args.pretty)
+    environment = intent.get("environment")
+    if not isinstance(environment, dict):
+        environment = _environment_for_mode(intent_mode, "futures")
+    _output_json({"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}, args.pretty)
     return 0
 
 

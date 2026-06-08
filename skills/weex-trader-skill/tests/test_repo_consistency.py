@@ -446,6 +446,18 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("TpWorkingType", order_params)
         self.assertIn("SlWorkingType", order_params)
 
+    def test_script_operations_demo_history_example_omits_symbol_filter(self) -> None:
+        script_operations = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+
+        self.assertNotRegex(
+            script_operations,
+            r"sim\.transaction\.get_order_history[^\n]*--query\s+'[^']*\"symbol\"",
+        )
+        self.assertIn(
+            "sim.transaction.get_order_history --trading-mode demo --query '{\"limit\":50}'",
+            script_operations,
+        )
+
     def test_contract_demo_api_uses_contract_definition_catalog(self) -> None:
         demo_reference = "references/contract-demo-api.zh-CN.md"
         skill_text = SKILL.read_text(encoding="utf-8")

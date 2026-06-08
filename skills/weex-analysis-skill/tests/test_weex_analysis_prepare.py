@@ -198,6 +198,24 @@ class PrepareReplayTests(unittest.TestCase):
         self.assertIn("spot_symbol_required", constraint_codes)
         self.assertIn("analysis_symbol_filter_applied", constraint_codes)
 
+    def test_prepare_replay_preserves_trader_environment_context(self) -> None:
+        payload = _make_replay_payload()
+        payload["trading_mode"] = "demo"
+        payload["environment"] = {
+            "trading_mode": "demo",
+            "label": "demo",
+            "market": "futures",
+            "uses_real_funds": False,
+            "notice": "This operation targets the WEEX simulated futures account environment.",
+        }
+        payload["account_scope"] = "sim_futures"
+
+        result = prep.prepare_replay_payload(payload, symbols={"BTCUSDT"})
+
+        self.assertEqual(result["trading_mode"], "demo")
+        self.assertEqual(result["environment"], payload["environment"])
+        self.assertEqual(result["account_scope"], "sim_futures")
+
     def test_prepare_replay_sets_top_level_symbol_when_single_symbol_filter_is_applied(self) -> None:
         payload = _make_replay_payload()
         payload["symbol"] = None

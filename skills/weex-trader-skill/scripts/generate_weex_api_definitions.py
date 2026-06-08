@@ -126,7 +126,16 @@ CONTRACT_DEMO_POSITION_FIELDS = [
 ]
 
 CONTRACT_DEMO_HISTORY_REQUEST = [
-    {"name": "symbol", "type": "String", "required": "No", "description": "Filter by trading pair."},
+    {
+        "name": "symbol",
+        "type": "String",
+        "required": "No",
+        "description": (
+            "Optional trading pair filter. Omit by default for demo history because normal "
+            "contract symbols such as BTCUSDT may be rejected unless the API accepts the "
+            "exact simulated symbol filter."
+        ),
+    },
     {"name": "limit", "type": "Integer", "required": "No", "description": "Number of records per page, 1-1000. Default 500."},
     {"name": "startTime", "type": "Long", "required": "No", "description": "Start time in Unix milliseconds. Must be less than or equal to endTime."},
     {"name": "endTime", "type": "Long", "required": "No", "description": "End time in Unix milliseconds. Must be within 90 days of startTime."},

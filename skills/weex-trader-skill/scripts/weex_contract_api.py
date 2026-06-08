@@ -371,6 +371,33 @@ def validate_confirm_flags(
         )
 
 
+def _upper_body_value(body: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = body.get(key)
+        if value is not None:
+            return str(value).strip().upper()
+    return ""
+
+
+def _is_directional_close_like_order(body: Dict[str, Any]) -> bool:
+    side = _upper_body_value(body, "side")
+    position_side = _upper_body_value(body, "positionSide", "position_side")
+    return (position_side == "LONG" and side == "SELL") or (
+        position_side == "SHORT" and side == "BUY"
+    )
+
+
+def validate_pending_order_routing(endpoint: Endpoint, body: Dict[str, Any]) -> None:
+    if endpoint.key != "transaction.place_pending_order":
+        return
+    if _is_directional_close_like_order(body):
+        raise SystemExit(
+            "pending_close_requires_tp_sl: price-threshold close requests must use "
+            "preview-tp-sl/confirm-tp-sl (placeTpSlOrder) because generic "
+            "place_pending_order is not guaranteed reduce-only"
+        )
+
+
 def execute_endpoint(
     client: WeexContractClient,
     endpoint_key: str,
@@ -385,6 +412,7 @@ def execute_endpoint(
     endpoint = ENDPOINTS[endpoint_key]
     mode = validate_endpoint_trading_mode(endpoint, trading_mode)
     validate_confirm_flags(endpoint, mode, dry_run, confirm_live, confirm_demo)
+    validate_pending_order_routing(endpoint, body)
 
     prepared = client.prepare_request(
         endpoint,

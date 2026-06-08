@@ -148,8 +148,10 @@ Simulated futures balance, position, and order-history reads use the `sim.*` end
 # Windows users: replace python3 with py -3
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.get_account_balance --trading-mode demo --pretty
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.get_all_positions --trading-mode demo --pretty
-python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"symbol":"BTCUSDT","limit":50}' --pretty
+python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"limit":50}' --pretty
 ```
+
+For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 
 Use `--dry-run` when you need to inspect the signed request without sending a mutating request:
 

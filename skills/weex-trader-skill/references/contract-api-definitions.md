@@ -853,7 +853,7 @@ NONE
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `symbol` | `String` | `No` | Filter by trading pair. |
+| `symbol` | `String` | `No` | Optional trading pair filter. Omit by default for demo history because normal contract symbols such as `BTCUSDT` may be rejected unless the API accepts the exact simulated symbol filter. |
 | `limit` | `Integer` | `No` | Number of records per page, 1-1000. Default 500. |
 | `startTime` | `Long` | `No` | Start time in Unix milliseconds. Must be less than or equal to endTime. |
 | `endTime` | `Long` | `No` | End time in Unix milliseconds. Must be within 90 days of startTime. |
