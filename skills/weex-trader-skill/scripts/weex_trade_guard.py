@@ -888,9 +888,13 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--language", choices=("zh", "en"), default=None, help="Language for human confirmation prompt.")
     preview.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
-    preview_tp_sl = subparsers.add_parser("preview-tp-sl", help="Preview risk before placing a futures TP/SL conditional order.")
+    preview_tp_sl = subparsers.add_parser(
+        "preview-tp-sl",
+        help="Preview a real trading only futures TP/SL conditional order; demo TP/SL is not supported.",
+        description="Preview risk before placing a futures TP/SL conditional order. This flow is real trading only; demo TP/SL is not supported.",
+    )
     preview_tp_sl.add_argument("--profile", required=True, help="Saved profile name.")
-    preview_tp_sl.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
+    preview_tp_sl.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE, help="TP/SL trading mode; real trading only because demo TP/SL is not supported.")
     preview_tp_sl.add_argument("--tp-sl-json", required=True, help="JSON TP/SL conditional order payload.")
     preview_tp_sl.add_argument("--ttl-seconds", type=int, default=300, help="Intent TTL in seconds.")
     preview_tp_sl.add_argument("--language", choices=("zh", "en"), default=None, help="Language for human confirmation prompt.")
@@ -904,12 +908,16 @@ def build_parser() -> argparse.ArgumentParser:
     confirm.add_argument("--confirm-demo", action="store_true", help="Required before sending a demo futures order.")
     confirm.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
-    confirm_tp_sl = subparsers.add_parser("confirm-tp-sl", help="Submit the last previewed futures TP/SL conditional order.")
+    confirm_tp_sl = subparsers.add_parser(
+        "confirm-tp-sl",
+        help="Submit the last previewed real trading futures TP/SL conditional order; demo TP/SL is not supported.",
+        description="Submit the last previewed futures TP/SL conditional order. This flow is real trading only; demo TP/SL is not supported.",
+    )
     confirm_tp_sl.add_argument("--intent-id", default=None, help="Optional explicit intent id to confirm.")
     confirm_tp_sl.add_argument("--risk-signature", default=None, help="Risk signature returned by preview-tp-sl.")
     confirm_tp_sl.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     confirm_tp_sl.add_argument("--confirm-live", action="store_true", help="Required before sending a real TP/SL order.")
-    confirm_tp_sl.add_argument("--confirm-demo", action="store_true", help="Rejected for unsupported demo TP/SL orders.")
+    confirm_tp_sl.add_argument("--confirm-demo", action="store_true", help="Rejected because demo TP/SL is not supported.")
     confirm_tp_sl.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     account_scan = subparsers.add_parser("account-scan", help="Review current account-level risk without an order preview.")

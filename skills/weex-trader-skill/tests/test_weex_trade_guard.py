@@ -199,6 +199,41 @@ class TradeGuardTests(unittest.TestCase):
 
         self.assertEqual(trader_result, analysis_result)
 
+    def test_closing_order_does_not_require_new_tp_sl_protection(self) -> None:
+        payload = {
+            "order_preview": {
+                "market": "futures",
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "position_side": "LONG",
+                "order_type": "MARKET",
+                "quantity": 0.01,
+            },
+            "account_snapshot": {
+                "equity": 50000,
+                "available_balance": 49000,
+            },
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "position_side": "LONG",
+                    "quantity": 0.01,
+                    "notional": 630,
+                }
+            ],
+            "open_orders": [],
+            "conditional_orders": [],
+            "recent_orders": [],
+            "market_snapshot": {"current_price": 63000},
+        }
+
+        trader_result = trade_guard.analysis.analyze_order_risk(payload)
+        analysis_result = analysis_skill.analyze_order_risk(payload)
+
+        for result in (trader_result, analysis_result):
+            self.assertEqual(result["tp_sl_review"]["required_qty"], 0.0)
+            self.assertFalse(any(alert["type"] == "missing_tp_sl" for alert in result["alerts"]))
+
     def test_preview_order_saves_intent_and_returns_analysis_output(self) -> None:
         args = mock.Mock(
             profile="demo",

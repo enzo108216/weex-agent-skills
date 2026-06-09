@@ -108,7 +108,7 @@ python3 scripts/weex_analysis_cli.py review-trades --input replay.json --format 
 ```
 
 ```bash
-python3 scripts/weex_analysis_prepare.py prepare-replay --input replay.json --symbol BTCUSDT --max-orders 2000 --max-fills 2000 --pretty
+python3 scripts/weex_analysis_prepare.py prepare-replay --input replay.json --symbol BTCUSDT --account-scope sim_futures --start-time-ms 1717200000000 --end-time-ms 1719791999000 --max-orders 2000 --max-fills 2000 --pretty
 ```
 
 ```bash
@@ -150,7 +150,7 @@ python3 scripts/weex_trade_data_aggregator.py collect-replay --profile main --ma
 From this skill's directory:
 
 ```bash
-python3 scripts/weex_analysis_prepare.py prepare-replay --input /tmp/weex-live-replay.json --symbol BTCUSDT --max-orders 2000 --max-fills 2000 --pretty > /tmp/weex-live-replay-prepared.json
+python3 scripts/weex_analysis_prepare.py prepare-replay --input /tmp/weex-live-replay.json --symbol BTCUSDT --account-scope futures --start-time-ms 1717200000000 --end-time-ms 1719791999000 --max-orders 2000 --max-fills 2000 --pretty > /tmp/weex-live-replay-prepared.json
 python3 scripts/weex_analysis_cli.py analyze-replay --input /tmp/weex-live-replay-prepared.json --format text
 ```
 
@@ -158,6 +158,7 @@ Notes:
 
 - Keep `--profile` explicit unless you have already configured a default saved profile.
 - This flow is read-only. It collects replay data, prepares a smaller replay payload, and analyzes it. It does not place, amend, or cancel orders.
+- `prepare-replay` can filter by `--symbol`, `--account-scope`, `--start-time-ms`, and `--end-time-ms`, then trim with `--max-orders` and `--max-fills`.
 - If you want to force a truncation check, lower `--max-orders` and `--max-fills` until the prepared payload returns `partial=true` with `analysis_orders_truncated` or `analysis_fills_truncated`.
 - Replay/profile `risk_score` reflects replay behavior only; it no longer uses the current account snapshot as a stand-in for historical trading style.
 

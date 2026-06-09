@@ -160,6 +160,7 @@ def _payload_environment_context(payload: Any) -> dict[str, Any]:
         environment = {}
     trading_mode = payload.get("trading_mode") or environment.get("trading_mode")
     account_scope = payload.get("account_scope")
+    language = payload.get("language") or payload.get("locale") or environment.get("language")
     context: dict[str, Any] = {}
     if trading_mode not in (None, ""):
         context["trading_mode"] = str(trading_mode)
@@ -167,6 +168,8 @@ def _payload_environment_context(payload: Any) -> dict[str, Any]:
         context["environment"] = dict(environment)
     if account_scope not in (None, ""):
         context["account_scope"] = str(account_scope)
+    if language not in (None, ""):
+        context["language"] = str(language)
     return context
 
 
@@ -185,11 +188,22 @@ def _attach_standard_disclaimer(result: dict[str, Any]) -> dict[str, Any]:
     return updated
 
 
+def _result_language(result: dict[str, Any], environment: dict[str, Any]) -> str:
+    language = str(result.get("language") or environment.get("language") or "").strip().lower()
+    if language.startswith("zh"):
+        return "zh"
+    return "en"
+
+
 def _user_facing_trading_mode_label(environment: dict[str, Any], result: dict[str, Any]) -> str:
     mode = str(environment.get("trading_mode") or result.get("trading_mode") or "").strip().lower()
     if mode == "demo":
+        if _result_language(result, environment) == "zh":
+            return "模拟盘"
         return "demo trading"
     if mode == "live":
+        if _result_language(result, environment) == "zh":
+            return "真实盘"
         return "real trading"
     return mode or "unknown"
 
@@ -206,6 +220,8 @@ def _append_standard_disclaimer(lines: list[str], disclaimer: Any) -> None:
 def _environment_text_lines(result: dict[str, Any]) -> list[str]:
     environment = result.get("environment")
     if not isinstance(environment, dict):
+        environment = {}
+    if not environment and result.get("trading_mode") in (None, ""):
         return []
     lines = [
         f"Trading Mode: {_user_facing_trading_mode_label(environment, result)}",
@@ -511,7 +527,7 @@ def analyze_snapshot(payload: Any) -> dict[str, Any]:
                 f"Largest position: {largest_position['symbol']} ({round(float(share) * 100, 2)}% of gross)"
             )
 
-    return _attach_standard_disclaimer({
+    result = _attach_payload_context({
         "positions_count": len(normalized_positions),
         "equity": _decimal_to_float(equity),
         "available_balance": _decimal_to_float(available_balance),
@@ -526,7 +542,8 @@ def analyze_snapshot(payload: Any) -> dict[str, Any]:
         "risk_flags": risk_flags,
         "summary_lines": summary_lines,
         **status_context,
-    })
+    }, payload)
+    return _attach_standard_disclaimer(result)
 
 
 def normalize_fill(fill: dict[str, Any]) -> dict[str, Any]:
@@ -1242,7 +1259,7 @@ def analyze_fills(payload: Any) -> dict[str, Any]:
     if pnl_samples:
         summary_lines.append(f"Fill win rate: {round(float(win_rate or Decimal('0')) * 100, 2)}%")
 
-    return _attach_standard_disclaimer({
+    result = _attach_payload_context({
         "fills_count": len(fills),
         "symbols": sorted(symbols),
         "buy_volume": _decimal_to_float(buy_volume),
@@ -1255,7 +1272,8 @@ def analyze_fills(payload: Any) -> dict[str, Any]:
         "fills": fills,
         "summary_lines": summary_lines,
         **status_context,
-    })
+    }, payload)
+    return _attach_standard_disclaimer(result)
 
 
 def _windowed_event_count(timestamps: list[int], window_ms: int) -> int:
@@ -1675,7 +1693,7 @@ def analyze_profile(payload: Any) -> dict[str, Any]:
             "Sample size is still too small for a stable persona classification.",
             "Use the current metrics as directional observations instead of a firm trading profile.",
         ]
-        return _attach_standard_disclaimer({
+        result = _attach_payload_context({
             "selected_period": selected_period,
             "sample_quality": sample_quality,
             "profile_tier": "basic",
@@ -1686,9 +1704,10 @@ def analyze_profile(payload: Any) -> dict[str, Any]:
             "partial": partial,
             "degraded_reasons": degraded_reasons,
             "constraints": constraints,
-        })
+        }, payload)
+        return _attach_standard_disclaimer(result)
 
-    return _attach_standard_disclaimer({
+    result = _attach_payload_context({
         "selected_period": selected_period,
         "sample_quality": sample_quality,
         "profile_tier": "full" if sample_quality == "full" and not partial else "weak",
@@ -1705,7 +1724,8 @@ def analyze_profile(payload: Any) -> dict[str, Any]:
         "partial": partial,
         "degraded_reasons": degraded_reasons,
         "constraints": constraints,
-    })
+    }, payload)
+    return _attach_standard_disclaimer(result)
 
 
 def _derive_profile_metrics_from_replay_payload(

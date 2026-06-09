@@ -1116,6 +1116,7 @@ class MonitorTaskTests(unittest.TestCase):
             )
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("confirmation-token", rejected.stderr)
+            self.assertIn("confirm-text returned task", rejected.stderr)
 
             confirmed = subprocess.run(
                 [
@@ -1136,6 +1137,50 @@ class MonitorTaskTests(unittest.TestCase):
             confirmed_payload = json.loads(confirmed.stdout)
 
         self.assertEqual(confirmed_payload["status"], "active")
+
+    def test_list_accepts_pretty_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = {**os.environ, "WEEX_MONITOR_SKILL_HOME": tempdir}
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "list", "--pretty"],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout), [])
+
+    def test_confirm_text_live_requires_duration_in_help_and_parser(self) -> None:
+        help_result = subprocess.run(
+            [sys.executable, str(SCRIPT), "confirm-text-live", "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("--duration-seconds", help_result.stdout)
+        self.assertIn("required", help_result.stdout.lower())
+
+        parser = monitor.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["confirm-text-live", "--task-json", "{}"])
+
+    def test_run_loop_missing_mode_error_mentions_confirm_demo(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = {**os.environ, "WEEX_MONITOR_SKILL_HOME": tempdir}
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "run-loop"],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--confirm-demo", completed.stderr)
 
     def test_prepare_confirmation_refuses_to_overwrite_non_draft_task(self) -> None:
         task_json = {
@@ -1842,6 +1887,57 @@ class MonitorTaskTests(unittest.TestCase):
         runner.assert_not_called()
         self.assertEqual(tasks[0]["status"], "draft")
         self.assertNotIn("task_confirmed", [event["event_type"] for event in events])
+
+    def test_confirm_and_run_live_loop_token_mismatch_mentions_confirm_text_live_returned_task(self) -> None:
+        task_json = {
+            "task_id": "mon_pnl_live_token_mismatch",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.01",
+                    "unrealized_pnl": "4.2",
+                }
+            ],
+            "degraded_reasons": [],
+            "partial": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(monitor, "_run_json_command", return_value=account_payload):
+                    prepared = monitor.prepare_live_confirmation(task_json, duration_seconds=5, now_ms=1000)
+                mismatched_task = dict(prepared["task"])
+                mismatched_task["task_id"] = "mon_pnl_other_task"
+                with mock.patch.object(monitor, "_run_json_command") as runner:
+                    with self.assertRaisesRegex(monitor.MonitorInputError, "confirm-text-live returned task"):
+                        monitor.confirm_and_run_live_loop(
+                            mismatched_task,
+                            confirm_monitor=True,
+                            confirmation_token=prepared["confirmation_token"],
+                            confirm_live=True,
+                            duration_seconds=5,
+                            sleep_seconds=0,
+                            now_ms=2000,
+                        )
+
+        runner.assert_not_called()
 
     def test_confirm_and_run_live_loop_rejects_duration_mismatch_from_live_confirmation(self) -> None:
         task_json = {

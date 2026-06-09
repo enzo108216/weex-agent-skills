@@ -246,6 +246,7 @@ def _bucket_protection_state(
     open_orders: list[dict[str, Any]],
     conditional_orders: list[dict[str, Any]],
     preview_quantity: Decimal = Decimal("0"),
+    preview_action: str = "entry",
     preview_has_take_profit: bool = False,
     preview_has_stop_loss: bool = False,
     allow_symbol_level: bool = False,
@@ -277,9 +278,14 @@ def _bucket_protection_state(
         if quantity is not None:
             reserved_close_qty += quantity
 
-    required_qty += abs(preview_quantity)
-    take_profit_covered_qty = abs(preview_quantity) if preview_has_take_profit else Decimal("0")
-    stop_loss_covered_qty = abs(preview_quantity) if preview_has_stop_loss else Decimal("0")
+    preview_abs_qty = abs(preview_quantity)
+    if preview_abs_qty:
+        if preview_action == "entry":
+            required_qty += preview_abs_qty
+        else:
+            reserved_close_qty += preview_abs_qty
+    take_profit_covered_qty = preview_abs_qty if preview_action == "entry" and preview_has_take_profit else Decimal("0")
+    stop_loss_covered_qty = preview_abs_qty if preview_action == "entry" and preview_has_stop_loss else Decimal("0")
     take_profit_full = False
     stop_loss_full = False
 
@@ -306,14 +312,13 @@ def _bucket_protection_state(
             stop_loss_covered_qty += quantity
 
     if quantity_complete:
+        required_qty = max(Decimal("0"), required_qty - reserved_close_qty)
         if take_profit_full:
             take_profit_covered_qty = required_qty
         if stop_loss_full:
             stop_loss_covered_qty = required_qty
-        take_profit_covered_qty = max(Decimal("0"), take_profit_covered_qty - reserved_close_qty)
-        stop_loss_covered_qty = max(Decimal("0"), stop_loss_covered_qty - reserved_close_qty)
-        has_take_profit = required_qty > 0 and take_profit_covered_qty + POSITION_EPSILON >= required_qty
-        has_stop_loss = required_qty > 0 and stop_loss_covered_qty + POSITION_EPSILON >= required_qty
+        has_take_profit = required_qty <= 0 or take_profit_covered_qty + POSITION_EPSILON >= required_qty
+        has_stop_loss = required_qty <= 0 or stop_loss_covered_qty + POSITION_EPSILON >= required_qty
         return {
             "required_qty": _decimal_to_float(required_qty),
             "take_profit_covered_qty": _decimal_to_float(take_profit_covered_qty),
@@ -384,6 +389,7 @@ def analyze_order_risk(payload: Any) -> dict[str, Any]:
             open_orders=open_orders,
             conditional_orders=conditional_orders,
             preview_quantity=quantity,
+            preview_action=_infer_fill_action(order_preview, order_preview),
             preview_has_take_profit=bool(tp_sl.get("has_take_profit")),
             preview_has_stop_loss=bool(tp_sl.get("has_stop_loss")),
             allow_symbol_level=str(_pick(order_preview, "symbol") or "").upper() not in hedged_symbols,

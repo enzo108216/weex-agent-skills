@@ -321,6 +321,15 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn(expected, PROFILE_ONBOARDING_REFERENCE.read_text(encoding="utf-8"))
         self.assertIn(expected, LINUX_VAULT_REFERENCE.read_text(encoding="utf-8"))
 
+    def test_script_operations_documents_raw_call_argument_order_and_post_query_guard(self) -> None:
+        text = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+
+        self.assertIn("--profile is a global argument", text)
+        self.assertIn("place it before `call`", text)
+        self.assertIn("use `--endpoint <key>`", text)
+        self.assertIn("Some official query endpoints use POST", text)
+        self.assertIn("protected as mutating by the local guard", text)
+
     def test_setup_docs_avoid_shell_specific_line_continuations(self) -> None:
         offenders: list[str] = []
         for path in (SCRIPT_OPERATIONS_REFERENCE, PROFILE_ONBOARDING_REFERENCE, LINUX_VAULT_REFERENCE):

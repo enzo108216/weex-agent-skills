@@ -405,7 +405,9 @@ def confirm_task(
     if not confirm_monitor:
         raise MonitorInputError("refusing to activate monitor task without --confirm-monitor")
     if confirmation_token is None or str(confirmation_token).strip() == "":
-        raise MonitorInputError("confirmation-token is required before activating monitor task")
+        raise MonitorInputError(
+            "confirmation-token is required before activating monitor task; reuse the confirm-text returned task and confirmation_token"
+        )
     confirmed_at_ms = now_ms if now_ms is not None else _now_ms()
     task = _merge_normalized_task(raw_task, now_ms=confirmed_at_ms)
     task["status"] = "active"
@@ -1894,13 +1896,13 @@ def _consume_confirmation_token(
         (confirmation_token,),
     ).fetchone()
     if row is None:
-        raise MonitorInputError("confirmation-token was not rendered by confirm-text")
+        raise MonitorInputError("confirmation-token was not rendered by confirm-text; reuse the confirm-text returned task")
     if row["used_at_ms"] is not None:
         raise MonitorInputError("confirmation-token has already been used")
     if row["task_id"] != task["task_id"]:
-        raise MonitorInputError("confirmation-token does not match task_id")
+        raise MonitorInputError("confirmation-token does not match task_id; reuse the confirm-text returned task")
     if row["task_hash"] != task_hash:
-        raise MonitorInputError("confirmation-token does not match monitor task details")
+        raise MonitorInputError("confirmation-token does not match monitor task details; reuse the confirm-text returned task")
     raise MonitorInputError("confirmation-token has already been used")
 
 
@@ -1924,20 +1926,28 @@ def _validate_live_confirmation_token(
             WHERE confirmation_token = ?
             """,
             (str(confirmation_token).strip(),),
-        ).fetchone()
+    ).fetchone()
     if row is None:
-        raise MonitorInputError("live confirmation token was not rendered by confirm-text-live")
+        raise MonitorInputError(
+            "live confirmation token was not rendered by confirm-text-live; reuse the confirm-text-live returned task"
+        )
     if row["used_at_ms"] is not None:
         raise MonitorInputError("live confirmation token has already been used")
 
     stored_task = json.loads(row["task_json"])
     if row["task_id"] != normalize_task(raw_task)["task_id"]:
-        raise MonitorInputError("live confirmation token does not match task_id")
+        raise MonitorInputError(
+            "live confirmation token does not match task_id; reuse the confirm-text-live returned task"
+        )
     if row["task_hash"] != _confirmation_fingerprint(raw_task):
-        raise MonitorInputError("live confirmation token does not match monitor task details")
+        raise MonitorInputError(
+            "live confirmation token does not match monitor task details; reuse the confirm-text-live returned task"
+        )
     stored_live_snapshot = stored_task.get("live_position_confirmation")
     if not isinstance(stored_live_snapshot, dict):
-        raise MonitorInputError("live confirmation token was not rendered by confirm-text-live")
+        raise MonitorInputError(
+            "live confirmation token was not rendered by confirm-text-live; reuse the confirm-text-live returned task"
+        )
     if stored_live_snapshot != rendered_live_snapshot:
         raise MonitorInputError("live confirmation snapshot does not match rendered confirmation")
     stored_duration = stored_task.get("live_run_duration_seconds")
@@ -2412,7 +2422,12 @@ def build_parser() -> argparse.ArgumentParser:
     live_confirm = subparsers.add_parser("confirm-text-live")
     live_confirm.add_argument("--task-json")
     live_confirm.add_argument("--task-file")
-    live_confirm.add_argument("--duration-seconds", type=float)
+    live_confirm.add_argument(
+        "--duration-seconds",
+        type=float,
+        required=True,
+        help="Required finite live run duration in seconds.",
+    )
     live_confirm.add_argument("--reporting-interval-seconds", type=int)
     live_confirm.add_argument("--language", choices=("zh", "en"), default=None)
 
@@ -2422,7 +2437,8 @@ def build_parser() -> argparse.ArgumentParser:
     eval_pnl.add_argument("--positions-json")
     eval_pnl.add_argument("--positions-file")
 
-    subparsers.add_parser("list")
+    list_parser = subparsers.add_parser("list")
+    list_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     events = subparsers.add_parser("events")
     events.add_argument("--task-id")
@@ -2530,7 +2546,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 if not args.dry_run:
-                    raise MonitorInputError("run-loop requires --dry-run or --confirm-live")
+                    raise MonitorInputError("run-loop requires --dry-run, --confirm-live, or --confirm-demo")
                 positions_sequence = _read_json_arg(
                     args.positions_sequence_json,
                     args.positions_sequence_file,

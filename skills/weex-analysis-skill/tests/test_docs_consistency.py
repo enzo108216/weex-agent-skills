@@ -88,6 +88,13 @@ class AnalysisDocsConsistencyTests(unittest.TestCase):
         self.assertIn(EXPECTED_STANDARD_DISCLAIMER, skill_text)
         self.assertIn(EXPECTED_STANDARD_DISCLAIMER, readme_text)
 
+    def test_readme_prepare_replay_example_lists_all_filter_options(self) -> None:
+        readme_text = README.read_text(encoding="utf-8")
+
+        self.assertIn("--account-scope", readme_text)
+        self.assertIn("--start-time-ms", readme_text)
+        self.assertIn("--end-time-ms", readme_text)
+
 
 if __name__ == "__main__":
     unittest.main()

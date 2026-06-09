@@ -734,6 +734,24 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(call_kwargs["body"]["TpWorkingType"], "CONTRACT_PRICE")
         self.assertEqual(call_kwargs["body"]["SlWorkingType"], "MARK_PRICE")
 
+    def test_contract_cancel_order_help_does_not_advertise_demo_flags(self) -> None:
+        completed = self.run_command(str(SCRIPTS / "weex_contract_api.py"), "cancel-order", "--help")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--confirm-live", completed.stdout)
+        self.assertNotIn("--confirm-demo", completed.stdout)
+        self.assertNotIn("--trading-mode", completed.stdout)
+
+    def test_trade_guard_tp_sl_help_states_demo_is_not_supported(self) -> None:
+        preview = self.run_command(str(SCRIPTS / "weex_trade_guard.py"), "preview-tp-sl", "--help")
+        confirm = self.run_command(str(SCRIPTS / "weex_trade_guard.py"), "confirm-tp-sl", "--help")
+
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(confirm.returncode, 0, confirm.stderr)
+        self.assertIn("real trading only", preview.stdout)
+        self.assertIn("demo TP/SL is not supported", preview.stdout)
+        self.assertIn("demo TP/SL is not supported", confirm.stdout)
+
     def test_spot_prepare_request_rejects_body_for_get(self) -> None:
         import weex_spot_api as spot
 

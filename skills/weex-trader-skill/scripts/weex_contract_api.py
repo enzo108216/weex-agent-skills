@@ -646,8 +646,8 @@ def cmd_cancel_order(args: argparse.Namespace, client: WeexContractClient) -> in
         body={},
         dry_run=args.dry_run,
         confirm_live=args.confirm_live,
-        confirm_demo=args.confirm_demo,
-        trading_mode=args.trading_mode,
+        confirm_demo=False,
+        trading_mode=DEFAULT_TRADING_MODE,
         pretty=args.pretty,
     )
 
@@ -782,8 +782,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel.add_argument("--order-id", default=None, help="WEEX order id to cancel")
     p_cancel.add_argument("--client-oid", default=None, help="Client order id to cancel when you do not have the WEEX order id")
     p_cancel.add_argument("--dry-run", action="store_true", help="Build and sign the cancel request without sending it")
-    add_trading_mode_argument(p_cancel)
-    add_confirm_arguments(p_cancel)
+    p_cancel.add_argument("--confirm-live", action="store_true", help="Allow the live cancel request")
     p_cancel.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
     p_ticker = sub.add_parser(
