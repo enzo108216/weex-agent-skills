@@ -272,7 +272,7 @@ class TradeGuardTests(unittest.TestCase):
                 "label": "demo",
                 "market": "futures",
                 "uses_real_funds": False,
-                "notice": "This operation targets the WEEX simulated futures account environment.",
+                "notice": "This operation targets WEEX futures demo mode.",
             },
             "order_preview": {
                 "symbol": "BTCSUSDT",
@@ -304,7 +304,11 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(saved_intent["environment"]["trading_mode"], "demo")
         self.assertEqual(payload["environment"]["trading_mode"], "demo")
         self.assertFalse(payload["environment"]["uses_real_funds"])
-        self.assertIn("demo", payload["user_confirmation"]["reply_instruction"].lower())
+        self.assertIn("Trading mode: demo trading", payload["user_confirmation"]["reply_instruction"])
+        self.assertNotIn("simulated futures environment", payload["user_confirmation"]["reply_instruction"].lower())
+        self.assertNotIn("simulated account", payload["user_confirmation"]["reply_instruction"].lower())
+        self.assertNotIn("Trading mode: demo;", payload["user_confirmation"]["reply_instruction"])
+        self.assertNotIn("Trading environment:", payload["user_confirmation"]["reply_instruction"])
         aggregator_instance.collect_order_risk_payload.assert_called_once_with(
             profile_name="demo-profile",
             market="futures",
@@ -337,8 +341,22 @@ class TradeGuardTests(unittest.TestCase):
         )
         risk_payload = {"order_preview": {"symbol": "ETHUSDT", "market": "futures"}}
         analysis_payload = {
+            "order_preview": {
+                "market": "futures",
+                "symbol": "ETHUSDT",
+                "side": "BUY",
+                "position_side": "LONG",
+                "order_type": "MARKET",
+                "quantity": 0.01,
+            },
             "has_risk": True,
-            "alerts": [{"type": "missing_tp_sl"}],
+            "alerts": [
+                {
+                    "type": "missing_tp_sl",
+                    "level": "high",
+                    "reason": "The order is missing take-profit or stop-loss protection.",
+                }
+            ],
             "confirmation_required": True,
             "next_action_hint": "continue order",
         }
@@ -357,7 +375,18 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["user_confirmation"]["language"], "zh")
         self.assertEqual(payload["user_confirmation"]["reply_text"], "确认")
-        self.assertIn("回复：确认", payload["user_confirmation"]["reply_instruction"])
+        self.assertEqual(payload["user_confirmation"]["switch_reply_text"], "切换到模拟盘")
+        reply_instruction = payload["user_confirmation"]["reply_instruction"]
+        self.assertTrue(reply_instruction.startswith("当前交易环境：真实盘\n本次操作将使用真实资金，请谨慎确认。"))
+        self.assertIn("真实盘风险预览已生成，订单尚未提交。", reply_instruction)
+        self.assertIn("订单：ETHUSDT 合约，市价开多，数量 0.01。", reply_instruction)
+        self.assertIn(
+            "高风险提示：这笔订单没有止盈或止损保护，需要你明确接受无保护仓位风险后才能继续。",
+            reply_instruction,
+        )
+        self.assertIn("如果确认使用真实资金提交这笔订单，请回复：确认", reply_instruction)
+        self.assertIn("如果需要切换为模拟盘，请回复：切换到模拟盘。", reply_instruction)
+        self.assertNotIn("当前盘别：live", reply_instruction)
         self.assertNotIn("确认下单", payload["user_confirmation"]["reply_instruction"])
 
     def test_preview_order_adds_english_reply_confirmation_prompt(self) -> None:
@@ -399,8 +428,32 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["user_confirmation"]["language"], "en")
         self.assertEqual(payload["user_confirmation"]["reply_text"], "confirm")
+        self.assertIn("Trading mode: real trading", payload["user_confirmation"]["reply_instruction"])
+        self.assertNotIn("Trading environment:", payload["user_confirmation"]["reply_instruction"])
+        self.assertNotIn("Trading environment: real account", payload["user_confirmation"]["reply_instruction"])
         self.assertIn("reply: confirm", payload["user_confirmation"]["reply_instruction"])
+        self.assertNotIn("Trading mode: live", payload["user_confirmation"]["reply_instruction"])
         self.assertNotIn("确认", payload["user_confirmation"]["reply_instruction"])
+
+    def test_english_confirmation_missing_order_fields_use_english_placeholder(self) -> None:
+        confirmation = trade_guard._build_user_confirmation(
+            "en",
+            environment={"trading_mode": "live", "uses_real_funds": True},
+            preview_context={
+                "order_preview": {
+                    "market": "futures",
+                    "side": "BUY",
+                    "position_side": "LONG",
+                    "order_type": "MARKET",
+                    "quantity": "",
+                },
+                "alerts": [],
+            },
+            include_mode_switch=True,
+        )
+
+        self.assertIn("Order: not returned futures, market open long, quantity not returned.", confirmation["reply_instruction"])
+        self.assertNotIn("未返回", confirmation["reply_instruction"])
 
     def test_confirm_order_rejects_expired_intent(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)
@@ -500,8 +553,9 @@ class TradeGuardTests(unittest.TestCase):
                 intent_state.save_intent(intent)
                 stream = io.StringIO()
                 with mock.patch.object(trade_guard, "_submit_order", return_value=execution_payload) as submit_mock:
-                    with mock.patch.object(sys, "stdout", stream):
-                        exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+                    with mock.patch.object(trade_guard, "resolve_language", return_value="zh"):
+                        with mock.patch.object(sys, "stdout", stream):
+                            exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
                 remaining_intent = intent_state.load_intent()
 
         self.assertEqual(exit_code, 0)
@@ -520,6 +574,7 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIsNone(remaining_intent)
         payload = json.loads(stream.getvalue())
         self.assertEqual(payload["environment"]["trading_mode"], "demo")
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：模拟盘")
 
     def test_confirm_order_rejects_demo_intent_with_live_flag(self) -> None:
         args = mock.Mock(
@@ -865,8 +920,9 @@ class TradeGuardTests(unittest.TestCase):
                     "_submit_live_tp_sl_order",
                     return_value={"algoId": "7001", "clientAlgoId": "mon_price_demo"},
                 ) as submit_mock:
-                    with mock.patch.object(sys, "stdout", stream):
-                        exit_code = trade_guard.cmd_confirm_tp_sl(args, now_ms=2000)
+                    with mock.patch.object(trade_guard, "resolve_language", return_value="zh"):
+                        with mock.patch.object(sys, "stdout", stream):
+                            exit_code = trade_guard.cmd_confirm_tp_sl(args, now_ms=2000)
                 remaining_intent = intent_state.load_intent()
 
         self.assertEqual(exit_code, 0)
@@ -879,6 +935,7 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(payload["environment"]["market"], "futures")
         self.assertTrue(payload["environment"]["uses_real_funds"])
         self.assertEqual(payload["environment"]["notice"], "custom live TP/SL environment")
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
 
     def test_confirm_order_requires_intent_id_and_risk_signature(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)
@@ -955,7 +1012,7 @@ class TradeGuardTests(unittest.TestCase):
         submit_mock.assert_not_called()
 
     def test_account_scan_command_returns_analysis_output(self) -> None:
-        args = mock.Mock(profile="demo", market="futures", symbol="BTCUSDT", pretty=True)
+        args = mock.Mock(profile="demo", market="futures", trading_mode="live", symbol="BTCUSDT", language="zh", pretty=True)
         aggregator_instance = mock.Mock()
         aggregator_instance.collect_account_risk_payload.return_value = {
             "mode": "account_scan",
@@ -979,8 +1036,11 @@ class TradeGuardTests(unittest.TestCase):
                 with mock.patch.object(sys, "stdout", stream):
                     exit_code = trade_guard.cmd_account_scan(args)
 
+        payload = json.loads(stream.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertIn('"low_free_balance"', stream.getvalue())
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
+        self.assertNotIn("user_confirmation", payload)
+        self.assertIn("low_free_balance", stream.getvalue())
 
     def test_main_returns_structured_json_when_account_scan_aggregation_fails(self) -> None:
         aggregator_instance = mock.Mock()

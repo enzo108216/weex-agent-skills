@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
 from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
+from weex_profile_language import resolve_language
 from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
 ProfileError = RuntimeError
@@ -323,15 +324,30 @@ def environment_for_mode(trading_mode: str) -> Dict[str, Any]:
             "label": "demo",
             "market": "futures",
             "uses_real_funds": False,
-            "notice": "This operation targets the WEEX simulated futures account environment.",
+            "notice": "This operation targets WEEX futures demo mode.",
         }
     return {
         "trading_mode": "live",
         "label": "live",
         "market": "futures",
         "uses_real_funds": True,
-        "notice": "This operation targets the real WEEX futures account environment.",
+        "notice": "This operation targets real WEEX futures trading.",
     }
+
+
+def user_environment_prefix(environment: Dict[str, Any], language: Optional[str] = None) -> str:
+    resolved_language = resolve_language(language)
+    mode = normalize_trading_mode(str(environment.get("trading_mode") or DEFAULT_TRADING_MODE))
+    if resolved_language == "zh":
+        label = "模拟盘" if mode == "demo" else "真实盘"
+        return f"当前交易环境：{label}"
+    label = "demo trading" if mode == "demo" else "real trading"
+    return f"Current trading mode: {label}"
+
+
+def add_environment_context(payload: Dict[str, Any], environment: Dict[str, Any]) -> None:
+    payload["environment"] = environment
+    payload["user_environment_prefix"] = user_environment_prefix(environment)
 
 
 def validate_endpoint_trading_mode(endpoint: Endpoint, trading_mode: str) -> str:
@@ -431,7 +447,7 @@ def execute_endpoint(
             "body": body,
         }
         if environment is not None:
-            preview["environment"] = environment
+            add_environment_context(preview, environment)
         output_json(preview, pretty)
         return 0
 
@@ -445,7 +461,7 @@ def execute_endpoint(
         "result": response.get("data") if response.get("ok") else response.get("error"),
     }
     if environment is not None:
-        payload["environment"] = environment
+        add_environment_context(payload, environment)
     output_json(payload, pretty)
     return 0 if response.get("ok") else 1
 
@@ -677,7 +693,7 @@ def add_trading_mode_argument(parser: argparse.ArgumentParser) -> None:
         "--trading-mode",
         choices=TRADING_MODES,
         default=DEFAULT_TRADING_MODE,
-        help="Trading environment for private contract endpoints",
+        help="Trading mode for private contract endpoints",
     )
 
 

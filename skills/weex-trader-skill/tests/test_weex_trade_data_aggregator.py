@@ -180,16 +180,23 @@ class ReplayCollectionTests(unittest.TestCase):
         fetcher.fetch_futures_klines.return_value = []
         trade_aggregator = aggregator.TradeDataAggregator(fetcher=fetcher)
 
-        result = trade_aggregator.collect_replay_payload(
-            profile_name="demo",
-            market="futures",
-            trading_mode="demo",
-            period="7d",
-            symbol="BTCUSDT",
-        )
+        with mock.patch.object(aggregator, "resolve_language", return_value="zh"):
+            result = trade_aggregator.collect_replay_payload(
+                profile_name="demo",
+                market="futures",
+                trading_mode="demo",
+                period="7d",
+                symbol="BTCUSDT",
+            )
 
         self.assertEqual(result["trading_mode"], "demo")
         self.assertEqual(result["environment"]["trading_mode"], "demo")
+        self.assertEqual(result["user_environment_prefix"], "当前交易环境：模拟盘")
+        self.assertEqual(
+            result["environment"]["notice"],
+            "This operation targets WEEX futures demo mode.",
+        )
+        self.assertNotIn("account environment", result["environment"]["notice"])
         self.assertEqual(result["balances"][0]["account_scope"], "sim_futures")
         self.assertEqual(result["positions"][0]["account_scope"], "sim_futures")
         self.assertEqual(result["positions"][0]["symbol"], "BTCUSDT")
@@ -1582,15 +1589,22 @@ class AggregatorCliTests(unittest.TestCase):
         fetcher.fetch_futures_klines.return_value = []
         trade_aggregator = aggregator.TradeDataAggregator(fetcher=fetcher)
 
-        result = trade_aggregator.collect_account_risk_payload(
-            profile_name="demo",
-            market="futures",
-            trading_mode="demo",
-            symbol="BTCUSDT",
-        )
+        with mock.patch.object(aggregator, "resolve_language", return_value="zh"):
+            result = trade_aggregator.collect_account_risk_payload(
+                profile_name="demo",
+                market="futures",
+                trading_mode="demo",
+                symbol="BTCUSDT",
+            )
 
         self.assertEqual(result["trading_mode"], "demo")
         self.assertEqual(result["environment"]["trading_mode"], "demo")
+        self.assertEqual(result["user_environment_prefix"], "当前交易环境：模拟盘")
+        self.assertEqual(
+            result["environment"]["notice"],
+            "This operation targets WEEX futures demo mode.",
+        )
+        self.assertNotIn("account environment", result["environment"]["notice"])
         self.assertEqual(result["account_snapshot"]["account_scope"], "sim_futures")
         self.assertEqual(result["positions"][0]["account_scope"], "sim_futures")
         self.assertEqual(result["positions"][0]["symbol"], "BTCUSDT")

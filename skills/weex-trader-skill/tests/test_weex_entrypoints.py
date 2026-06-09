@@ -564,18 +564,19 @@ runpy.run_path(script_path, run_name="__main__")
         }
 
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            exit_code = contract.execute_endpoint(
-                client=client,
-                endpoint_key="sim.transaction.place_order",
-                query={},
-                body=body,
-                dry_run=True,
-                confirm_live=False,
-                confirm_demo=True,
-                trading_mode="demo",
-                pretty=False,
-            )
+        with mock.patch.object(contract, "resolve_language", return_value="zh", create=True):
+            with contextlib.redirect_stdout(stdout):
+                exit_code = contract.execute_endpoint(
+                    client=client,
+                    endpoint_key="sim.transaction.place_order",
+                    query={},
+                    body=body,
+                    dry_run=True,
+                    confirm_live=False,
+                    confirm_demo=True,
+                    trading_mode="demo",
+                    pretty=False,
+                )
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
@@ -584,7 +585,45 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(payload["body"], body)
         self.assertEqual(payload["environment"]["trading_mode"], "demo")
         self.assertFalse(payload["environment"]["uses_real_funds"])
+        self.assertEqual(
+            payload["environment"]["notice"],
+            "This operation targets WEEX futures demo mode.",
+        )
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：模拟盘")
+        self.assertNotIn("account environment", payload["environment"]["notice"])
         self.assertEqual(payload["headers"]["ACCESS-SIGN"], "***")
+
+    def test_contract_private_order_query_result_includes_environment_prefix(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        client.prepare_request.return_value = {
+            "method": "GET",
+            "url": "https://api-contract.weex.com/capi/v3/order/history",
+            "headers": {},
+            "data": None,
+        }
+        client.send.return_value = {"ok": True, "status": 200, "data": {"orders": []}}
+
+        stdout = io.StringIO()
+        with mock.patch.object(contract, "resolve_language", return_value="zh", create=True):
+            with contextlib.redirect_stdout(stdout):
+                exit_code = contract.execute_endpoint(
+                    client=client,
+                    endpoint_key="transaction.get_order_history",
+                    query={"limit": 10},
+                    body={},
+                    dry_run=False,
+                    confirm_live=False,
+                    confirm_demo=False,
+                    trading_mode="live",
+                    pretty=False,
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["environment"]["trading_mode"], "live")
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
 
     def test_contract_demo_endpoint_rejects_live_mode_before_preparing_request(self) -> None:
         import weex_contract_api as contract
@@ -712,6 +751,37 @@ runpy.run_path(script_path, run_name="__main__")
             client.prepare_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
 
         self.assertEqual(str(exc_info.exception), spot.GET_BODY_UNSUPPORTED_MESSAGE)
+
+    def test_spot_private_order_result_includes_live_environment_prefix(self) -> None:
+        import weex_spot_api as spot
+
+        client = mock.Mock()
+        client.prepare_request.return_value = {
+            "method": "POST",
+            "url": "https://api-spot.weex.com/api/v3/order",
+            "headers": {},
+            "data": b"{}",
+        }
+        client.send.return_value = {"ok": True, "status": 200, "data": {"orderId": "spot-1"}}
+
+        stdout = io.StringIO()
+        with mock.patch.object(spot, "resolve_language", return_value="zh", create=True):
+            with contextlib.redirect_stdout(stdout):
+                exit_code = spot.execute_endpoint(
+                    client=client,
+                    endpoint_key=spot.find_endpoint_key_by_doc_suffix("PlaceOrder"),
+                    query={},
+                    body={"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "1"},
+                    dry_run=False,
+                    confirm_live=True,
+                    pretty=False,
+                )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["environment"]["trading_mode"], "live")
+        self.assertEqual(payload["environment"]["market"], "spot")
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
 
     def test_contract_client_rejects_non_weex_base_url(self) -> None:
         import weex_contract_api as contract

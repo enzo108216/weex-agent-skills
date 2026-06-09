@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from weex_profile_language import resolve_language
+
 
 DAY_MS = 24 * 60 * 60 * 1000
 HOUR_MS = 60 * 60 * 1000
@@ -126,15 +128,25 @@ def _environment_for_trading_mode(trading_mode: str, market: str) -> dict[str, A
             "label": "demo",
             "market": "futures",
             "uses_real_funds": False,
-            "notice": "This operation targets the WEEX simulated futures account environment.",
+            "notice": "This operation targets WEEX futures demo mode.",
         }
     return {
         "trading_mode": "live",
         "label": "live",
         "market": market,
         "uses_real_funds": True,
-        "notice": f"This operation targets the real WEEX {market} account environment.",
+        "notice": f"This operation targets real WEEX {market} trading.",
     }
+
+
+def _user_environment_prefix(environment: dict[str, Any], language: str | None = None) -> str:
+    resolved_language = resolve_language(language)
+    mode = _normalize_trading_mode(environment.get("trading_mode"))
+    if resolved_language == "zh":
+        label = "模拟盘" if mode == "demo" else "真实盘"
+        return f"当前交易环境：{label}"
+    label = "demo trading" if mode == "demo" else "real trading"
+    return f"Current trading mode: {label}"
 
 
 def _normalize_demo_symbol_for_display(raw: Any) -> str:
@@ -1535,6 +1547,7 @@ class TradeDataAggregator:
             "analysis_type": "replay",
             "trading_mode": mode,
             "environment": environment,
+            "user_environment_prefix": _user_environment_prefix(environment),
             "market": normalized_market,
             "period": normalized_period,
             "symbol": normalized_symbol,
@@ -1781,6 +1794,7 @@ class TradeDataAggregator:
         return {
             "trading_mode": mode,
             "environment": environment,
+            "user_environment_prefix": _user_environment_prefix(environment),
             "order_preview": order_preview,
             "tp_sl": tp_sl,
             "account_snapshot": account_snapshot,
@@ -1957,6 +1971,7 @@ class TradeDataAggregator:
             "mode": "account_scan",
             "trading_mode": mode,
             "environment": environment,
+            "user_environment_prefix": _user_environment_prefix(environment),
             "market": normalized_market,
             "symbol": normalized_symbol,
             "account_snapshot": account_snapshot,

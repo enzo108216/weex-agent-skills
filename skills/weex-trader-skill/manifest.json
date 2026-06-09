@@ -151,7 +151,7 @@
         "scripts/weex_trade_data_aggregator.py",
         "references/trade-data-schema.md"
       ],
-      "scan simulated futures account risk": [
+      "scan simulated-environment futures account risk": [
         "scripts/weex_trade_guard.py",
         "scripts/weex_trade_data_aggregator.py",
         "references/trade-data-schema.md"

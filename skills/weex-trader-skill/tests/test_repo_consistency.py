@@ -39,6 +39,12 @@ SCRIPT_OPERATIONS_REFERENCE = ROOT / "references" / "script-operations.md"
 PROFILE_ONBOARDING_REFERENCE = ROOT / "references" / "profile-onboarding.md"
 LINUX_VAULT_REFERENCE = ROOT / "references" / "linux-vault.md"
 TROUBLESHOOTING_REFERENCE = ROOT / "references" / "troubleshooting.md"
+TRADE_DATA_SCHEMA_REFERENCE = ROOT / "references" / "trade-data-schema.md"
+CONTRACT_API_DEFINITIONS_REFERENCE = ROOT / "references" / "contract-api-definitions.md"
+CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
+TRADE_DATA_AGGREGATOR_SCRIPT = ROOT / "scripts" / "weex_trade_data_aggregator.py"
+TRADE_GUARD_SCRIPT = ROOT / "scripts" / "weex_trade_guard.py"
+API_DEFINITION_GENERATOR = ROOT / "scripts" / "generate_weex_api_definitions.py"
 REQUIREMENTS = ROOT / "requirements.txt"
 REQUIREMENTS_LOCK = ROOT / "requirements.lock"
 PUBLISHED_REPO_URL = "https://github.com/weex-labs/weex-trader-skill"
@@ -62,6 +68,10 @@ CJK_MARKDOWN_EXCLUDE_PREFIXES = (
     "需求资源/",
     "发版事项/",
 )
+ALLOWED_CJK_MARKDOWN_TERMS = {
+    "SKILL.md": ("模拟盘", "真实盘"),
+    "README.md": ("模拟盘", "真实盘"),
+}
 
 
 def parse_requirement_names(text: str) -> set[str]:
@@ -151,6 +161,8 @@ class RepoConsistencyTests(unittest.TestCase):
             if any(rel_path.startswith(prefix) for prefix in CJK_MARKDOWN_EXCLUDE_PREFIXES):
                 continue
             text = path.read_text(encoding="utf-8")
+            for allowed_term in ALLOWED_CJK_MARKDOWN_TERMS.get(rel_path, ()):
+                text = text.replace(allowed_term, "")
             if CJK_RE.search(text):
                 offenders.append(rel_path)
 
@@ -222,6 +234,69 @@ class RepoConsistencyTests(unittest.TestCase):
 
         self.assertEqual(skill_name, manifest["identity"]["name"])
         self.assertEqual(manifest["identity"]["source_of_truth"], "SKILL.md")
+
+    def test_skill_documents_localized_user_facing_trading_mode_labels(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        readme_text = README.read_text(encoding="utf-8")
+
+        for text in (skill_text, readme_text):
+            self.assertIn("localized trading-mode labels", text)
+            self.assertIn("`模拟盘` and `真实盘`", text)
+            self.assertIn("`demo trading` and `real trading`", text)
+            self.assertIn("not environment labels", text)
+            self.assertIn("not account labels", text)
+            self.assertIn("raw `live` or `demo`", text)
+            self.assertNotIn("localized full trading-environment names", text)
+            self.assertNotIn("real trading environment versus simulated futures environment", text)
+
+    def test_skill_documents_preview_defaults_to_combined_confirmation_when_mode_is_missing(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        readme_text = README.read_text(encoding="utf-8")
+
+        for text in (skill_text, readme_text):
+            self.assertIn("do not ask a standalone trading-mode question", text)
+            self.assertIn("most likely initial preview mode", text)
+            self.assertIn("preview-only default", text)
+            self.assertIn("confirmation block must put the mode and funds warning first", text)
+            self.assertIn("include the switch prompt", text)
+            self.assertIn("profile names or notes can only be weak preview-default signals", text)
+            self.assertIn("same saved profile can target either trading mode", text)
+
+        for text in (skill_text, readme_text):
+            self.assertNotIn("real account versus simulated account", text)
+
+    def test_environment_language_does_not_call_trading_environment_an_account(self) -> None:
+        scanned_paths = (
+            SKILL,
+            README,
+            MANIFEST,
+            TRADE_DATA_SCHEMA_REFERENCE,
+            CONTRACT_API_DEFINITIONS_REFERENCE,
+            CONTRACT_API_SCRIPT,
+            TRADE_DATA_AGGREGATOR_SCRIPT,
+            TRADE_GUARD_SCRIPT,
+            API_DEFINITION_GENERATOR,
+        )
+        forbidden_phrases = (
+            "real account versus simulated account",
+            "real account`",
+            "simulated account`",
+            "real account\"",
+            "simulated account\"",
+            "real WEEX futures account environment",
+            "WEEX simulated futures account environment",
+            "real WEEX account",
+            "WEEX simulated futures account",
+        )
+
+        offenders: list[str] = []
+        for path in scanned_paths:
+            text = path.read_text(encoding="utf-8")
+            for phrase in forbidden_phrases:
+                if phrase in text:
+                    offenders.append(f"{path.relative_to(ROOT)}: {phrase}")
+
+        self.assertEqual(offenders, [])
 
     def test_skill_frontmatter_declares_compatibility(self) -> None:
         compatibility = extract_frontmatter_field(SKILL.read_text(encoding="utf-8"), "compatibility")

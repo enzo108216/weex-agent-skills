@@ -87,14 +87,14 @@ def _environment_for_mode(trading_mode: str, market: str) -> dict[str, Any]:
             "label": "demo",
             "market": "futures",
             "uses_real_funds": False,
-            "notice": "This operation targets the WEEX simulated futures account environment.",
+            "notice": "This operation targets WEEX futures demo mode.",
         }
     return {
         "trading_mode": "live",
         "label": "live",
         "market": normalized_market or "unknown",
         "uses_real_funds": True,
-        "notice": f"This operation targets the real WEEX {normalized_market or 'account'} environment.",
+        "notice": f"This operation targets real WEEX {normalized_market or 'trading'} trading.",
     }
 
 
@@ -117,28 +117,295 @@ def _merge_environment_context(
     return updated
 
 
+def _user_facing_trading_mode_label(environment: dict[str, Any], *, language: str) -> str:
+    mode = _normalize_trading_mode(environment.get("trading_mode"))
+    if language == "zh":
+        return "模拟盘" if mode == "demo" else "真实盘"
+    return "demo trading" if mode == "demo" else "real trading"
+
+
+def _confirmation_environment_label(environment: dict[str, Any], *, language: str) -> str:
+    mode = _normalize_trading_mode(environment.get("trading_mode"))
+    if language == "zh":
+        return "模拟盘" if mode == "demo" else "真实盘"
+    return _user_facing_trading_mode_label(environment, language=language)
+
+
+def _other_confirmation_environment_label(environment: dict[str, Any], *, language: str) -> str:
+    mode = _normalize_trading_mode(environment.get("trading_mode"))
+    if language == "zh":
+        return "真实盘" if mode == "demo" else "模拟盘"
+    return "real trading" if mode == "demo" else "demo trading"
+
+
+def _switch_reply_text(environment: dict[str, Any], *, language: str) -> str:
+    other_mode = _other_confirmation_environment_label(environment, language=language)
+    if language == "zh":
+        return f"切换到{other_mode}"
+    return f"switch to {other_mode}"
+
+
+def _query_environment_prefix(environment: dict[str, Any], *, language: str | None = None) -> str:
+    resolved_language = resolve_language(language)
+    mode = _confirmation_environment_label(environment, language=resolved_language)
+    if resolved_language == "zh":
+        return f"当前交易环境：{mode}"
+    return f"Current trading mode: {mode}"
+
+
+def _format_value(value: Any, *, missing: str = "未返回") -> str:
+    if value is None or value == "":
+        return missing
+    return str(value)
+
+
+def _normalize_upper_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _zh_market_label(market: Any) -> str:
+    normalized = str(market or "").strip().lower()
+    if normalized == "futures":
+        return "合约"
+    if normalized == "spot":
+        return "现货"
+    return normalized or "交易"
+
+
+def _en_market_label(market: Any) -> str:
+    normalized = str(market or "").strip().lower()
+    if normalized == "futures":
+        return "futures"
+    if normalized == "spot":
+        return "spot"
+    return normalized or "trading"
+
+
+def _zh_order_type_label(order_type: Any) -> str:
+    normalized = _normalize_upper_text(order_type)
+    if normalized == "MARKET":
+        return "市价"
+    if normalized == "LIMIT":
+        return "限价"
+    return normalized or "订单"
+
+
+def _en_order_type_label(order_type: Any) -> str:
+    normalized = _normalize_upper_text(order_type)
+    if normalized == "MARKET":
+        return "market"
+    if normalized == "LIMIT":
+        return "limit"
+    return normalized.lower() or "order"
+
+
+def _zh_order_action(order_preview: dict[str, Any]) -> str:
+    side = _normalize_upper_text(order_preview.get("side"))
+    position_side = _normalize_upper_text(order_preview.get("position_side") or order_preview.get("positionSide"))
+    if position_side == "LONG" and side == "BUY":
+        return "开多"
+    if position_side == "SHORT" and side == "SELL":
+        return "开空"
+    if position_side == "LONG" and side == "SELL":
+        return "平多"
+    if position_side == "SHORT" and side == "BUY":
+        return "平空"
+    if side == "BUY":
+        return "买入"
+    if side == "SELL":
+        return "卖出"
+    return "下单"
+
+
+def _en_order_action(order_preview: dict[str, Any]) -> str:
+    side = _normalize_upper_text(order_preview.get("side"))
+    position_side = _normalize_upper_text(order_preview.get("position_side") or order_preview.get("positionSide"))
+    if position_side == "LONG" and side == "BUY":
+        return "open long"
+    if position_side == "SHORT" and side == "SELL":
+        return "open short"
+    if position_side == "LONG" and side == "SELL":
+        return "close long"
+    if position_side == "SHORT" and side == "BUY":
+        return "close short"
+    if side == "BUY":
+        return "buy"
+    if side == "SELL":
+        return "sell"
+    return "place order"
+
+
+def _format_zh_order_summary(preview_context: dict[str, Any] | None) -> str:
+    order_preview = (preview_context or {}).get("order_preview")
+    if not isinstance(order_preview, dict) or not order_preview:
+        return "订单：详情请以上方风险预览为准。"
+    symbol = _format_value(order_preview.get("symbol"))
+    market = _zh_market_label(order_preview.get("market"))
+    order_type = _zh_order_type_label(order_preview.get("order_type") or order_preview.get("orderType"))
+    action = _zh_order_action(order_preview)
+    quantity = _format_value(order_preview.get("quantity") or order_preview.get("size"))
+    price = order_preview.get("price")
+    price_text = "" if price in (None, "") else f"，价格 {_format_value(price)}"
+    return f"订单：{symbol} {market}，{order_type}{action}，数量 {quantity}{price_text}。"
+
+
+def _format_en_order_summary(preview_context: dict[str, Any] | None) -> str:
+    order_preview = (preview_context or {}).get("order_preview")
+    if not isinstance(order_preview, dict) or not order_preview:
+        return "Order: see the risk preview above for details."
+    symbol = _format_value(order_preview.get("symbol"), missing="not returned")
+    market = _en_market_label(order_preview.get("market"))
+    order_type = _en_order_type_label(order_preview.get("order_type") or order_preview.get("orderType"))
+    action = _en_order_action(order_preview)
+    quantity = _format_value(order_preview.get("quantity") or order_preview.get("size"), missing="not returned")
+    price = order_preview.get("price")
+    price_text = "" if price in (None, "") else f", price {_format_value(price, missing='not returned')}"
+    return f"Order: {symbol} {market}, {order_type} {action}, quantity {quantity}{price_text}."
+
+
+def _alert_level_is_high(alert: dict[str, Any]) -> bool:
+    return str(alert.get("level") or "").strip().lower() == "high" or alert.get("type") == "missing_tp_sl"
+
+
+def _alert_reason_zh(alert: dict[str, Any]) -> str:
+    if alert.get("type") == "missing_tp_sl":
+        return "这笔订单没有止盈或止损保护，需要你明确接受无保护仓位风险后才能继续。"
+    reason = str(alert.get("reason") or alert.get("suggestion") or alert.get("type") or "请先复核上方风险提示。").strip()
+    if reason[-1:] not in "。！？.!?":
+        reason += "。"
+    return reason
+
+
+def _alert_reason_en(alert: dict[str, Any]) -> str:
+    if alert.get("type") == "missing_tp_sl":
+        return "The order has no take-profit or stop-loss protection. Continue only if you explicitly accept an unprotected position."
+    reason = str(alert.get("reason") or alert.get("suggestion") or alert.get("type") or "Review the risk alert above before continuing.").strip()
+    if reason[-1:] not in ".!?。！？":
+        reason += "."
+    return reason
+
+
+def _format_zh_alert_summary(preview_context: dict[str, Any] | None) -> str:
+    alerts = [alert for alert in (preview_context or {}).get("alerts", []) if isinstance(alert, dict)]
+    if not alerts:
+        return "风险提示：未发现高风险提示。"
+    alert = next((candidate for candidate in alerts if _alert_level_is_high(candidate)), alerts[0])
+    prefix = "高风险提示" if _alert_level_is_high(alert) else "风险提示"
+    return f"{prefix}：{_alert_reason_zh(alert)}"
+
+
+def _format_en_alert_summary(preview_context: dict[str, Any] | None) -> str:
+    alerts = [alert for alert in (preview_context or {}).get("alerts", []) if isinstance(alert, dict)]
+    if not alerts:
+        return "Risk alert: no high-risk alerts were detected."
+    alert = next((candidate for candidate in alerts if _alert_level_is_high(candidate)), alerts[0])
+    prefix = "High-risk alert" if _alert_level_is_high(alert) else "Risk alert"
+    return f"{prefix}: {_alert_reason_en(alert)}"
+
+
+def _build_zh_confirmation_instruction(
+    *,
+    environment: dict[str, Any],
+    preview_context: dict[str, Any] | None,
+    include_mode_switch: bool,
+    reply_text: str,
+) -> tuple[str, str | None]:
+    mode = _confirmation_environment_label(environment, language="zh")
+    uses_real_funds = bool(environment.get("uses_real_funds"))
+    funds_line = "本次操作将使用真实资金，请谨慎确认。" if uses_real_funds else "本次操作不会使用真实资金。"
+    confirm_line = (
+        f"如果确认使用真实资金提交这笔订单，请回复：{reply_text}"
+        if uses_real_funds
+        else f"如果确认提交到{mode}，请回复：{reply_text}"
+    )
+    lines = [
+        f"当前交易环境：{mode}",
+        funds_line,
+        "",
+        f"{mode}风险预览已生成，订单尚未提交。",
+        "",
+        _format_zh_order_summary(preview_context),
+        _format_zh_alert_summary(preview_context),
+        "",
+        confirm_line,
+    ]
+    switch_text = None
+    if include_mode_switch:
+        switch_text = _switch_reply_text(environment, language="zh")
+        other_mode = _other_confirmation_environment_label(environment, language="zh")
+        lines.extend(["", f"如果需要切换为{other_mode}，请回复：{switch_text}。"])
+    return "\n".join(lines), switch_text
+
+
+def _build_en_confirmation_instruction(
+    *,
+    environment: dict[str, Any],
+    preview_context: dict[str, Any] | None,
+    include_mode_switch: bool,
+    reply_text: str,
+) -> tuple[str, str | None]:
+    mode = _confirmation_environment_label(environment, language="en")
+    uses_real_funds = bool(environment.get("uses_real_funds"))
+    funds_line = "This operation uses real funds. Confirm carefully." if uses_real_funds else "This operation does not use real funds."
+    preview_line = f"{mode.capitalize()} risk preview generated; order has not been submitted."
+    confirm_line = (
+        f"To submit this order with real funds, reply: {reply_text}"
+        if uses_real_funds
+        else f"To submit this order to {mode}, reply: {reply_text}"
+    )
+    lines = [
+        f"Trading mode: {mode}",
+        funds_line,
+        "",
+        preview_line,
+        "",
+        _format_en_order_summary(preview_context),
+        _format_en_alert_summary(preview_context),
+        "",
+        confirm_line,
+    ]
+    switch_text = None
+    if include_mode_switch:
+        switch_text = _switch_reply_text(environment, language="en")
+        other_mode = _other_confirmation_environment_label(environment, language="en")
+        lines.extend(["", f"To switch to {other_mode}, reply: {switch_text}."])
+    return "\n".join(lines), switch_text
+
+
 def _build_user_confirmation(
     language: str | None,
     *,
     environment: dict[str, Any] | None = None,
+    preview_context: dict[str, Any] | None = None,
+    include_mode_switch: bool = False,
 ) -> dict[str, str]:
     resolved_language = resolve_language(language)
     prompt = CONFIRMATION_PROMPTS[resolved_language]
     reply_instruction = prompt["reply_instruction"]
+    switch_text = None
     if environment is not None:
-        mode = str(environment.get("trading_mode") or "").strip() or "unknown"
-        uses_real_funds = bool(environment.get("uses_real_funds"))
         if resolved_language == "zh":
-            funds_text = "会使用真实资金" if uses_real_funds else "不会使用真实资金"
-            reply_instruction = f"当前交易环境：{mode}；本次操作{funds_text}。{reply_instruction}"
+            reply_instruction, switch_text = _build_zh_confirmation_instruction(
+                environment=environment,
+                preview_context=preview_context,
+                include_mode_switch=include_mode_switch,
+                reply_text=prompt["reply_text"],
+            )
         else:
-            funds_text = "uses real funds" if uses_real_funds else "does not use real funds"
-            reply_instruction = f"Trading environment: {mode}; this operation {funds_text}. {reply_instruction}"
-    return {
+            reply_instruction, switch_text = _build_en_confirmation_instruction(
+                environment=environment,
+                preview_context=preview_context,
+                include_mode_switch=include_mode_switch,
+                reply_text=prompt["reply_text"],
+            )
+    result = {
         "language": resolved_language,
         "reply_text": prompt["reply_text"],
         "reply_instruction": reply_instruction,
     }
+    if switch_text is not None:
+        result["switch_reply_text"] = switch_text
+    return result
 
 
 def _required_text(payload: dict[str, Any], key: str) -> str:
@@ -375,9 +642,13 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
     response["intent_id"] = intent["intent_id"]
     response["expires_at"] = intent["expires_at"]
     response["risk_signature"] = intent["risk_signature"]
+    confirmation_context = dict(response)
+    confirmation_context.setdefault("order_preview", risk_payload.get("order_preview", {}))
     response["user_confirmation"] = _build_user_confirmation(
         _arg_value(args, "language", None),
         environment=environment,
+        preview_context=confirmation_context,
+        include_mode_switch=True,
     )
     _output_json(response, args.pretty)
     return 0
@@ -512,7 +783,12 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
     environment = intent.get("environment")
     if not isinstance(environment, dict):
         environment = _environment_for_mode(intent_mode, str(intent["market"]))
-    _output_json({"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}, args.pretty)
+    response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
+    response["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
+    )
+    _output_json(response, args.pretty)
     return 0
 
 
@@ -566,7 +842,12 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
     environment = intent.get("environment")
     if not isinstance(environment, dict):
         environment = _environment_for_mode(intent_mode, "futures")
-    _output_json({"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}, args.pretty)
+    response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
+    response["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
+    )
+    _output_json(response, args.pretty)
     return 0
 
 
@@ -585,6 +866,10 @@ def cmd_account_scan(args: argparse.Namespace) -> int:
         analysis_output,
         trading_mode=trading_mode,
         environment=environment,
+    )
+    analysis_output["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
     )
     _output_json(analysis_output, args.pretty)
     return 0
@@ -632,6 +917,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_scan.add_argument("--market", required=True, choices=("futures", "spot"))
     account_scan.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     account_scan.add_argument("--symbol", default=None, help="Optional trading pair focus.")
+    account_scan.add_argument("--language", choices=("zh", "en"), default=None, help="Language for user-facing environment prefix.")
     account_scan.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     return parser

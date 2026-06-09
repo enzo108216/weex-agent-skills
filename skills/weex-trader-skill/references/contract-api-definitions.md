@@ -3,7 +3,7 @@
 Generated from live V3 docs on 2026-04-17.
 
 Contract simulated futures endpoints are maintained in this generated catalog from the official WEEX contract demo API docs.
-Demo is not a local dry-run; demo mutating endpoints send requests to the WEEX simulated futures account environment.
+Demo is not a local dry-run; demo mutating endpoints send requests to WEEX futures demo mode.
 
 ## Contents
 
