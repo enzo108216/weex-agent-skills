@@ -918,8 +918,10 @@ def _build_status_reporting_prompt(raw_task: dict[str, Any], *, runtime_label: s
         "Find the task by task_id. Summarize task status, symbol, position side, condition, "
         "latest evaluated current_value, threshold, trigger state, and reason. If the latest "
         "events include exchange_response, live_order_result, close_order, or error details, "
-        "include those. Do not output HTML entities or entity spellings for less-than, greater-than, or "
-        "ampersand characters; render "
+        "include only sanitized summaries such as order id, client order id, status, reason, "
+        "and necessary error code or message; do not quote raw exchange responses, full close order JSON, "
+        "account snapshots, or position details. Do not output HTML entities or entity spellings for less-than, "
+        "greater-than, or ampersand characters; render "
         "comparison operators as readable words in the response language, for example less than "
         "or 小于 for '<', greater than or 大于 for '>', greater than or equal to for '>=', and "
         "less than or equal to for '<='. Do not submit, amend, or cancel WEEX orders. If task status is not "
@@ -1150,7 +1152,7 @@ def run_live_once(
             )
             continue
         try:
-            exchange_response = _run_json_command(
+            raw_exchange_response = _run_json_command(
                 _trader_script_command(
                     "weex_trade_guard.py",
                     "confirm-order",
@@ -1164,6 +1166,7 @@ def run_live_once(
                     "--pretty",
                 )
             )
+            exchange_response = _exchange_response_summary(raw_exchange_response)
         except MonitorInputError as exc:
             outputs.append(
                 _mark_task_review_required(
@@ -1630,7 +1633,7 @@ def render_live_thread_report(
             f"WEEX monitor {task['task_id']} {mode_label} close order submitted: "
             f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
             f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
-            f"Exchange response: {exchange_response}."
+            f"Exchange summary: {exchange_response}."
         )
     return (
         f"WEEX monitor {task['task_id']} {check_label} check did not submit a close order: "
@@ -1685,7 +1688,7 @@ def render_thread_report(output: dict[str, Any]) -> str:
 @contextmanager
 def _connect() -> Any:
     home = monitor_home()
-    home.mkdir(parents=True, exist_ok=True)
+    _ensure_private_monitor_store(home, db_path())
     conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)
@@ -1697,6 +1700,14 @@ def _connect() -> Any:
         raise
     finally:
         conn.close()
+
+
+def _ensure_private_monitor_store(home: Path, database: Path) -> None:
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.chmod(0o700)
+    fd = os.open(database, os.O_RDWR | os.O_CREAT, 0o600)
+    os.close(fd)
+    database.chmod(0o600)
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -1859,6 +1870,21 @@ def _consume_confirmation_token(
     task: dict[str, Any],
     used_at_ms: int,
 ) -> None:
+    task_hash = _confirmation_fingerprint(task)
+    cursor = conn.execute(
+        """
+        UPDATE monitor_confirmations
+        SET used_at_ms = ?
+        WHERE confirmation_token = ?
+          AND task_id = ?
+          AND task_hash = ?
+          AND used_at_ms IS NULL
+        """,
+        (used_at_ms, confirmation_token, task["task_id"], task_hash),
+    )
+    if cursor.rowcount == 1:
+        return
+
     row = conn.execute(
         """
         SELECT task_id, task_hash, used_at_ms
@@ -1873,12 +1899,9 @@ def _consume_confirmation_token(
         raise MonitorInputError("confirmation-token has already been used")
     if row["task_id"] != task["task_id"]:
         raise MonitorInputError("confirmation-token does not match task_id")
-    if row["task_hash"] != _confirmation_fingerprint(task):
+    if row["task_hash"] != task_hash:
         raise MonitorInputError("confirmation-token does not match monitor task details")
-    conn.execute(
-        "UPDATE monitor_confirmations SET used_at_ms = ? WHERE confirmation_token = ?",
-        (used_at_ms, confirmation_token),
-    )
+    raise MonitorInputError("confirmation-token has already been used")
 
 
 def _validate_live_confirmation_token(
@@ -1957,6 +1980,55 @@ def _position_execution_key(raw_task: dict[str, Any]) -> tuple[str, str, str, st
         task["symbol"],
         task["position_side"],
     )
+
+
+def _exchange_response_summary(response: Any) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {
+            "status": "response_returned",
+            "response_type": type(response).__name__,
+        }
+
+    summary: dict[str, Any] = {}
+    field_aliases: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("ok", ("ok", "success")),
+        ("order_id", ("order_id", "orderId", "ordId", "id")),
+        (
+            "client_order_id",
+            ("client_order_id", "clientOrderId", "clientOid", "newClientOrderId"),
+        ),
+        ("status", ("status", "state", "orderStatus", "order_status")),
+        ("code", ("code", "errorCode", "errCode")),
+        ("message", ("message", "msg", "errorMsg", "error_message")),
+        ("reason", ("reason", "errorReason")),
+    )
+    candidates = _exchange_response_summary_candidates(response)
+    for output_key, aliases in field_aliases:
+        value = _first_summary_value(candidates, aliases)
+        if value is not None:
+            summary[output_key] = value
+    if not summary:
+        summary["status"] = "response_returned"
+    return summary
+
+
+def _exchange_response_summary_candidates(response: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [response]
+    for key in ("data", "result", "order", "error"):
+        value = response.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+        elif isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, dict))
+    return candidates
+
+
+def _first_summary_value(candidates: list[dict[str, Any]], keys: tuple[str, ...]) -> Any:
+    for candidate in candidates:
+        value = _first_present(candidate, keys)
+        if isinstance(value, (str, int, float, bool)):
+            return value
+    return None
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:

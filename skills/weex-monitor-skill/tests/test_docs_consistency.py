@@ -91,6 +91,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("`openclaw cron add`", skill_text)
         self.assertIn("current value", skill_text)
         self.assertIn("terminal task state", skill_text)
+        self.assertIn("sanitized summaries", skill_text)
         self.assertIn("Do not output HTML entities", skill_text)
         self.assertIn("`&lt;`", skill_text)
         self.assertIn("less than", skill_text)

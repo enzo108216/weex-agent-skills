@@ -383,6 +383,92 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in events], ["task_confirmation_rendered", "task_confirmed"])
         self.assertEqual(events[-1]["payload"]["status"], "active")
 
+    def test_monitor_store_uses_owner_only_permissions(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "10",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        with tempfile.TemporaryDirectory() as tempdir:
+            home = Path(tempdir) / "monitor-home"
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": str(home)}, clear=False):
+                monitor.prepare_confirmation(task_json, now_ms=1000)
+
+                home_mode = home.stat().st_mode & 0o777
+                db_mode = monitor.db_path().stat().st_mode & 0o777
+
+        self.assertEqual(home_mode, 0o700)
+        self.assertEqual(db_mode, 0o600)
+
+    def test_confirmation_token_consumption_detects_concurrent_use(self) -> None:
+        task = monitor.normalize_task(
+            {
+                "task_id": "mon_token_race",
+                "task_type": "position_pnl_monitor",
+                "profile": "demo",
+                "symbol": "BTCUSDT",
+                "position_side": "LONG",
+                "condition": {
+                    "metric": "unrealized_pnl",
+                    "operator": ">",
+                    "threshold": "10",
+                },
+                "action": {
+                    "type": "market_close",
+                    "target": "LONG",
+                },
+                "callback": {"type": "current_thread"},
+            },
+            now_ms=1000,
+        )
+
+        class FakeCursor:
+            def __init__(self, rowcount: int) -> None:
+                self.rowcount = rowcount
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.update_sql = ""
+
+            def execute(self, sql: str, params: tuple[object, ...] = ()) -> object:
+                if sql.lstrip().upper().startswith("SELECT"):
+                    return self
+                if sql.lstrip().upper().startswith("UPDATE"):
+                    self.update_sql = sql
+                    if "used_at_ms IS NULL" in sql:
+                        return FakeCursor(rowcount=0)
+                    return FakeCursor(rowcount=1)
+                raise AssertionError(f"unexpected SQL: {sql}")
+
+            def fetchone(self) -> dict[str, object]:
+                return {
+                    "task_id": task["task_id"],
+                    "task_hash": monitor._confirmation_fingerprint(task),
+                    "used_at_ms": None,
+                }
+
+        fake_conn = FakeConnection()
+
+        with self.assertRaisesRegex(monitor.MonitorInputError, "already been used"):
+            monitor._consume_confirmation_token(
+                fake_conn,  # type: ignore[arg-type]
+                confirmation_token="token-race",
+                task=task,
+                used_at_ms=2000,
+            )
+        self.assertIn("used_at_ms IS NULL", fake_conn.update_sql)
+
     def test_cancel_updates_sqlite_status_and_writes_event(self) -> None:
         task_json = {
             "task_type": "position_pnl_monitor",
@@ -748,6 +834,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("状态汇报: 每 1 分钟", prepared["confirmation_text"])
         self.assertIn("mon_live_report_default", reporting["heartbeat_prompt"])
         self.assertIn("events --task-id mon_live_report_default", reporting["heartbeat_prompt"])
+        self.assertIn("sanitized summaries", reporting["heartbeat_prompt"])
+        self.assertNotIn("include those", reporting["heartbeat_prompt"])
         self.assertIn("Do not output HTML entities", reporting["heartbeat_prompt"])
         self.assertIn("less than", reporting["heartbeat_prompt"])
         self.assertIn("小于", reporting["heartbeat_prompt"])
@@ -1340,7 +1428,15 @@ class MonitorTaskTests(unittest.TestCase):
                         account_payload,
                         account_payload,
                         {"intent_id": "intent-close", "risk_signature": "sig-close"},
-                        {"ok": True, "orderId": "9001", "clientOrderId": "monitor_mon_pnl_live"},
+                        {
+                            "ok": True,
+                            "orderId": "9001",
+                            "clientOrderId": "monitor_mon_pnl_live",
+                            "status": "FILLED",
+                            "avgPrice": "70001.2",
+                            "accountBalance": "999.99",
+                            "rawPosition": {"quantity": "0.01", "entryPrice": "70000"},
+                        },
                     ],
                 ) as runner:
                     results = monitor.run_live_once(confirm_live=True, now_ms=2000)
@@ -1350,10 +1446,28 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["result"]["triggered"])
         self.assertEqual(results[0]["status"], "completed")
-        self.assertEqual(results[0]["exchange_response"]["orderId"], "9001")
+        self.assertEqual(
+            results[0]["exchange_response"],
+            {
+                "ok": True,
+                "order_id": "9001",
+                "client_order_id": "monitor_mon_pnl_live",
+                "status": "FILLED",
+            },
+        )
         self.assertIn("Live close order submitted", results[0]["thread_report"])
+        self.assertIn("Exchange summary", results[0]["thread_report"])
+        self.assertNotIn("avgPrice", results[0]["thread_report"])
+        self.assertNotIn("accountBalance", results[0]["thread_report"])
         self.assertEqual(tasks[0]["status"], "completed")
+        self.assertEqual(tasks[0]["exchange_response"], results[0]["exchange_response"])
         self.assertIn("live_order_submitted", [event["event_type"] for event in events])
+        submitted_events = [event for event in events if event["event_type"] == "live_order_submitted"]
+        submitted_payload = json.dumps(submitted_events[-1]["payload"], sort_keys=True)
+        self.assertIn("order_id", submitted_payload)
+        self.assertNotIn("avgPrice", submitted_payload)
+        self.assertNotIn("accountBalance", submitted_payload)
+        self.assertNotIn("rawPosition", submitted_payload)
         preview_command = runner.call_args_list[2].args[0]
         confirm_command = runner.call_args_list[3].args[0]
         self.assertIn("preview-order", preview_command)
