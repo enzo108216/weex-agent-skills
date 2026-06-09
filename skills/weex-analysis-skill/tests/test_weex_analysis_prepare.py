@@ -206,7 +206,7 @@ class PrepareReplayTests(unittest.TestCase):
             "label": "demo",
             "market": "futures",
             "uses_real_funds": False,
-            "notice": "This operation targets the WEEX simulated futures account environment.",
+            "notice": "This operation targets WEEX futures demo mode.",
         }
         payload["account_scope"] = "sim_futures"
 

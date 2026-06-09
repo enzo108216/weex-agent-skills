@@ -101,15 +101,22 @@ def _environment_for_trading_mode(trading_mode: str, market: str) -> dict[str, A
             "label": "demo",
             "market": market,
             "uses_real_funds": False,
-            "notice": "This monitor targets the WEEX simulated futures account environment.",
+            "notice": "This monitor targets WEEX futures demo mode.",
         }
     return {
         "trading_mode": "live",
         "label": "live",
         "market": market,
         "uses_real_funds": True,
-        "notice": "This monitor targets the real WEEX futures account environment.",
+        "notice": "This monitor targets real WEEX futures trading.",
     }
+
+
+def _user_facing_trading_mode_label(trading_mode: str, *, language: str = "zh") -> str:
+    mode = _normalize_trading_mode(trading_mode)
+    if language == "en":
+        return "demo trading" if mode == "demo" else "real trading"
+    return "模拟盘" if mode == "demo" else "真实盘"
 
 
 def _confirm_flag_for_trading_mode(trading_mode: str) -> str:
@@ -464,31 +471,33 @@ def render_confirmation_text(
     )
     if resolved_language == "en":
         funds_text = "uses real funds" if task["environment"]["uses_real_funds"] else "does not use real funds"
+        trading_mode_label = _user_facing_trading_mode_label(task["trading_mode"], language=resolved_language)
         parts = [
             "Automated Monitor Confirmation",
             f"Task ID: {task['task_id']}",
             f"Account: {task['profile']}",
-            f"Trading environment: {task['trading_mode']} ({funds_text})",
+            f"Trading mode: {trading_mode_label} ({funds_text})",
             f"Monitor target: {task['symbol']} {_position_side_label(task['position_side'], language=resolved_language)}",
             f"Trigger condition: {_condition_label(condition, language=resolved_language)}",
             f"Trigger action: {_action_label(action, language=resolved_language, trading_mode=task['trading_mode'])}",
             f"Callback: {task['callback']['type']}",
-            "After confirmation, the local monitor rule will be saved; account positions will be read and an order will be submitted only after you authorize the matching trading environment and real account access when applicable.",
+            "After confirmation, the local monitor rule will be saved; account positions will be read and an order will be submitted only after you authorize the matching trading mode and real-trading access when applicable.",
             f"If you confirm the monitor settings and authorization above, Reply: {reply_text}",
         ]
         parts.insert(6, f"Check frequency: every {task['frequency_seconds']} seconds")
     else:
         funds_text = "会使用真实资金" if task["environment"]["uses_real_funds"] else "不会使用真实资金"
+        trading_mode_label = _user_facing_trading_mode_label(task["trading_mode"], language=resolved_language)
         parts = [
             "自动化监控确认",
             f"任务编号: {task['task_id']}",
             f"账户: {task['profile']}",
-            f"交易环境: {task['trading_mode']}（{funds_text}）",
+            f"盘别: {trading_mode_label}（{funds_text}）",
             f"监控对象: {task['symbol']} {_position_side_label(task['position_side'])}",
             f"触发条件: {_condition_label(condition)}",
             f"触发动作: {_action_label(action, trading_mode=task['trading_mode'])}",
             f"回报位置: {task['callback']['type']}",
-            "确认后会先保存本地监控规则；只有在你授权使用真实账户或匹配的模拟盘环境后，才会读取仓位并在触发时提交委托。",
+            "确认后会先保存本地监控规则；只有在你授权使用真实盘或匹配的模拟盘后，才会读取仓位并在触发时提交委托。",
             f"如果你确认上述监控设置与授权，请回复：{reply_text}",
         ]
         parts.insert(6, f"检查频率: 每 {task['frequency_seconds']} 秒")
@@ -511,9 +520,9 @@ def render_confirmation_text(
     if position_snapshot is not None:
         if resolved_language == "en":
             position_match_label = (
-                "Matched demo position"
+                "Matched simulated futures position"
                 if task["trading_mode"] == "demo"
-                else "Matched live position"
+                else "Matched real-trading position"
             )
             parts.insert(
                 4,
@@ -901,7 +910,7 @@ def _build_status_reporting_prompt(raw_task: dict[str, Any], *, runtime_label: s
     return (
         f"Report WEEX monitor status for the current {runtime_label}.\n"
         f"Task id: {task_id}\n"
-        f"Trading mode: {task['trading_mode']}\n"
+        f"Trading mode: {_user_facing_trading_mode_label(task['trading_mode'], language='en')} (internal trading_mode: {task['trading_mode']})\n"
         f"Skill directory: {skill_root}\n"
         "Read-only commands to run from the skill directory:\n"
         f"- python3 scripts/weex_monitor_cli.py list\n"
@@ -937,10 +946,9 @@ def build_live_delegate_plan(
     is_live_mode = task["trading_mode"] == "live"
     return {
         "delegate_skill": "weex-trader-skill",
-        "requires_account_authorization": True,
-        "requires_live_account_authorization": is_live_mode,
-        "requires_real_account_authorization": is_live_mode,
-        "requires_demo_account_authorization": not is_live_mode,
+        "requires_trading_mode_authorization": True,
+        "requires_real_trading_authorization": is_live_mode,
+        "requires_demo_trading_authorization": not is_live_mode,
         "mutating_request_submitted": False,
         "task_id": task["task_id"],
         "profile": task["profile"],
@@ -953,7 +961,7 @@ def build_live_delegate_plan(
         "instruction": (
             "Submit only through weex-trader-skill with "
             f"--trading-mode {task['trading_mode']} and {_confirm_flag_for_trading_mode(task['trading_mode'])} "
-            "after the user authorizes the matching account environment and order execution."
+            "after the user authorizes the matching trading mode and order execution."
         ),
     }
 
@@ -1373,14 +1381,14 @@ def _collect_live_account_payload(task: dict[str, Any]) -> dict[str, Any]:
         )
     )
     if not isinstance(payload, dict):
-        raise MonitorInputError("live account payload must be a JSON object")
+        raise MonitorInputError("account-risk payload must be a JSON object")
     return payload
 
 
 def _positions_from_account_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     positions = payload.get("positions")
     if not isinstance(positions, list):
-        raise MonitorInputError("live account payload positions must be a JSON array")
+        raise MonitorInputError("account-risk payload positions must be a JSON array")
     return [item for item in positions if isinstance(item, dict)]
 
 
@@ -1651,10 +1659,10 @@ def render_thread_report(output: dict[str, Any]) -> str:
         or delegate_environment.get("trading_mode")
     )
     if trading_mode == "demo":
-        authorization_sentence = "Demo-account authorization is required before a demo order can be submitted. "
+        authorization_sentence = "Demo trading authorization is required before a demo order can be submitted. "
         no_order_sentence = "No order was submitted by weex-monitor-skill."
     else:
-        authorization_sentence = "Real-account authorization is required before a real order can be submitted. "
+        authorization_sentence = "Real trading authorization is required before a real order can be submitted. "
         no_order_sentence = "No live order was submitted by weex-monitor-skill."
     if result.get("triggered"):
         snapshot = result.get("trigger_snapshot", {})
@@ -2206,10 +2214,10 @@ def _action_label(action: dict[str, str], *, language: str = "zh", trading_mode:
         mode = _normalize_trading_mode(trading_mode)
         if language == "en":
             side_label = "long" if action["target"] == "LONG" else "short"
-            environment_label = "demo" if mode == "demo" else "real"
-            return f"Submit a {environment_label} market close-{side_label} order, close quantity: {quantity_label}"
-        environment_label = "模拟盘" if mode == "demo" else "真实"
-        return f"提交{environment_label}市价平{_position_side_label(action['target'])}，平仓数量: {quantity_label}"
+            trading_mode_label = _user_facing_trading_mode_label(mode, language=language)
+            return f"Submit a market close-{side_label} order using {trading_mode_label}, close quantity: {quantity_label}"
+        trading_mode_label = "模拟盘" if mode == "demo" else "真实盘"
+        return f"提交{trading_mode_label}市价平{_position_side_label(action['target'])}，平仓数量: {quantity_label}"
     return action["type"]
 
 

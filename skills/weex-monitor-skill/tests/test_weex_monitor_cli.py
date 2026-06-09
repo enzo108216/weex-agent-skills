@@ -224,9 +224,13 @@ class MonitorTaskTests(unittest.TestCase):
 
         self.assertEqual(plan["trading_mode"], "demo")
         self.assertEqual(plan["environment"]["trading_mode"], "demo")
-        self.assertEqual(plan["requires_account_authorization"], True)
-        self.assertEqual(plan["requires_live_account_authorization"], False)
-        self.assertEqual(plan["requires_demo_account_authorization"], True)
+        self.assertEqual(plan["requires_trading_mode_authorization"], True)
+        self.assertEqual(plan["requires_real_trading_authorization"], False)
+        self.assertEqual(plan["requires_demo_trading_authorization"], True)
+        self.assertNotIn("requires_trading_environment_authorization", plan)
+        self.assertNotIn("requires_real_trading_environment_authorization", plan)
+        self.assertNotIn("requires_simulated_futures_environment_authorization", plan)
+        self.assertNotIn("requires_demo_account_authorization", plan)
         self.assertIn("--trading-mode demo", plan["instruction"])
 
     def test_collect_live_account_payload_delegates_with_task_trading_mode(self) -> None:
@@ -434,7 +438,9 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("BTCUSDT", text)
         self.assertIn("多单", text)
         self.assertIn("未实现盈亏 > 50", text)
-        self.assertIn("授权使用真实账户", text)
+        self.assertIn("授权使用真实盘", text)
+        self.assertIn("盘别: 真实盘（会使用真实资金）", text)
+        self.assertNotIn("交易环境:", text)
         self.assertIn("请回复：确认", text)
         self.assertNotIn("确认启动监控", text)
         self.assertNotIn("--confirm-monitor", text)
@@ -462,7 +468,9 @@ class MonitorTaskTests(unittest.TestCase):
 
         text = monitor.render_confirmation_text(task_json, now_ms=1000)
 
-        self.assertIn("交易环境: demo（不会使用真实资金）", text)
+        self.assertIn("盘别: 模拟盘（不会使用真实资金）", text)
+        self.assertNotIn("交易环境:", text)
+        self.assertNotIn("盘别: demo", text)
         self.assertIn("提交模拟盘市价平多单", text)
         self.assertNotIn("提交真实市价平多单", text)
 
@@ -506,7 +514,9 @@ class MonitorTaskTests(unittest.TestCase):
 
         self.assertIn("已匹配模拟盘持仓", zh_text)
         self.assertNotIn("已匹配真实持仓", zh_text)
-        self.assertIn("Matched demo position", en_text)
+        self.assertIn("Matched simulated futures position", en_text)
+        self.assertNotIn("Matched simulated account position", en_text)
+        self.assertNotIn("Matched demo position", en_text)
         self.assertNotIn("Matched live position", en_text)
 
     def test_demo_dry_run_thread_report_uses_demo_authorization_wording(self) -> None:
@@ -540,7 +550,8 @@ class MonitorTaskTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("Demo-account authorization is required", report)
+        self.assertIn("Demo trading authorization is required", report)
+        self.assertNotIn("Demo-account authorization is required", report)
         self.assertNotIn("Real-account authorization is required", report)
 
     def test_english_confirmation_text_uses_simple_localized_reply_word(self) -> None:
@@ -565,8 +576,12 @@ class MonitorTaskTests(unittest.TestCase):
 
         self.assertIn("Automated Monitor Confirmation", text)
         self.assertIn("Monitor target: BTCUSDT long position", text)
+        self.assertIn("Trading mode: real trading (uses real funds)", text)
+        self.assertNotIn("Trading environment:", text)
+        self.assertNotIn("Trading mode: real account", text)
         self.assertIn("Trigger condition: Unrealized PnL < 0", text)
         self.assertIn("Reply: confirm", text)
+        self.assertNotIn("Trading mode: live", text)
         self.assertNotIn("Reply: 确认", text)
         self.assertNotIn("请回复", text)
         self.assertNotIn("--confirm-monitor", text)
@@ -672,7 +687,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("仓位更新时间: 1710000000000", prepared["confirmation_text"])
         self.assertIn("账户可用余额: 123.45", prepared["confirmation_text"])
         self.assertIn("确认快照时间:", prepared["confirmation_text"])
-        self.assertIn("授权使用真实账户", prepared["confirmation_text"])
+        self.assertIn("授权使用真实盘", prepared["confirmation_text"])
+        self.assertNotIn("交易环境:", prepared["confirmation_text"])
         self.assertIn("请回复：确认", prepared["confirmation_text"])
         self.assertNotIn("确认启动监控", prepared["confirmation_text"])
         self.assertNotIn("--confirm-live", prepared["confirmation_text"])
@@ -1205,7 +1221,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(loop_result["triggered_count"], 1)
         self.assertEqual(tasks[0]["status"], "triggered")
         self.assertIn("thread_report", loop_result["iterations"][0]["results"][0])
-        self.assertIn("Real-account authorization is required", loop_result["iterations"][0]["results"][0]["thread_report"])
+        self.assertIn("Real trading authorization is required", loop_result["iterations"][0]["results"][0]["thread_report"])
+        self.assertNotIn("Real-account authorization is required", loop_result["iterations"][0]["results"][0]["thread_report"])
         self.assertNotIn("授权使用真实账户", loop_result["iterations"][0]["results"][0]["thread_report"])
         self.assertEqual(
             [event["event_type"] for event in events],
@@ -1238,7 +1255,9 @@ class MonitorTaskTests(unittest.TestCase):
         delegate_plan = monitor.build_live_delegate_plan(task_json, result, purpose="pnl-trigger")
 
         self.assertEqual(delegate_plan["delegate_skill"], "weex-trader-skill")
-        self.assertEqual(delegate_plan["requires_live_account_authorization"], True)
+        self.assertEqual(delegate_plan["requires_real_trading_authorization"], True)
+        self.assertNotIn("requires_real_trading_environment_authorization", delegate_plan)
+        self.assertNotIn("requires_live_account_authorization", delegate_plan)
         self.assertEqual(delegate_plan["mutating_request_submitted"], False)
         self.assertEqual(delegate_plan["close_order"]["side"], "SELL")
         self.assertTrue(delegate_plan["idempotency_key"].startswith("monitor:mon_delegate:pnl-trigger:"))

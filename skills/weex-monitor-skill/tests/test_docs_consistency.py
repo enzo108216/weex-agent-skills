@@ -40,7 +40,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         skill_text = SKILL.read_text(encoding="utf-8")
 
         self.assertIn("weex-trader-skill", skill_text)
-        self.assertIn("real account access", skill_text)
+        self.assertIn("`真实盘` access", skill_text)
         self.assertIn("real order execution", skill_text)
         self.assertNotIn("--confirm-live", skill_text)
         self.assertIn("Never send mutating requests", skill_text)
@@ -67,7 +67,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("confirm-text-live", skill_text)
         self.assertIn("combined confirmation", skill_text)
         self.assertIn("matched live position", skill_text)
-        self.assertIn("detailed live position snapshot", skill_text)
+        self.assertIn("detailed real-trading position snapshot", skill_text)
         self.assertIn("not returned", skill_text)
         self.assertIn("finite `duration_seconds`", skill_text)
         self.assertIn("--duration-seconds", skill_text)
@@ -97,7 +97,12 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
 
     def test_skill_body_uses_english_except_localized_confirmation_word(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
-        without_allowed_reply_word = skill_text.replace("确认", "")
+        without_allowed_reply_word = (
+            skill_text
+            .replace("确认", "")
+            .replace("模拟盘", "")
+            .replace("真实盘", "")
+        )
 
         self.assertIsNone(re.search(r"[\u4e00-\u9fff]", without_allowed_reply_word))
 
@@ -107,6 +112,16 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("Always pass `--language zh` for Chinese user copy", skill_text)
         self.assertIn("Always pass `--language en` for English user copy", skill_text)
         self.assertIn("do not rely on the script default language", skill_text)
+
+    def test_skill_documents_localized_user_facing_trading_mode_labels(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("localized trading-mode labels", skill_text)
+        self.assertIn("`模拟盘` and `真实盘`", skill_text)
+        self.assertIn("`demo trading` and `real trading`", skill_text)
+        self.assertIn("not environment labels", skill_text)
+        self.assertIn("not account labels", skill_text)
+        self.assertIn("raw `live` or `demo`", skill_text)
 
     def test_skill_documents_price_threshold_tasks_are_routed_out(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")

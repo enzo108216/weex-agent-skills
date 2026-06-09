@@ -16,7 +16,7 @@ It supports:
 - bill-adjusted replay/profile net PnL alongside episode-only PnL totals
 - pre-order risk analysis for preview-before-submit reminder flows
 - current account-risk analysis without an order preview
-- trading-environment display for trader-collected live or demo futures payloads
+- trading-mode display for trader-collected real-trading or demo futures payloads
 
 ## Contents
 

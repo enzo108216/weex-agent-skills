@@ -120,7 +120,7 @@ class DisclaimerTests(unittest.TestCase):
                 "label": "demo",
                 "market": "futures",
                 "uses_real_funds": False,
-                "notice": "This operation targets the WEEX simulated futures account environment.",
+                "notice": "This operation targets WEEX futures demo mode.",
             },
             "account_scope": "sim_futures",
             "mode": "account_scan",
@@ -145,7 +145,9 @@ class DisclaimerTests(unittest.TestCase):
         self.assertEqual(result["environment"]["trading_mode"], "demo")
         self.assertEqual(result["environment"]["market"], "futures")
         self.assertEqual(result["account_scope"], "sim_futures")
-        self.assertIn("Trading Environment: demo", text)
+        self.assertIn("Trading Mode: demo trading", text)
+        self.assertNotIn("Trading Environment:", text)
+        self.assertNotIn("Trading Mode: demo\n", text)
         self.assertIn("Uses Real Funds: false", text)
         self.assertIn("demo_futures_open_orders_unavailable", text)
 
@@ -442,7 +444,7 @@ class ReplayAnalysisTests(unittest.TestCase):
                 "label": "demo",
                 "market": "futures",
                 "uses_real_funds": False,
-                "notice": "This operation targets the WEEX simulated futures account environment.",
+                "notice": "This operation targets WEEX futures demo mode.",
             },
             "account_scope": "sim_futures",
             "orders": [],
@@ -460,9 +462,13 @@ class ReplayAnalysisTests(unittest.TestCase):
         self.assertEqual(review["trading_mode"], "demo")
         self.assertEqual(review["environment"]["trading_mode"], "demo")
         self.assertEqual(review["account_scope"], "sim_futures")
-        self.assertIn("Trading Environment: demo", text)
+        self.assertIn("Trading Mode: demo trading", text)
+        self.assertNotIn("Trading Environment:", text)
+        self.assertNotIn("Trading Mode: demo\n", text)
         self.assertIn("Uses Real Funds: false", text)
-        self.assertIn("Trading Environment: demo", review_text)
+        self.assertIn("Trading Mode: demo trading", review_text)
+        self.assertNotIn("Trading Environment:", review_text)
+        self.assertNotIn("Trading Mode: demo\n", review_text)
         self.assertIn("Uses Real Funds: false", review_text)
 
     def test_analyze_replay_reconstructs_trade_episodes_and_metrics(self) -> None:

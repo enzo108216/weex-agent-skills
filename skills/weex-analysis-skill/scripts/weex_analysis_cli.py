@@ -185,6 +185,15 @@ def _attach_standard_disclaimer(result: dict[str, Any]) -> dict[str, Any]:
     return updated
 
 
+def _user_facing_trading_mode_label(environment: dict[str, Any], result: dict[str, Any]) -> str:
+    mode = str(environment.get("trading_mode") or result.get("trading_mode") or "").strip().lower()
+    if mode == "demo":
+        return "demo trading"
+    if mode == "live":
+        return "real trading"
+    return mode or "unknown"
+
+
 def _append_standard_disclaimer(lines: list[str], disclaimer: Any) -> None:
     text = str(disclaimer or STANDARD_ANALYSIS_DISCLAIMER).strip()
     if not text:
@@ -199,14 +208,14 @@ def _environment_text_lines(result: dict[str, Any]) -> list[str]:
     if not isinstance(environment, dict):
         return []
     lines = [
-        f"Trading Environment: {environment.get('trading_mode') or result.get('trading_mode') or 'unknown'}",
+        f"Trading Mode: {_user_facing_trading_mode_label(environment, result)}",
     ]
     if environment.get("market") not in (None, ""):
-        lines.append(f"Environment Market: {environment['market']}")
+        lines.append(f"Market: {environment['market']}")
     if "uses_real_funds" in environment:
         lines.append(f"Uses Real Funds: {str(bool(environment['uses_real_funds'])).lower()}")
     if environment.get("notice"):
-        lines.append(f"Environment Notice: {environment['notice']}")
+        lines.append(f"Trading Notice: {environment['notice']}")
     return lines
 
 
