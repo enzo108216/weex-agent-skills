@@ -216,6 +216,38 @@ class PrepareReplayTests(unittest.TestCase):
         self.assertEqual(result["environment"], payload["environment"])
         self.assertEqual(result["account_scope"], "sim_futures")
 
+    def test_prepare_replay_account_scope_filter_inherits_top_level_scope(self) -> None:
+        payload = {
+            "analysis_type": "replay",
+            "market": "futures",
+            "account_scope": "sim_futures",
+            "orders": [
+                {
+                    "order_id": "btc-open",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "quantity": 0.01,
+                    "time": 1710000000000,
+                }
+            ],
+            "fills": [
+                {
+                    "order_id": "btc-open",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "quantity": 0.01,
+                    "price": 65000,
+                    "time": 1710000000000,
+                }
+            ],
+        }
+
+        result = prep.prepare_replay_payload(payload, account_scopes={"sim_futures"})
+
+        self.assertEqual([item["order_id"] for item in result["orders"]], ["btc-open"])
+        self.assertEqual([item["order_id"] for item in result["fills"]], ["btc-open"])
+        self.assertEqual(result["account_scope"], "sim_futures")
+
     def test_prepare_replay_sets_top_level_symbol_when_single_symbol_filter_is_applied(self) -> None:
         payload = _make_replay_payload()
         payload["symbol"] = None

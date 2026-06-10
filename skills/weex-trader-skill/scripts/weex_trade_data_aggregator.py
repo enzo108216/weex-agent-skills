@@ -1817,6 +1817,7 @@ class TradeDataAggregator:
         market: str,
         trading_mode: str = DEFAULT_TRADING_MODE,
         symbol: str | None = None,
+        language: str | None = None,
     ) -> dict[str, Any]:
         normalized_market = _validate_market(market)
         mode = _validate_trading_mode_market(trading_mode, normalized_market)
@@ -1971,7 +1972,7 @@ class TradeDataAggregator:
             "mode": "account_scan",
             "trading_mode": mode,
             "environment": environment,
-            "user_environment_prefix": _user_environment_prefix(environment),
+            "user_environment_prefix": _user_environment_prefix(environment, language),
             "market": normalized_market,
             "symbol": normalized_symbol,
             "account_snapshot": account_snapshot,
@@ -2643,6 +2644,10 @@ def _output_error(error: str, pretty: bool) -> None:
     _output_json({"ok": False, "error": error}, pretty)
 
 
+def _arg_value(args: argparse.Namespace, name: str, default: Any = None) -> Any:
+    return vars(args).get(name, default)
+
+
 def _parse_order_json(raw: str) -> dict[str, Any]:
     try:
         payload = json.loads(raw)
@@ -2694,6 +2699,7 @@ def cmd_collect_account_risk(args: argparse.Namespace) -> int:
         market=args.market,
         trading_mode=getattr(args, "trading_mode", DEFAULT_TRADING_MODE),
         symbol=args.symbol,
+        language=_arg_value(args, "language", None),
     )
     _output_json(payload, args.pretty)
     return 0
@@ -2733,6 +2739,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_account_risk.add_argument("--market", required=True, choices=("futures", "spot"))
     collect_account_risk.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     collect_account_risk.add_argument("--symbol", default=None, help="Optional trading pair focus.")
+    collect_account_risk.add_argument("--language", choices=("zh", "en"), default=None, help="Language for user-facing environment prefix.")
     collect_account_risk.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     return parser

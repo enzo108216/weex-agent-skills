@@ -1568,6 +1568,39 @@ class AggregatorCliTests(unittest.TestCase):
         self.assertIn('"account_snapshot"', stream.getvalue())
         self.assertIn('"market": "futures"', stream.getvalue())
 
+    def test_cmd_collect_account_risk_accepts_language_for_environment_prefix(self) -> None:
+        args = aggregator.build_parser().parse_args(
+            [
+                "collect-account-risk",
+                "--profile",
+                "demo",
+                "--market",
+                "futures",
+                "--trading-mode",
+                "demo",
+                "--symbol",
+                "BTCUSDT",
+                "--language",
+                "zh",
+            ]
+        )
+        aggregator_instance = mock.Mock()
+        aggregator_instance.collect_account_risk_payload.return_value = {"ok": True}
+
+        with mock.patch.object(aggregator, "TradeDataAggregator", return_value=aggregator_instance):
+            stream = io.StringIO()
+            with mock.patch.object(sys, "stdout", stream):
+                exit_code = aggregator.cmd_collect_account_risk(args)
+
+        self.assertEqual(exit_code, 0)
+        aggregator_instance.collect_account_risk_payload.assert_called_once_with(
+            profile_name="demo",
+            market="futures",
+            trading_mode="demo",
+            symbol="BTCUSDT",
+            language="zh",
+        )
+
     def test_collect_account_risk_demo_futures_uses_demo_scope_and_degraded_state(self) -> None:
         fetcher = mock.Mock()
         fetcher.fetch_futures_balance.return_value = {
@@ -1616,6 +1649,30 @@ class AggregatorCliTests(unittest.TestCase):
         self.assertEqual(fetcher.fetch_futures_orders.call_args.kwargs["trading_mode"], "demo")
         fetcher.fetch_futures_open_orders.assert_not_called()
         fetcher.fetch_futures_pending_orders.assert_not_called()
+
+    def test_collect_account_risk_explicit_language_controls_environment_prefix(self) -> None:
+        fetcher = mock.Mock()
+        fetcher.fetch_futures_balance.return_value = {
+            "asset": "USDT",
+            "balance": "1000",
+            "availableBalance": "900",
+        }
+        fetcher.fetch_futures_positions.return_value = []
+        fetcher.fetch_futures_orders.return_value = []
+        fetcher.fetch_futures_latest_price.return_value = {"symbol": "BTCUSDT", "price": "65000"}
+        fetcher.fetch_futures_klines.return_value = []
+        trade_aggregator = aggregator.TradeDataAggregator(fetcher=fetcher)
+
+        with mock.patch.object(aggregator, "resolve_language", side_effect=lambda value=None: value or "en"):
+            result = trade_aggregator.collect_account_risk_payload(
+                profile_name="demo",
+                market="futures",
+                trading_mode="demo",
+                symbol="BTCUSDT",
+                language="zh",
+            )
+
+        self.assertEqual(result["user_environment_prefix"], "当前交易环境：模拟盘")
 
     def test_main_returns_structured_json_when_aggregation_fails(self) -> None:
         aggregator_instance = mock.Mock()

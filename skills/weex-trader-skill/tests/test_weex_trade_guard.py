@@ -611,6 +611,24 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(payload["environment"]["trading_mode"], "demo")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：模拟盘")
 
+    def test_confirm_order_parser_accepts_language_for_environment_prefix(self) -> None:
+        args = trade_guard.build_parser().parse_args(
+            [
+                "confirm-order",
+                "--intent-id",
+                "intent-demo",
+                "--risk-signature",
+                "sig-demo",
+                "--trading-mode",
+                "demo",
+                "--confirm-demo",
+                "--language",
+                "zh",
+            ]
+        )
+
+        self.assertEqual(args.language, "zh")
+
     def test_confirm_order_rejects_demo_intent_with_live_flag(self) -> None:
         args = mock.Mock(
             intent_id="intent-demo",

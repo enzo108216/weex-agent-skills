@@ -452,6 +452,21 @@ def analyze_snapshot(payload: Any) -> dict[str, Any]:
 
         normalized_positions.append(position)
 
+    if normalized_positions:
+        if equity is None:
+            status_context["partial"] = True
+            _merge_reason_code(status_context["degraded_reasons"], "snapshot_missing_equity")
+        if available_balance is None:
+            status_context["partial"] = True
+            _merge_reason_code(status_context["degraded_reasons"], "snapshot_missing_available_balance")
+        for position in normalized_positions:
+            if position.get("mark_price") is None and position.get("notional") is None:
+                status_context["partial"] = True
+                _merge_reason_code(status_context["degraded_reasons"], "snapshot_position_missing_mark_price")
+            if position.get("leverage") is None:
+                status_context["partial"] = True
+                _merge_reason_code(status_context["degraded_reasons"], "snapshot_position_missing_leverage")
+
     gross_leverage_estimate = _ratio(gross_notional, equity)
     free_balance_ratio = _ratio(available_balance, equity)
 
@@ -1230,7 +1245,14 @@ def analyze_fills(payload: Any) -> dict[str, Any]:
         quantity = _to_decimal(fill["quantity"]) or Decimal("0")
         notional = _to_decimal(fill["notional"]) or Decimal("0")
         pnl = _to_decimal(fill["realized_pnl"])
-        fee = _to_decimal(fill["fee"]) or Decimal("0")
+        fee_value = _to_decimal(fill["fee"])
+        if pnl is None:
+            status_context["partial"] = True
+            _merge_reason_code(status_context["degraded_reasons"], "fills_missing_realized_pnl")
+        if fee_value is None:
+            status_context["partial"] = True
+            _merge_reason_code(status_context["degraded_reasons"], "fills_missing_fee")
+        fee = fee_value or Decimal("0")
         side = str(fill["side"])
 
         turnover += abs(notional)

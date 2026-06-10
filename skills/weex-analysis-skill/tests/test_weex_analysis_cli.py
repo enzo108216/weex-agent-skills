@@ -319,6 +319,25 @@ class SnapshotAnalysisTests(unittest.TestCase):
         self.assertEqual(result["degraded_reasons"], ["snapshot_source_partial"])
         self.assertEqual(result["constraints"][0]["code"], "snapshot_filter_applied")
 
+    def test_analyze_snapshot_marks_missing_risk_fields_as_partial(self) -> None:
+        payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "long",
+                    "quantity": 0.01,
+                }
+            ],
+        }
+
+        result = analysis.analyze_snapshot(payload)
+
+        self.assertTrue(result["partial"])
+        self.assertIn("snapshot_missing_equity", result["degraded_reasons"])
+        self.assertIn("snapshot_missing_available_balance", result["degraded_reasons"])
+        self.assertIn("snapshot_position_missing_mark_price", result["degraded_reasons"])
+        self.assertIn("snapshot_position_missing_leverage", result["degraded_reasons"])
+
 
 class FillAnalysisTests(unittest.TestCase):
     def test_analyze_fills_aggregates_realized_pnl_and_fees(self) -> None:
@@ -360,6 +379,36 @@ class FillAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(result["fees"], 3.4)
         self.assertAlmostEqual(result["net_realized_after_fees"], 24.6)
         self.assertAlmostEqual(result["win_rate"], 0.33333333)
+
+    def test_analyze_fills_marks_missing_realized_pnl_and_fee_as_partial(self) -> None:
+        payload = {
+            "fills": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "sell",
+                    "quantity": 0.01,
+                    "price": 65000,
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "sell",
+                    "quantity": 0.5,
+                    "price": 3080,
+                    "realized_pnl": 40,
+                    "fee": 1.4,
+                },
+            ]
+        }
+
+        result = analysis.analyze_fills(payload)
+        text = analysis._render_text(result)
+
+        self.assertTrue(result["partial"])
+        self.assertIn("fills_missing_realized_pnl", result["degraded_reasons"])
+        self.assertIn("fills_missing_fee", result["degraded_reasons"])
+        self.assertIn("Partial Analysis", text)
+        self.assertIn("degraded: fills_missing_realized_pnl", text)
+        self.assertIn("degraded: fills_missing_fee", text)
 
     def test_analyze_fills_direct_call_preserves_trading_mode_context(self) -> None:
         payload = {
@@ -1994,6 +2043,15 @@ class ProfileAnalysisTests(unittest.TestCase):
 
 
 class OrderRiskAnalysisTests(unittest.TestCase):
+    def test_analyze_order_risk_marks_missing_order_context_as_partial(self) -> None:
+        result = analysis.analyze_order_risk({})
+
+        self.assertTrue(result["partial"])
+        self.assertTrue(result["has_risk"])
+        self.assertIn("order_risk_missing_order_preview", result["degraded_reasons"])
+        self.assertIn("order_risk_missing_account_snapshot", result["degraded_reasons"])
+        self.assertIn("order_context_incomplete", {alert["type"] for alert in result["alerts"]})
+
     def test_analyze_order_risk_returns_structured_alerts_and_confirmation_hint(self) -> None:
         payload = {
             "order_preview": {

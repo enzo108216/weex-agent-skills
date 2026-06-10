@@ -906,6 +906,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     confirm.add_argument("--confirm-live", action="store_true", help="Required before sending a real order.")
     confirm.add_argument("--confirm-demo", action="store_true", help="Required before sending a demo futures order.")
+    confirm.add_argument("--language", choices=("zh", "en"), default=None, help="Language for user-facing environment prefix.")
     confirm.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     confirm_tp_sl = subparsers.add_parser(
