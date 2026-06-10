@@ -66,6 +66,7 @@ class MonitorTaskTests(unittest.TestCase):
         base_task = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "demo",
             "symbol": "ETHUSDT",
             "position_side": "SHORT",
             "condition": {
@@ -83,13 +84,34 @@ class MonitorTaskTests(unittest.TestCase):
         task = monitor.normalize_task(base_task, now_ms=1000)
 
         self.assertEqual(task["frequency_seconds"], 5)
-        self.assertEqual(task["trading_mode"], "live")
-        self.assertEqual(task["environment"]["trading_mode"], "live")
+        self.assertEqual(task["trading_mode"], "demo")
+        self.assertEqual(task["environment"]["trading_mode"], "demo")
 
         too_fast = dict(base_task)
         too_fast["frequency_seconds"] = 2
         with self.assertRaisesRegex(monitor.MonitorInputError, "frequency_seconds"):
             monitor.normalize_task(too_fast, now_ms=1000)
+
+    def test_position_pnl_monitor_requires_explicit_trading_mode(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "symbol": "ETHUSDT",
+            "position_side": "SHORT",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">=",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "SHORT",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        with self.assertRaisesRegex(monitor.MonitorInputError, "trading_mode is required"):
+            monitor.normalize_task(task_json, now_ms=1000)
 
     def test_position_pnl_monitor_accepts_explicit_demo_trading_mode(self) -> None:
         task = monitor.normalize_task(
@@ -117,10 +139,38 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(task["environment"]["trading_mode"], "demo")
         self.assertFalse(task["environment"]["uses_real_funds"])
 
+    def test_price_threshold_condition_error_points_to_official_conditional_orders(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo-profile",
+            "trading_mode": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "price",
+                "operator": ">",
+                "threshold": "70000",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        with self.assertRaises(monitor.MonitorInputError) as raised:
+            monitor.normalize_task(task_json, now_ms=1000)
+
+        message = str(raised.exception)
+        self.assertIn("unrealized_pnl", message)
+        self.assertIn("weex-trader-skill", message)
+        self.assertIn("official conditional orders", message)
+
     def test_confirmation_fingerprint_binds_trading_mode(self) -> None:
         base_task = {
             "task_type": "position_pnl_monitor",
             "profile": "demo-profile",
+            "trading_mode": "live",
             "symbol": "BTCSUSDT",
             "position_side": "LONG",
             "condition": {
@@ -147,6 +197,7 @@ class MonitorTaskTests(unittest.TestCase):
             {
                 "task_type": "position_pnl_monitor",
                 "profile": "demo",
+                "trading_mode": "live",
                 "symbol": "ETHUSDT",
                 "position_side": "SHORT",
                 "condition": {
@@ -271,6 +322,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -309,10 +361,42 @@ class MonitorTaskTests(unittest.TestCase):
             ["task_confirmation_rendered", "task_confirmed"],
         )
 
+    def test_load_events_redacts_confirmation_tokens(self) -> None:
+        task_json = {
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "trading_mode": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "50",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+            },
+            "callback": {"type": "current_thread"},
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                prepared = monitor.prepare_confirmation(task_json, now_ms=1000)
+                token = prepared["confirmation_token"]
+                events = monitor.load_events(prepared["task"]["task_id"])
+
+        rendered_event = events[0]
+        self.assertEqual(rendered_event["event_type"], "task_confirmation_rendered")
+        self.assertIn("confirmation_token", rendered_event["payload"])
+        self.assertNotEqual(rendered_event["payload"]["confirmation_token"], token)
+        self.assertEqual(rendered_event["payload"]["confirmation_token"], "<redacted>")
+
     def test_explicit_pnl_close_quantity_must_be_positive(self) -> None:
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "ETHUSDT",
             "position_side": "SHORT",
             "condition": {
@@ -335,6 +419,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "market": "spot",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
@@ -357,6 +442,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -387,6 +473,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -417,6 +504,7 @@ class MonitorTaskTests(unittest.TestCase):
                 "task_id": "mon_token_race",
                 "task_type": "position_pnl_monitor",
                 "profile": "demo",
+                "trading_mode": "live",
                 "symbol": "BTCUSDT",
                 "position_side": "LONG",
                 "condition": {
@@ -473,6 +561,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -504,6 +593,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -525,8 +615,9 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("多单", text)
         self.assertIn("未实现盈亏 > 50", text)
         self.assertIn("授权使用真实盘", text)
-        self.assertIn("盘别: 真实盘（会使用真实资金）", text)
-        self.assertNotIn("交易环境:", text)
+        self.assertTrue(text.startswith("当前交易环境： 真实盘\n"))
+        self.assertIn("资金说明: 会使用真实资金", text)
+        self.assertNotIn("盘别:", text)
         self.assertIn("请回复：确认", text)
         self.assertNotIn("确认启动监控", text)
         self.assertNotIn("--confirm-monitor", text)
@@ -554,8 +645,9 @@ class MonitorTaskTests(unittest.TestCase):
 
         text = monitor.render_confirmation_text(task_json, now_ms=1000)
 
-        self.assertIn("盘别: 模拟盘（不会使用真实资金）", text)
-        self.assertNotIn("交易环境:", text)
+        self.assertTrue(text.startswith("当前交易环境： 模拟盘\n"))
+        self.assertIn("资金说明: 不会使用真实资金", text)
+        self.assertNotIn("盘别:", text)
         self.assertNotIn("盘别: demo", text)
         self.assertIn("提交模拟盘市价平多单", text)
         self.assertNotIn("提交真实市价平多单", text)
@@ -636,6 +728,7 @@ class MonitorTaskTests(unittest.TestCase):
             }
         )
 
+        self.assertTrue(report.startswith("当前交易环境： 模拟盘\n"))
         self.assertIn("Demo trading authorization is required", report)
         self.assertNotIn("Demo-account authorization is required", report)
         self.assertNotIn("Real-account authorization is required", report)
@@ -644,6 +737,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -660,11 +754,13 @@ class MonitorTaskTests(unittest.TestCase):
 
         text = monitor.render_confirmation_text(task_json, now_ms=1000, language="en")
 
+        self.assertTrue(text.startswith("Current trading mode: real trading\n"))
         self.assertIn("Automated Monitor Confirmation", text)
         self.assertIn("Monitor target: BTCUSDT long position", text)
-        self.assertIn("Trading mode: real trading (uses real funds)", text)
+        self.assertIn("Funds: uses real funds", text)
         self.assertNotIn("Trading environment:", text)
         self.assertNotIn("Trading mode: real account", text)
+        self.assertNotIn("Trading mode: real trading (uses real funds)", text)
         self.assertIn("Trigger condition: Unrealized PnL < 0", text)
         self.assertIn("Reply: confirm", text)
         self.assertNotIn("Trading mode: live", text)
@@ -677,6 +773,7 @@ class MonitorTaskTests(unittest.TestCase):
         fixed_quantity_task = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -705,6 +802,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_live_confirm",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -774,7 +872,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("账户可用余额: 123.45", prepared["confirmation_text"])
         self.assertIn("确认快照时间:", prepared["confirmation_text"])
         self.assertIn("授权使用真实盘", prepared["confirmation_text"])
-        self.assertNotIn("交易环境:", prepared["confirmation_text"])
+        self.assertTrue(prepared["confirmation_text"].startswith("当前交易环境： 真实盘\n"))
+        self.assertNotIn("盘别:", prepared["confirmation_text"])
         self.assertIn("请回复：确认", prepared["confirmation_text"])
         self.assertNotIn("确认启动监控", prepared["confirmation_text"])
         self.assertNotIn("--confirm-live", prepared["confirmation_text"])
@@ -784,11 +883,86 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["live_position_confirmation"]["current_price"], "78123.4")
         self.assertEqual(events[0]["payload"]["live_position_confirmation"]["quantity"], "0.01")
 
+    def test_live_confirmation_text_warns_when_fixed_close_quantity_differs_from_aggregate_position(self) -> None:
+        task_json = {
+            "task_id": "mon_live_aggregate_warning",
+            "task_type": "position_pnl_monitor",
+            "profile": "demo",
+            "trading_mode": "demo",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "frequency_seconds": 5,
+            "condition": {
+                "metric": "unrealized_pnl",
+                "operator": ">",
+                "threshold": "2",
+            },
+            "action": {
+                "type": "market_close",
+                "target": "LONG",
+                "quantity": "0.01",
+            },
+            "callback": {"type": "current_thread"},
+        }
+        account_payload = {
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quantity": "0.022",
+                    "unrealized_pnl": "-4.86",
+                }
+            ],
+            "degraded_reasons": [],
+            "partial": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_MONITOR_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(monitor, "_run_json_command", return_value=account_payload):
+                    zh_prepared = monitor.prepare_live_confirmation(
+                        task_json,
+                        duration_seconds=3600,
+                        now_ms=1000,
+                        language="zh",
+                    )
+                    en_prepared = monitor.prepare_live_confirmation(
+                        dict(task_json, task_id="mon_live_aggregate_warning_en"),
+                        duration_seconds=3600,
+                        now_ms=2000,
+                        language="en",
+                    )
+
+        self.assertIn("聚合持仓未实现盈亏", zh_prepared["confirmation_text"])
+        self.assertIn("不是单笔订单独立盈亏", zh_prepared["confirmation_text"])
+        self.assertIn("聚合持仓数量 0.022 与固定平仓数量 0.01 不同", zh_prepared["confirmation_text"])
+        self.assertIn(
+            "已匹配模拟盘持仓: BTCUSDT 多单, 持仓数量: 0.022, "
+            "聚合持仓总未实现盈亏: -4.86, "
+            "按固定平仓数量 0.01 折算未实现盈亏: -2.20909091",
+            zh_prepared["confirmation_text"],
+        )
+        self.assertNotIn("当前未实现盈亏: -4.86", zh_prepared["confirmation_text"])
+        self.assertIn("aggregate position unrealized PnL", en_prepared["confirmation_text"])
+        self.assertIn("not isolated single-order PnL", en_prepared["confirmation_text"])
+        self.assertIn(
+            "aggregate position size 0.022 differs from fixed close quantity 0.01",
+            en_prepared["confirmation_text"],
+        )
+        self.assertIn(
+            "Matched simulated futures position: BTCUSDT long position, position size: 0.022, "
+            "aggregate total unrealized PnL: -4.86, "
+            "unrealized PnL prorated to fixed close quantity 0.01: -2.20909091",
+            en_prepared["confirmation_text"],
+        )
+        self.assertNotIn("current unrealized PnL: -4.86", en_prepared["confirmation_text"])
+
     def test_live_confirmation_defaults_codex_reporting_to_one_minute(self) -> None:
         task_json = {
             "task_id": "mon_live_report_default",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -834,6 +1008,8 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("状态汇报: 每 1 分钟", prepared["confirmation_text"])
         self.assertIn("mon_live_report_default", reporting["heartbeat_prompt"])
         self.assertIn("events --task-id mon_live_report_default", reporting["heartbeat_prompt"])
+        self.assertIn("当前交易环境： 真实盘", reporting["heartbeat_prompt"])
+        self.assertIn("Start the status report with this exact first line", reporting["heartbeat_prompt"])
         self.assertIn("sanitized summaries", reporting["heartbeat_prompt"])
         self.assertNotIn("include those", reporting["heartbeat_prompt"])
         self.assertIn("Do not output HTML entities", reporting["heartbeat_prompt"])
@@ -882,6 +1058,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_live_report_explicit",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -932,6 +1109,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_live_confirm_missing_details",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -981,6 +1159,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_live_confirm_missing_details_en",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -1034,6 +1213,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_live_confirm_missing",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1067,6 +1247,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_cli_confirm",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1187,6 +1368,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_no_overwrite",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1233,6 +1415,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_fixed",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1261,6 +1444,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "ETHUSDT",
             "position_side": "SHORT",
             "condition": {
@@ -1305,6 +1489,7 @@ class MonitorTaskTests(unittest.TestCase):
         task_json = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "ETHUSDT",
             "position_side": "SHORT",
             "condition": {
@@ -1354,6 +1539,11 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(loop_result["triggered_count"], 1)
         self.assertEqual(tasks[0]["status"], "triggered")
         self.assertIn("thread_report", loop_result["iterations"][0]["results"][0])
+        self.assertTrue(
+            loop_result["iterations"][0]["results"][0]["thread_report"].startswith(
+                "当前交易环境： 真实盘\n"
+            )
+        )
         self.assertIn("Real trading authorization is required", loop_result["iterations"][0]["results"][0]["thread_report"])
         self.assertNotIn("Real-account authorization is required", loop_result["iterations"][0]["results"][0]["thread_report"])
         self.assertNotIn("授权使用真实账户", loop_result["iterations"][0]["results"][0]["thread_report"])
@@ -1367,6 +1557,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_delegate",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "ETHUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1400,6 +1591,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_forged",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "status": "active",
@@ -1437,6 +1629,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_live",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1500,6 +1693,7 @@ class MonitorTaskTests(unittest.TestCase):
                 "status": "FILLED",
             },
         )
+        self.assertTrue(results[0]["thread_report"].startswith("当前交易环境： 真实盘\n"))
         self.assertIn("Live close order submitted", results[0]["thread_report"])
         self.assertIn("Exchange summary", results[0]["thread_report"])
         self.assertNotIn("avgPrice", results[0]["thread_report"])
@@ -1578,6 +1772,7 @@ class MonitorTaskTests(unittest.TestCase):
                     results = monitor.run_live_once(confirm_live=False, confirm_demo=True, now_ms=2000)
 
         self.assertEqual(results[0]["status"], "completed")
+        self.assertTrue(results[0]["thread_report"].startswith("当前交易环境： 模拟盘\n"))
         self.assertIn("Demo close order submitted", results[0]["thread_report"])
         confirm_command = runner.call_args_list[3].args[0]
         self.assertIn("--confirm-demo", confirm_command)
@@ -1588,6 +1783,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_loop",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 3,
@@ -1647,6 +1843,7 @@ class MonitorTaskTests(unittest.TestCase):
         base_task = {
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1708,6 +1905,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_combined",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -1794,6 +1992,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_combined_guard",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1834,6 +2033,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_plain_token",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1893,6 +2093,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_live_token_mismatch",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -1944,6 +2145,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_duration_mismatch",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -2008,6 +2210,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_stop_after_complete",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "frequency_seconds": 5,
@@ -2065,6 +2268,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_pnl_fail",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {
@@ -2117,6 +2321,7 @@ class MonitorTaskTests(unittest.TestCase):
             "task_id": "mon_claim",
             "task_type": "position_pnl_monitor",
             "profile": "demo",
+            "trading_mode": "live",
             "symbol": "BTCUSDT",
             "position_side": "LONG",
             "condition": {

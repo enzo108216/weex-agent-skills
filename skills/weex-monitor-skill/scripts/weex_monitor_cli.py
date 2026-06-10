@@ -119,6 +119,13 @@ def _user_facing_trading_mode_label(trading_mode: str, *, language: str = "zh") 
     return "模拟盘" if mode == "demo" else "真实盘"
 
 
+def _environment_prefix_for_trading_mode(trading_mode: str, *, language: str = "zh") -> str:
+    label = _user_facing_trading_mode_label(trading_mode, language=language)
+    if language == "en":
+        return f"Current trading mode: {label}"
+    return f"当前交易环境： {label}"
+
+
 def _confirm_flag_for_trading_mode(trading_mode: str) -> str:
     return "--confirm-demo" if _normalize_trading_mode(trading_mode) == "demo" else "--confirm-live"
 
@@ -166,6 +173,17 @@ def save_tasks(tasks: list[dict[str, Any]]) -> None:
             _upsert_task(conn, task, updated_at_ms=_now_ms())
 
 
+def _redact_event_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: ("<redacted>" if key == "confirmation_token" else _redact_event_payload(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_event_payload(item) for item in value]
+    return value
+
+
 def load_events(task_id: str | None = None) -> list[dict[str, Any]]:
     if not db_path().exists():
         return []
@@ -183,7 +201,7 @@ def load_events(task_id: str | None = None) -> list[dict[str, Any]]:
             "task_id": row["task_id"],
             "event_type": row["event_type"],
             "created_at_ms": row["created_at_ms"],
-            "payload": json.loads(row["payload_json"]),
+            "payload": _redact_event_payload(json.loads(row["payload_json"])),
         }
         for row in rows
     ]
@@ -199,7 +217,7 @@ def normalize_task(raw_task: dict[str, Any], *, now_ms: int | None = None) -> di
 
     profile = _required_string(raw_task, "profile")
     market = _normalize_market(raw_task.get("market"))
-    trading_mode = _normalize_trading_mode(raw_task.get("trading_mode", DEFAULT_TRADING_MODE))
+    trading_mode = _normalize_trading_mode(_required_string(raw_task, "trading_mode"))
     symbol = _required_string(raw_task, "symbol").upper()
     position_side = _normalize_position_side(raw_task.get("position_side"))
     condition = _normalize_condition(raw_task.get("condition"), task_type)
@@ -473,41 +491,74 @@ def render_confirmation_text(
     )
     if resolved_language == "en":
         funds_text = "uses real funds" if task["environment"]["uses_real_funds"] else "does not use real funds"
-        trading_mode_label = _user_facing_trading_mode_label(task["trading_mode"], language=resolved_language)
         parts = [
+            _environment_prefix_for_trading_mode(task["trading_mode"], language=resolved_language),
             "Automated Monitor Confirmation",
             f"Task ID: {task['task_id']}",
             f"Account: {task['profile']}",
-            f"Trading mode: {trading_mode_label} ({funds_text})",
-            f"Monitor target: {task['symbol']} {_position_side_label(task['position_side'], language=resolved_language)}",
-            f"Trigger condition: {_condition_label(condition, language=resolved_language)}",
-            f"Trigger action: {_action_label(action, language=resolved_language, trading_mode=task['trading_mode'])}",
-            f"Callback: {task['callback']['type']}",
-            "After confirmation, the local monitor rule will be saved; account positions will be read and an order will be submitted only after you authorize the matching trading mode and real-trading access when applicable.",
-            f"If you confirm the monitor settings and authorization above, Reply: {reply_text}",
+            f"Funds: {funds_text}",
         ]
-        parts.insert(6, f"Check frequency: every {task['frequency_seconds']} seconds")
     else:
         funds_text = "会使用真实资金" if task["environment"]["uses_real_funds"] else "不会使用真实资金"
-        trading_mode_label = _user_facing_trading_mode_label(task["trading_mode"], language=resolved_language)
         parts = [
+            _environment_prefix_for_trading_mode(task["trading_mode"], language=resolved_language),
             "自动化监控确认",
             f"任务编号: {task['task_id']}",
             f"账户: {task['profile']}",
-            f"盘别: {trading_mode_label}（{funds_text}）",
-            f"监控对象: {task['symbol']} {_position_side_label(task['position_side'])}",
-            f"触发条件: {_condition_label(condition)}",
-            f"触发动作: {_action_label(action, trading_mode=task['trading_mode'])}",
-            f"回报位置: {task['callback']['type']}",
-            "确认后会先保存本地监控规则；只有在你授权使用真实盘或匹配的模拟盘后，才会读取仓位并在触发时提交委托。",
-            f"如果你确认上述监控设置与授权，请回复：{reply_text}",
+            f"资金说明: {funds_text}",
         ]
-        parts.insert(6, f"检查频率: 每 {task['frequency_seconds']} 秒")
+
+    if position_snapshot is not None:
+        if resolved_language == "en":
+            position_match_label = (
+                "Matched simulated futures position"
+                if task["trading_mode"] == "demo"
+                else "Matched real-trading position"
+            )
+            parts.append(
+                (
+                    f"{position_match_label}: "
+                    f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'], language=resolved_language)}, "
+                    f"position size: {position_snapshot['quantity']}, "
+                    f"{_position_pnl_summary(action, position_snapshot, language=resolved_language)}"
+                ),
+            )
+        else:
+            position_match_label = "已匹配模拟盘持仓" if task["trading_mode"] == "demo" else "已匹配真实持仓"
+            parts.append(
+                (
+                    f"{position_match_label}: "
+                    f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'])}, "
+                    f"持仓数量: {position_snapshot['quantity']}, "
+                    f"{_position_pnl_summary(action, position_snapshot, language=resolved_language)}"
+                ),
+            )
+        parts.append(_pnl_scope_line(task, action, position_snapshot, language=resolved_language))
+        parts.append(_position_detail_line(position_snapshot, language=resolved_language))
+
+    if resolved_language == "en":
+        parts.append(f"Monitor target: {task['symbol']} {_position_side_label(task['position_side'], language=resolved_language)}")
+        parts.append(f"Trigger condition: {_condition_label(condition, language=resolved_language)}")
+    else:
+        parts.append(f"监控对象: {task['symbol']} {_position_side_label(task['position_side'])}")
+        parts.append(f"触发条件: {_condition_label(condition)}")
+
+    if position_snapshot is not None:
+        current_condition_line = _current_condition_line(position_snapshot, language=resolved_language)
+        if current_condition_line is not None:
+            parts.append(current_condition_line)
+
+    if resolved_language == "en":
+        parts.append(f"Check frequency: every {task['frequency_seconds']} seconds")
+    else:
+        parts.append(f"检查频率: 每 {task['frequency_seconds']} 秒")
+
     if duration_seconds is not None:
         if resolved_language == "en":
-            parts.insert(7, f"Run duration: {_duration_label(float(duration_seconds), language=resolved_language)}")
+            parts.append(f"Run duration: {_duration_label(float(duration_seconds), language=resolved_language)}")
         else:
-            parts.insert(7, f"运行时长: {_duration_label(float(duration_seconds))}")
+            parts.append(f"运行时长: {_duration_label(float(duration_seconds))}")
+
     reporting = raw_task.get("codex_reporting")
     if isinstance(reporting, dict) and reporting.get("enabled"):
         interval_seconds = _normalize_codex_reporting_interval_seconds(reporting.get("interval_seconds"))
@@ -517,43 +568,26 @@ def render_confirmation_text(
             if resolved_language == "en"
             else f"状态汇报: 每 {_duration_label(float(interval_seconds))}，通过 Codex thread heartbeat"
         )
-        insert_index = 8 if duration_seconds is not None else 7
-        parts.insert(insert_index, reporting_line)
-    if position_snapshot is not None:
-        if resolved_language == "en":
-            position_match_label = (
-                "Matched simulated futures position"
-                if task["trading_mode"] == "demo"
-                else "Matched real-trading position"
-            )
-            parts.insert(
-                4,
-                (
-                    f"{position_match_label}: "
-                    f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'], language=resolved_language)}, "
-                    f"position size: {position_snapshot['quantity']}, "
-                    f"current unrealized PnL: {position_snapshot.get('unrealized_pnl', 'unknown')}"
-                ),
-            )
-        else:
-            position_match_label = "已匹配模拟盘持仓" if task["trading_mode"] == "demo" else "已匹配真实持仓"
-            parts.insert(
-                4,
-                (
-                    f"{position_match_label}: "
-                    f"{position_snapshot['symbol']} {_position_side_label(position_snapshot['position_side'])}, "
-                    f"持仓数量: {position_snapshot['quantity']}, "
-                    f"当前未实现盈亏: {position_snapshot.get('unrealized_pnl', 'unknown')}"
-                ),
-            )
-        parts.insert(5, _position_detail_line(position_snapshot, language=resolved_language))
-        current_condition_line = _current_condition_line(position_snapshot, language=resolved_language)
-        if current_condition_line is not None:
-            for index, part in enumerate(parts):
-                condition_prefix = "Trigger condition:" if resolved_language == "en" else "触发条件:"
-                if part.startswith(condition_prefix):
-                    parts.insert(index + 1, current_condition_line)
-                    break
+        parts.append(reporting_line)
+
+    if resolved_language == "en":
+        parts.extend(
+            [
+                f"Trigger action: {_action_label(action, language=resolved_language, trading_mode=task['trading_mode'])}",
+                f"Callback: {task['callback']['type']}",
+                "After confirmation, the local monitor rule will be saved; account positions will be read and an order will be submitted only after you authorize the matching trading mode and real-trading access when applicable.",
+                f"If you confirm the monitor settings and authorization above, Reply: {reply_text}",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                f"触发动作: {_action_label(action, trading_mode=task['trading_mode'])}",
+                f"回报位置: {task['callback']['type']}",
+                "确认后会先保存本地监控规则；只有在你授权使用真实盘或匹配的模拟盘后，才会读取仓位并在触发时提交委托。",
+                f"如果你确认上述监控设置与授权，请回复：{reply_text}",
+            ]
+        )
     return "\n".join(parts)
 
 
@@ -909,10 +943,12 @@ def _build_status_reporting_prompt(raw_task: dict[str, Any], *, runtime_label: s
     task = normalize_task(raw_task)
     skill_root = Path(__file__).resolve().parents[1]
     task_id = task["task_id"]
+    environment_prefix = _environment_prefix_for_trading_mode(task["trading_mode"])
     return (
         f"Report WEEX monitor status for the current {runtime_label}.\n"
         f"Task id: {task_id}\n"
-        f"Trading mode: {_user_facing_trading_mode_label(task['trading_mode'], language='en')} (internal trading_mode: {task['trading_mode']})\n"
+        f"Start the status report with this exact first line: {environment_prefix}\n"
+        f"Internal trading_mode: {task['trading_mode']}\n"
         f"Skill directory: {skill_root}\n"
         "Read-only commands to run from the skill directory:\n"
         f"- python3 scripts/weex_monitor_cli.py list\n"
@@ -1629,15 +1665,18 @@ def render_live_thread_report(
 ) -> str:
     mode_label = "Demo" if task.get("trading_mode") == "demo" else "Live"
     check_label = "demo" if task.get("trading_mode") == "demo" else "live"
+    prefix = _environment_prefix_for_trading_mode(task.get("trading_mode") or DEFAULT_TRADING_MODE)
     if result.get("triggered") and exchange_response is not None:
         snapshot = result.get("trigger_snapshot", {})
         return (
+            f"{prefix}\n"
             f"WEEX monitor {task['task_id']} {mode_label} close order submitted: "
             f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
             f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
             f"Exchange summary: {exchange_response}."
         )
     return (
+        f"{prefix}\n"
         f"WEEX monitor {task['task_id']} {check_label} check did not submit a close order: "
         f"{result.get('reason', 'unknown_reason')}."
     )
@@ -1663,6 +1702,7 @@ def render_thread_report(output: dict[str, Any]) -> str:
         or delegate_plan.get("trading_mode")
         or delegate_environment.get("trading_mode")
     )
+    prefix = _environment_prefix_for_trading_mode(trading_mode)
     if trading_mode == "demo":
         authorization_sentence = "Demo trading authorization is required before a demo order can be submitted. "
         no_order_sentence = "No order was submitted by weex-monitor-skill."
@@ -1673,6 +1713,7 @@ def render_thread_report(output: dict[str, Any]) -> str:
         snapshot = result.get("trigger_snapshot", {})
         close_order = result.get("close_order", {})
         return (
+            f"{prefix}\n"
             f"WEEX monitor {task_id} dry-run triggered: "
             f"{snapshot.get('symbol')} {snapshot.get('position_side')} "
             f"{snapshot.get('unrealized_pnl')} {snapshot.get('operator')} {snapshot.get('threshold')}. "
@@ -1681,6 +1722,7 @@ def render_thread_report(output: dict[str, Any]) -> str:
             f"{no_order_sentence}"
         )
     return (
+        f"{prefix}\n"
         f"WEEX monitor {task_id} dry-run not triggered: "
         f"{result.get('reason', 'unknown_reason')}. "
         f"{no_order_sentence}"
@@ -2070,7 +2112,11 @@ def _normalize_condition(value: Any, task_type: str) -> dict[str, str]:
 
     metric = _required_string(value, "metric")
     if metric != "unrealized_pnl":
-        raise MonitorInputError(f"{task_type} condition metric must be unrealized_pnl")
+        raise MonitorInputError(
+            f"{task_type} condition metric must be unrealized_pnl. "
+            "Price-threshold closes are not local monitor tasks; use weex-trader-skill "
+            "official conditional orders or TP/SL instead."
+        )
 
     operator = _required_string(value, "operator")
     if operator not in VALID_OPERATORS:
@@ -2285,6 +2331,103 @@ def _position_detail_line(position_snapshot: dict[str, Any], *, language: str = 
     if language == "en":
         return "Position details: " + ", ".join(details)
     return "仓位明细: " + ", ".join(details)
+
+
+def _pnl_scope_line(
+    task: dict[str, Any],
+    action: dict[str, str],
+    position_snapshot: dict[str, Any],
+    *,
+    language: str = "zh",
+) -> str:
+    symbol = str(position_snapshot.get("symbol") or task["symbol"])
+    position_side = str(position_snapshot.get("position_side") or task["position_side"])
+    position_size = str(position_snapshot.get("quantity") or "unknown")
+    action_quantity = action.get("quantity")
+
+    if language == "en":
+        side_label = _position_side_label(position_side, language=language)
+        base = (
+            f"PnL scope: this monitor evaluates aggregate position unrealized PnL for "
+            f"{symbol} {side_label}, not isolated single-order PnL."
+        )
+        if action_quantity:
+            if _decimal_texts_differ(position_size, action_quantity):
+                return (
+                    f"{base} The aggregate position size {position_size} differs from fixed close quantity "
+                    f"{action_quantity}; if triggered, only the fixed close quantity will be submitted."
+                )
+            return f"{base} If triggered, the fixed close quantity {action_quantity} will be submitted."
+        return f"{base} If triggered, the matched position size at trigger time will be submitted."
+
+    side_label = _position_side_label(position_side)
+    base = f"盈亏口径: 本监控按 {symbol} {side_label} 聚合持仓未实现盈亏触发，不是单笔订单独立盈亏。"
+    if action_quantity:
+        if _decimal_texts_differ(position_size, action_quantity):
+            return (
+                f"{base} 聚合持仓数量 {position_size} 与固定平仓数量 {action_quantity} 不同；"
+                "触发时只会提交固定平仓数量。"
+            )
+        return f"{base} 触发时会提交固定平仓数量 {action_quantity}。"
+    return f"{base} 触发时会提交触发时匹配持仓数量。"
+
+
+def _position_pnl_summary(
+    action: dict[str, str],
+    position_snapshot: dict[str, Any],
+    *,
+    language: str = "zh"
+) -> str:
+    action_quantity = action.get("quantity")
+    total_pnl = _snapshot_value(position_snapshot.get("unrealized_pnl"), language=language)
+    if not action_quantity:
+        if language == "en":
+            return f"current unrealized PnL: {total_pnl}"
+        return f"当前未实现盈亏: {total_pnl}"
+
+    prorated_pnl = _prorated_pnl_value(position_snapshot, action_quantity, language=language)
+    if language == "en":
+        return (
+            f"aggregate total unrealized PnL: {total_pnl}, "
+            f"unrealized PnL prorated to fixed close quantity {action_quantity}: {prorated_pnl}"
+        )
+    return (
+        f"聚合持仓总未实现盈亏: {total_pnl}, "
+        f"按固定平仓数量 {action_quantity} 折算未实现盈亏: {prorated_pnl}"
+    )
+
+
+def _prorated_pnl_value(
+    position_snapshot: dict[str, Any],
+    action_quantity: Any,
+    *,
+    language: str = "zh",
+) -> str:
+    try:
+        total_pnl = _decimal_from_any(position_snapshot.get("unrealized_pnl"), "unrealized_pnl")
+        position_size = _decimal_from_any(position_snapshot.get("quantity"), "position_size")
+        fixed_quantity = _decimal_from_any(action_quantity, "action_quantity")
+    except MonitorInputError:
+        return _missing_value_label(language)
+    if not total_pnl.is_finite() or not position_size.is_finite() or not fixed_quantity.is_finite():
+        return _missing_value_label(language)
+    if position_size == 0:
+        return _missing_value_label(language)
+    return _format_decimal_for_display(total_pnl * fixed_quantity / position_size)
+
+
+def _format_decimal_for_display(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    quantized = value.quantize(Decimal("0.00000001"))
+    return format(quantized.normalize(), "f")
+
+
+def _decimal_texts_differ(left: Any, right: Any) -> bool:
+    try:
+        return _decimal_from_any(left, "left") != _decimal_from_any(right, "right")
+    except MonitorInputError:
+        return str(left).strip() != str(right).strip()
 
 
 def _action_label(action: dict[str, str], *, language: str = "zh", trading_mode: str = DEFAULT_TRADING_MODE) -> str:

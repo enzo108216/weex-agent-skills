@@ -77,6 +77,14 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
             manifest["routing"]["domains"]["pnl_live_runner"]["commands"],
         )
 
+    def test_skill_documents_order_origin_requests_use_aggregate_position_pnl(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("Order-origin monitor requests", skill_text)
+        self.assertIn("aggregate `symbol` + `position_side` position unrealized PnL", skill_text)
+        self.assertIn("not isolated single-order PnL", skill_text)
+        self.assertIn("show both the matched aggregate position size and fixed close quantity", skill_text)
+
     def test_skill_documents_codex_heartbeat_status_reporting(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
 
@@ -103,6 +111,8 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
             .replace("确认", "")
             .replace("模拟盘", "")
             .replace("真实盘", "")
+            .replace("当前交易环境： ", "")
+            .replace("盘别", "")
         )
 
         self.assertIsNone(re.search(r"[\u4e00-\u9fff]", without_allowed_reply_word))
@@ -120,6 +130,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("localized trading-mode labels", skill_text)
         self.assertIn("`模拟盘` and `真实盘`", skill_text)
         self.assertIn("`demo trading` and `real trading`", skill_text)
+        self.assertIn("`当前交易环境： `", skill_text)
         self.assertIn("not environment labels", skill_text)
         self.assertIn("not account labels", skill_text)
         self.assertIn("raw `live` or `demo`", skill_text)
