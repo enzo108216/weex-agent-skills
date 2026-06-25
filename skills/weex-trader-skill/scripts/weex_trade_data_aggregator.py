@@ -680,8 +680,6 @@ def _build_order_risk_tp_sl_state(
 
 
 def _profile_sample_trade_count(payload: dict[str, Any]) -> int:
-    if "reconstructed_closed_trade_count" in payload:
-        return int(payload.get("reconstructed_closed_trade_count") or 0)
     return int(payload.get("closed_trade_count") or 0)
 
 

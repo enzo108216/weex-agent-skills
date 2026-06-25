@@ -1377,7 +1377,7 @@ class ProfileCollectionTests(unittest.TestCase):
         self.assertEqual(result["fills"][0]["symbol"], "ETHUSDT")
         self.assertEqual(result["sample_quality"], "limited")
 
-    def test_collect_profile_payload_ignores_carry_in_only_counts_for_sample_gate(self) -> None:
+    def test_collect_profile_payload_uses_closed_trade_count_for_sample_gate_when_reconstruction_is_partial(self) -> None:
         trade_aggregator = aggregator.TradeDataAggregator(fetcher=mock.Mock())
         replay_payloads = [
             {
@@ -1408,9 +1408,12 @@ class ProfileCollectionTests(unittest.TestCase):
                 market="futures",
             )
 
-        self.assertEqual(collect_mock.call_count, 2)
-        self.assertEqual(result["selected_period"], "90d")
-        self.assertEqual(result["closed_trade_count"], 12)
+        self.assertEqual(collect_mock.call_count, 1)
+        self.assertEqual(result["selected_period"], "30d")
+        self.assertFalse(result["fallback_applied"])
+        self.assertEqual(result["closed_trade_count"], 10)
+        self.assertEqual(result["raw_closed_trade_count"], 10)
+        self.assertEqual(result["reconstructed_closed_trade_count"], 0)
         self.assertEqual(result["sample_quality"], "limited")
 
     def test_collect_profile_payload_returns_last_window_when_all_candidates_are_minimal(self) -> None:
