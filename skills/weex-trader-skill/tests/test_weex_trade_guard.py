@@ -490,6 +490,42 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIn("Order: not returned futures, market open long, quantity not returned.", confirmation["reply_instruction"])
         self.assertNotIn("未返回", confirmation["reply_instruction"])
 
+    def test_preview_order_confirmation_lists_frequency_alert_with_top_warning(self) -> None:
+        confirmation = trade_guard._build_user_confirmation(
+            "zh",
+            environment={"trading_mode": "live", "uses_real_funds": True, "market": "futures"},
+            preview_context={
+                "order_preview": {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "position_side": "LONG",
+                    "order_type": "MARKET",
+                    "quantity": "0.001",
+                    "market": "futures",
+                    "trading_mode": "live",
+                },
+                "alerts": [
+                    {
+                        "type": "missing_tp_sl",
+                        "level": "high",
+                        "reason": "The order is missing take-profit or stop-loss protection.",
+                    },
+                    {
+                        "type": "high_trade_frequency",
+                        "level": "warning",
+                        "reason": "Recent trading frequency is high in the current review window.",
+                    },
+                ],
+            },
+        )
+
+        instruction = confirmation["reply_instruction"]
+        self.assertIn("高风险提示", instruction)
+        self.assertIn("其他风险提示：", instruction)
+        self.assertIn("频繁交易", instruction)
+        self.assertIn("近期交易频率偏高", instruction)
+        self.assertIn("如果确认使用真实资金提交这笔订单，请回复：确认", instruction)
+
     def test_confirm_order_rejects_expired_intent(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)
 
