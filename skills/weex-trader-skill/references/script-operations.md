@@ -151,6 +151,8 @@ python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"limit":50}' --pretty
 ```
 
+For raw contract calls, `--profile is a global argument`; place it before `call`, then use `--endpoint <key>` for the official endpoint key. Some official query endpoints use POST and are therefore protected as mutating by the local guard even when the business action is a query; preview the request with `--dry-run` first, then pass the matching confirmation flag only when you intentionally want to send that POST request.
+
 For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 
 Use `--dry-run` when you need to inspect the signed request without sending a mutating request:
@@ -186,6 +188,7 @@ python3 scripts/weex_trade_data_aggregator.py collect-order-risk --profile main 
 ```
 
 `weex_trade_guard.py` binds `trading_mode`, `environment`, profile, market, order preview, and alerts into the pending intent risk signature. Preview first, then confirm with the matching environment flag from the latest preview output.
+Private account, order, cancel, TP/SL, and order-query outputs include `user_environment_prefix` whenever the command has environment context. Natural-language summaries must put that prefix on the first line before describing balances, positions, submitted orders, order status, or order history.
 
 ```bash
 # Windows users: replace python3 with py -3

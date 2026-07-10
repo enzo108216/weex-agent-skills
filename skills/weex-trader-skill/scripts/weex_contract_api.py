@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
 from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
+from weex_profile_language import resolve_language
 from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
 ProfileError = RuntimeError
@@ -323,15 +324,30 @@ def environment_for_mode(trading_mode: str) -> Dict[str, Any]:
             "label": "demo",
             "market": "futures",
             "uses_real_funds": False,
-            "notice": "This operation targets the WEEX simulated futures account environment.",
+            "notice": "This operation targets WEEX futures demo mode.",
         }
     return {
         "trading_mode": "live",
         "label": "live",
         "market": "futures",
         "uses_real_funds": True,
-        "notice": "This operation targets the real WEEX futures account environment.",
+        "notice": "This operation targets real WEEX futures trading.",
     }
+
+
+def user_environment_prefix(environment: Dict[str, Any], language: Optional[str] = None) -> str:
+    resolved_language = resolve_language(language)
+    mode = normalize_trading_mode(str(environment.get("trading_mode") or DEFAULT_TRADING_MODE))
+    if resolved_language == "zh":
+        label = "模拟盘" if mode == "demo" else "真实盘"
+        return f"当前交易环境：{label}"
+    label = "demo trading" if mode == "demo" else "real trading"
+    return f"Current trading mode: {label}"
+
+
+def add_environment_context(payload: Dict[str, Any], environment: Dict[str, Any]) -> None:
+    payload["environment"] = environment
+    payload["user_environment_prefix"] = user_environment_prefix(environment)
 
 
 def validate_endpoint_trading_mode(endpoint: Endpoint, trading_mode: str) -> str:
@@ -431,7 +447,7 @@ def execute_endpoint(
             "body": body,
         }
         if environment is not None:
-            preview["environment"] = environment
+            add_environment_context(preview, environment)
         output_json(preview, pretty)
         return 0
 
@@ -445,7 +461,7 @@ def execute_endpoint(
         "result": response.get("data") if response.get("ok") else response.get("error"),
     }
     if environment is not None:
-        payload["environment"] = environment
+        add_environment_context(payload, environment)
     output_json(payload, pretty)
     return 0 if response.get("ok") else 1
 
@@ -630,8 +646,8 @@ def cmd_cancel_order(args: argparse.Namespace, client: WeexContractClient) -> in
         body={},
         dry_run=args.dry_run,
         confirm_live=args.confirm_live,
-        confirm_demo=args.confirm_demo,
-        trading_mode=args.trading_mode,
+        confirm_demo=False,
+        trading_mode=DEFAULT_TRADING_MODE,
         pretty=args.pretty,
     )
 
@@ -677,7 +693,7 @@ def add_trading_mode_argument(parser: argparse.ArgumentParser) -> None:
         "--trading-mode",
         choices=TRADING_MODES,
         default=DEFAULT_TRADING_MODE,
-        help="Trading environment for private contract endpoints",
+        help="Trading mode for private contract endpoints",
     )
 
 
@@ -766,8 +782,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel.add_argument("--order-id", default=None, help="WEEX order id to cancel")
     p_cancel.add_argument("--client-oid", default=None, help="Client order id to cancel when you do not have the WEEX order id")
     p_cancel.add_argument("--dry-run", action="store_true", help="Build and sign the cancel request without sending it")
-    add_trading_mode_argument(p_cancel)
-    add_confirm_arguments(p_cancel)
+    p_cancel.add_argument("--confirm-live", action="store_true", help="Allow the live cancel request")
     p_cancel.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
     p_ticker = sub.add_parser(

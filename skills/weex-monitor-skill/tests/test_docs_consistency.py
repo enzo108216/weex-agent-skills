@@ -40,7 +40,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         skill_text = SKILL.read_text(encoding="utf-8")
 
         self.assertIn("weex-trader-skill", skill_text)
-        self.assertIn("real account access", skill_text)
+        self.assertIn("`真实盘` access", skill_text)
         self.assertIn("real order execution", skill_text)
         self.assertNotIn("--confirm-live", skill_text)
         self.assertIn("Never send mutating requests", skill_text)
@@ -54,6 +54,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("ask for the missing field", skill_text)
         self.assertIn("profile is always required", skill_text)
         self.assertIn("metric must be `unrealized_pnl`", skill_text)
+        self.assertIn("metric must be `baseline_unrealized_pnl`", skill_text)
         self.assertIn("dry-run commands still write local SQLite task state and events", skill_text)
         self.assertIn("Do not submit orders", skill_text)
         self.assertIn("Close the BTCUSDT long position automatically", skill_text)
@@ -67,7 +68,7 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("confirm-text-live", skill_text)
         self.assertIn("combined confirmation", skill_text)
         self.assertIn("matched live position", skill_text)
-        self.assertIn("detailed live position snapshot", skill_text)
+        self.assertIn("detailed real-trading position snapshot", skill_text)
         self.assertIn("not returned", skill_text)
         self.assertIn("finite `duration_seconds`", skill_text)
         self.assertIn("--duration-seconds", skill_text)
@@ -76,6 +77,18 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
             "confirm-and-run-loop",
             manifest["routing"]["domains"]["pnl_live_runner"]["commands"],
         )
+
+    def test_skill_documents_order_origin_requests_use_order_baseline_pnl(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+        self.assertIn("Order-baseline monitor requests", skill_text)
+        self.assertIn("`order_baseline_pnl_monitor`", skill_text)
+        self.assertIn("baseline_unrealized_pnl", skill_text)
+        self.assertIn("local order-baseline estimated unrealized PnL", skill_text)
+        self.assertIn("not exchange-native isolated single-order PnL", skill_text)
+        self.assertIn("aggregate `symbol` + `position_side` position unrealized PnL", skill_text)
+        self.assertIn("task_type: order_baseline_pnl_monitor", manifest["routing"]["decision_axes"])
 
     def test_skill_documents_codex_heartbeat_status_reporting(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
@@ -91,13 +104,21 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("`openclaw cron add`", skill_text)
         self.assertIn("current value", skill_text)
         self.assertIn("terminal task state", skill_text)
+        self.assertIn("sanitized summaries", skill_text)
         self.assertIn("Do not output HTML entities", skill_text)
         self.assertIn("`&lt;`", skill_text)
         self.assertIn("less than", skill_text)
 
     def test_skill_body_uses_english_except_localized_confirmation_word(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
-        without_allowed_reply_word = skill_text.replace("确认", "")
+        without_allowed_reply_word = (
+            skill_text
+            .replace("确认", "")
+            .replace("模拟盘", "")
+            .replace("真实盘", "")
+            .replace("当前交易环境： ", "")
+            .replace("盘别", "")
+        )
 
         self.assertIsNone(re.search(r"[\u4e00-\u9fff]", without_allowed_reply_word))
 
@@ -107,6 +128,17 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("Always pass `--language zh` for Chinese user copy", skill_text)
         self.assertIn("Always pass `--language en` for English user copy", skill_text)
         self.assertIn("do not rely on the script default language", skill_text)
+
+    def test_skill_documents_localized_user_facing_trading_mode_labels(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("localized trading-mode labels", skill_text)
+        self.assertIn("`模拟盘` and `真实盘`", skill_text)
+        self.assertIn("`demo trading` and `real trading`", skill_text)
+        self.assertIn("`当前交易环境： `", skill_text)
+        self.assertIn("not environment labels", skill_text)
+        self.assertIn("not account labels", skill_text)
+        self.assertIn("raw `live` or `demo`", skill_text)
 
     def test_skill_documents_price_threshold_tasks_are_routed_out(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")

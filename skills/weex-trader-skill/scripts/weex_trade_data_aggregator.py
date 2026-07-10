@@ -10,9 +10,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from weex_profile_language import resolve_language
+
 
 DAY_MS = 24 * 60 * 60 * 1000
 HOUR_MS = 60 * 60 * 1000
+RECENT_ORDER_LOOKBACK_MS = HOUR_MS
+RECENT_ORDER_HISTORY_UNAVAILABLE = "recent_order_history_unavailable"
 REPLAY_PERIODS = ("7d", "30d", "90d")
 PROFILE_PERIODS = ("30d", "90d", "180d", "360d")
 COLLECTION_PERIODS = REPLAY_PERIODS + ("180d", "360d")
@@ -126,15 +130,25 @@ def _environment_for_trading_mode(trading_mode: str, market: str) -> dict[str, A
             "label": "demo",
             "market": "futures",
             "uses_real_funds": False,
-            "notice": "This operation targets the WEEX simulated futures account environment.",
+            "notice": "This operation targets WEEX futures demo mode.",
         }
     return {
         "trading_mode": "live",
         "label": "live",
         "market": market,
         "uses_real_funds": True,
-        "notice": f"This operation targets the real WEEX {market} account environment.",
+        "notice": f"This operation targets real WEEX {market} trading.",
     }
+
+
+def _user_environment_prefix(environment: dict[str, Any], language: str | None = None) -> str:
+    resolved_language = resolve_language(language)
+    mode = _normalize_trading_mode(environment.get("trading_mode"))
+    if resolved_language == "zh":
+        label = "模拟盘" if mode == "demo" else "真实盘"
+        return f"当前交易环境：{label}"
+    label = "demo trading" if mode == "demo" else "real trading"
+    return f"Current trading mode: {label}"
 
 
 def _normalize_demo_symbol_for_display(raw: Any) -> str:
@@ -668,8 +682,6 @@ def _build_order_risk_tp_sl_state(
 
 
 def _profile_sample_trade_count(payload: dict[str, Any]) -> int:
-    if "reconstructed_closed_trade_count" in payload:
-        return int(payload.get("reconstructed_closed_trade_count") or 0)
     return int(payload.get("closed_trade_count") or 0)
 
 
@@ -1332,6 +1344,70 @@ class TradeDataAggregator:
             raise
         return _normalize_balance_entries(payload, "spot"), False
 
+    def _collect_recent_futures_orders(
+        self,
+        *,
+        profile_name: str,
+        trading_mode: str,
+        start_ms: int,
+        end_ms: int,
+        symbol: str | None,
+        degraded_reasons: list[str],
+        constraints: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        try:
+            payload = self.fetcher.fetch_futures_orders(
+                profile_name=profile_name,
+                trading_mode=trading_mode,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=symbol,
+            )
+        except Exception as exc:
+            _merge_degraded_reasons(degraded_reasons, [RECENT_ORDER_HISTORY_UNAVAILABLE])
+            _merge_constraints(
+                constraints,
+                [
+                    {
+                        "code": RECENT_ORDER_HISTORY_UNAVAILABLE,
+                        "message": f"Recent order history could not be collected: {exc}",
+                    }
+                ],
+            )
+            return [], True
+        return _normalize_orders(payload, "futures", trading_mode=trading_mode), False
+
+    def _collect_recent_spot_orders(
+        self,
+        *,
+        profile_name: str,
+        start_ms: int,
+        end_ms: int,
+        symbol: str | None,
+        degraded_reasons: list[str],
+        constraints: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        try:
+            payload = self.fetcher.fetch_spot_orders(
+                profile_name=profile_name,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=symbol,
+            )
+        except Exception as exc:
+            _merge_degraded_reasons(degraded_reasons, [RECENT_ORDER_HISTORY_UNAVAILABLE])
+            _merge_constraints(
+                constraints,
+                [
+                    {
+                        "code": RECENT_ORDER_HISTORY_UNAVAILABLE,
+                        "message": f"Recent spot order history could not be collected: {exc}",
+                    }
+                ],
+            )
+            return [], True
+        return _normalize_orders(payload, "spot"), False
+
     def collect_replay_payload(
         self,
         *,
@@ -1535,6 +1611,7 @@ class TradeDataAggregator:
             "analysis_type": "replay",
             "trading_mode": mode,
             "environment": environment,
+            "user_environment_prefix": _user_environment_prefix(environment),
             "market": normalized_market,
             "period": normalized_period,
             "symbol": normalized_symbol,
@@ -1632,6 +1709,7 @@ class TradeDataAggregator:
         }
         partial = False
         degraded_reasons: list[str] = []
+        constraints: list[dict[str, Any]] = []
 
         balances: list[dict[str, Any]] = []
         positions: list[dict[str, Any]] = []
@@ -1640,7 +1718,7 @@ class TradeDataAggregator:
         open_orders: list[dict[str, Any]] = []
         current_price: float | None = None
         end_ms = int(time.time() * 1000)
-        start_ms = max(0, end_ms - HOUR_MS)
+        start_ms = max(0, end_ms - RECENT_ORDER_LOOKBACK_MS)
 
         if normalized_market == "futures":
             balances = _normalize_balance_entries(
@@ -1653,17 +1731,16 @@ class TradeDataAggregator:
                 "futures",
                 trading_mode=mode,
             )
-            recent_orders = _normalize_orders(
-                self.fetcher.fetch_futures_orders(
-                    profile_name=profile_name,
-                    trading_mode=mode,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    symbol=symbol,
-                ),
-                "futures",
+            recent_orders, recent_orders_partial = self._collect_recent_futures_orders(
+                profile_name=profile_name,
                 trading_mode=mode,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=symbol,
+                degraded_reasons=degraded_reasons,
+                constraints=constraints,
             )
+            partial = partial or recent_orders_partial
             if mode == "demo":
                 partial = True
                 _merge_degraded_reasons(
@@ -1720,15 +1797,15 @@ class TradeDataAggregator:
                 degraded_reasons=degraded_reasons,
             )
             partial = partial or spot_balance_partial
-            recent_orders = _normalize_orders(
-                self.fetcher.fetch_spot_orders(
-                    profile_name=profile_name,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    symbol=symbol,
-                ),
-                "spot",
+            recent_orders, recent_orders_partial = self._collect_recent_spot_orders(
+                profile_name=profile_name,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=symbol,
+                degraded_reasons=degraded_reasons,
+                constraints=constraints,
             )
+            partial = partial or recent_orders_partial
             if symbol:
                 current_price = _safe_current_price(
                     fetch_latest_price=lambda: self.fetcher.fetch_spot_latest_price(symbol=symbol),
@@ -1781,6 +1858,7 @@ class TradeDataAggregator:
         return {
             "trading_mode": mode,
             "environment": environment,
+            "user_environment_prefix": _user_environment_prefix(environment),
             "order_preview": order_preview,
             "tp_sl": tp_sl,
             "account_snapshot": account_snapshot,
@@ -1794,6 +1872,7 @@ class TradeDataAggregator:
             },
             "partial": partial,
             "degraded_reasons": degraded_reasons,
+            "constraints": constraints,
         }
 
     def collect_account_risk_payload(
@@ -1803,6 +1882,7 @@ class TradeDataAggregator:
         market: str,
         trading_mode: str = DEFAULT_TRADING_MODE,
         symbol: str | None = None,
+        language: str | None = None,
     ) -> dict[str, Any]:
         normalized_market = _validate_market(market)
         mode = _validate_trading_mode_market(trading_mode, normalized_market)
@@ -1813,8 +1893,9 @@ class TradeDataAggregator:
         normalized_symbol = str(symbol).strip().upper() if symbol else None
         partial = False
         degraded_reasons: list[str] = []
+        constraints: list[dict[str, Any]] = []
         end_ms = int(time.time() * 1000)
-        start_ms = max(0, end_ms - HOUR_MS)
+        start_ms = max(0, end_ms - RECENT_ORDER_LOOKBACK_MS)
 
         balances: list[dict[str, Any]]
         positions: list[dict[str, Any]]
@@ -1835,17 +1916,16 @@ class TradeDataAggregator:
                 "futures",
                 trading_mode=mode,
             )
-            recent_orders = _normalize_orders(
-                self.fetcher.fetch_futures_orders(
-                    profile_name=profile_name,
-                    trading_mode=mode,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    symbol=normalized_symbol,
-                ),
-                "futures",
+            recent_orders, recent_orders_partial = self._collect_recent_futures_orders(
+                profile_name=profile_name,
                 trading_mode=mode,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=normalized_symbol,
+                degraded_reasons=degraded_reasons,
+                constraints=constraints,
             )
+            partial = partial or recent_orders_partial
             if mode == "demo":
                 partial = True
                 _merge_degraded_reasons(
@@ -1910,15 +1990,15 @@ class TradeDataAggregator:
             )
             partial = partial or spot_balance_partial
             positions = []
-            recent_orders = _normalize_orders(
-                self.fetcher.fetch_spot_orders(
-                    profile_name=profile_name,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    symbol=normalized_symbol,
-                ),
-                "spot",
+            recent_orders, recent_orders_partial = self._collect_recent_spot_orders(
+                profile_name=profile_name,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                symbol=normalized_symbol,
+                degraded_reasons=degraded_reasons,
+                constraints=constraints,
             )
+            partial = partial or recent_orders_partial
             open_orders = _normalize_orders(
                 self.fetcher.fetch_spot_open_orders(
                     profile_name=profile_name,
@@ -1957,6 +2037,7 @@ class TradeDataAggregator:
             "mode": "account_scan",
             "trading_mode": mode,
             "environment": environment,
+            "user_environment_prefix": _user_environment_prefix(environment, language),
             "market": normalized_market,
             "symbol": normalized_symbol,
             "account_snapshot": account_snapshot,
@@ -1970,7 +2051,7 @@ class TradeDataAggregator:
             },
             "partial": partial,
             "degraded_reasons": degraded_reasons,
-            "constraints": [],
+            "constraints": constraints,
         }
 
 
@@ -2628,6 +2709,10 @@ def _output_error(error: str, pretty: bool) -> None:
     _output_json({"ok": False, "error": error}, pretty)
 
 
+def _arg_value(args: argparse.Namespace, name: str, default: Any = None) -> Any:
+    return vars(args).get(name, default)
+
+
 def _parse_order_json(raw: str) -> dict[str, Any]:
     try:
         payload = json.loads(raw)
@@ -2679,6 +2764,7 @@ def cmd_collect_account_risk(args: argparse.Namespace) -> int:
         market=args.market,
         trading_mode=getattr(args, "trading_mode", DEFAULT_TRADING_MODE),
         symbol=args.symbol,
+        language=_arg_value(args, "language", None),
     )
     _output_json(payload, args.pretty)
     return 0
@@ -2718,6 +2804,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_account_risk.add_argument("--market", required=True, choices=("futures", "spot"))
     collect_account_risk.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     collect_account_risk.add_argument("--symbol", default=None, help="Optional trading pair focus.")
+    collect_account_risk.add_argument("--language", choices=("zh", "en"), default=None, help="Language for user-facing environment prefix.")
     collect_account_risk.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     return parser

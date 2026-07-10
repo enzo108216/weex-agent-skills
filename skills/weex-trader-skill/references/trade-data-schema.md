@@ -13,7 +13,7 @@ The trader aggregation layer emits normalized JSON for replay, profile, order-ri
     "label": "live",
     "market": "futures",
     "uses_real_funds": true,
-    "notice": "This operation targets the real WEEX futures account environment."
+    "notice": "This operation targets real WEEX futures trading."
   },
   "market": "futures",
   "period": "30d",
@@ -39,7 +39,7 @@ The trader aggregation layer emits normalized JSON for replay, profile, order-ri
 Notes:
 
 - `market`: `futures`, `spot`, or `all`
-- `trading_mode`: `live` for the real WEEX account, or `demo` for the WEEX simulated futures account
+- `trading_mode`: `live` for real WEEX trading, or `demo` for WEEX futures demo mode
 - `environment`: user-facing environment metadata for private-account payloads; callers should display it instead of inferring environment from profile names or base URLs
 - `period`: replay accepts `7d`, `30d`, `90d`; profile fallback windows may also use `180d` or `360d`
 - `constraints`: explicit limits such as `spot_symbol_required`
@@ -88,6 +88,7 @@ Notes:
 Notes:
 
 - the trader skill does not embed downstream profile metrics in the payload
+- profile collection starts from `30d` and only falls back through `90d`, `180d`, and `360d` when the selected replay payload has `closed_trade_count < 10`
 - downstream analysis can derive profile metrics, risk scoring, and persona labels from the replay rows when needed
 - profile payloads preserve `trading_mode` and `environment` from the replay payload
 
@@ -101,7 +102,7 @@ Notes:
     "label": "demo",
     "market": "futures",
     "uses_real_funds": false,
-    "notice": "This operation targets the WEEX simulated futures account environment."
+    "notice": "This operation targets WEEX futures demo mode."
   },
   "order_preview": {
     "market": "futures",
@@ -152,7 +153,7 @@ Notes:
     "label": "demo",
     "market": "futures",
     "uses_real_funds": false,
-    "notice": "This operation targets the WEEX simulated futures account environment."
+    "notice": "This operation targets WEEX futures demo mode."
   },
   "market": "futures",
   "symbol": "BTCUSDT",

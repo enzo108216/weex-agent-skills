@@ -622,7 +622,7 @@ def render_md(product: str, docs: List[ParsedDoc], generated_at: str) -> str:
             [
                 "",
                 "Contract simulated futures endpoints are maintained in this generated catalog from the official WEEX contract demo API docs.",
-                "Demo is not a local dry-run; demo mutating endpoints send requests to the WEEX simulated futures account environment.",
+                "Demo is not a local dry-run; demo mutating endpoints send requests to WEEX futures demo mode.",
             ]
         )
     lines.extend(
