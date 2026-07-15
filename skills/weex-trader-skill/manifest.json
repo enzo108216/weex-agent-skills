@@ -70,6 +70,20 @@
         ],
         "needs_profile_for_private": true
       },
+      "partner": {
+        "entrypoint": "scripts/weex_partner_api.py",
+        "open_first": [
+          "scripts/weex_partner_api.py",
+          "references/partner-api-definitions.json"
+        ],
+        "commands": [
+          "list-endpoints",
+          "execute"
+        ],
+        "needs_profile_for_private": true,
+        "operation_class": "read_only_query",
+        "exact_origin": "https://api-spot.weex.com"
+      },
       "trade_analysis": {
         "entrypoints": [
           "scripts/weex_trade_data_aggregator.py",
@@ -140,6 +154,11 @@
       ],
       "check spot balance": [
         "scripts/weex_spot_api.py",
+        "scripts/weex_profile_store.py"
+      ],
+      "execute an allowlisted Partner query": [
+        "scripts/weex_partner_api.py",
+        "references/partner-api-definitions.json",
         "scripts/weex_profile_store.py"
       ],
       "replay or profile trading history": [

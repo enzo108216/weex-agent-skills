@@ -16,6 +16,7 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 
 - `scripts/weex_contract_api.py`: contract/futures REST
 - `scripts/weex_spot_api.py`: spot REST
+- `scripts/weex_partner_api.py`: strict read-only Partner REST executor for the eight allowlisted Partner endpoints
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
 - `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
 - `scripts/weex_trade_risk_review.py`: local risk review helpers for standalone trade-guard preview/account-scan flows
@@ -39,6 +40,7 @@ These auto-detect language from `agent-init.json`.
 
 - Contract/futures tasks: use `scripts/weex_contract_api.py`; simulated futures trading uses explicit `--trading-mode demo` and the 4 official `sim.*` endpoints documented in `references/contract-api-definitions.json`
 - Spot tasks: use `scripts/weex_spot_api.py`
+- Partner queries: accept only structured requests from `weex-partner-skill` and execute them with `scripts/weex_partner_api.py`; profile resolution, Vault credentials, signing, exact-host enforcement, and HTTPS remain owned by this skill
 - Replay, profile, or order-risk inputs for the analysis skill: collect live data with `scripts/weex_trade_data_aggregator.py`, then pass the normalized JSON into `weex-analysis-skill`
 - Order preview, TP/SL preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
 - Windows/macOS setup or editing: prefer the visual profile manager
@@ -124,6 +126,8 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 ## Safety Policy
 
 - Never send live mutating requests without `--confirm-live`; never send demo mutating requests without `--trading-mode demo --confirm-demo`
+- Partner execution is limited to the eight `operation_class=read` entries in `references/partner-api-definitions.json`. The query-only POST is read-only by contract; the internal-withdrawal write endpoint and every unknown path are forbidden.
+- Partner credentials may only be sent to the exact origin `https://api-spot.weex.com`. Partner execution rejects custom profile base URLs, API base environment overrides, URL variants, and authenticated redirects.
 - Demo futures orders are not local dry-runs; they are mutating requests to WEEX futures demo mode
 - Keep `live` and `demo` as internal CLI/API values only. In user-facing dialogue, risk previews, order confirmations, and account queries, use localized trading-mode labels, not environment labels and not account labels. For Chinese, use `模拟盘` and `真实盘`; for English, use `demo trading` and `real trading`. Never present raw `live` or `demo` as the trading-mode label for the user.
 - In natural-language private account queries and direct non-preview trading actions, if the user did not clearly choose `模拟盘` or `真实盘` in Chinese, or `demo trading` or `real trading` in English, ask them to choose before calling private account or order commands.
