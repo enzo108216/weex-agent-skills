@@ -406,15 +406,17 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("--skill weex-monitor-skill", workflow_text)
         self.assertIn("gh skill publish --dry-run", workflow_text)
 
-    def test_root_readme_describes_three_skills_including_monitor(self) -> None:
+    def test_root_readme_describes_four_skills_including_partner(self) -> None:
         readme_text = REPO_README.read_text(encoding="utf-8")
         zh_readme_text = (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
-        self.assertIn("The Three Skills", readme_text)
+        self.assertIn("The Four Skills", readme_text)
         self.assertIn("weex-monitor-skill", readme_text)
+        self.assertIn("weex-partner-skill", readme_text)
         self.assertIn("automated monitor", readme_text.lower())
-        self.assertIn("三个 Skill", zh_readme_text)
+        self.assertIn("四个 Skill", zh_readme_text)
         self.assertIn("weex-monitor-skill", zh_readme_text)
+        self.assertIn("weex-partner-skill", zh_readme_text)
         self.assertIn("自动化监控", zh_readme_text)
 
     def test_machine_readable_metadata_describes_application_vault_consistently(self) -> None:
