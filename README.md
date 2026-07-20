@@ -2,7 +2,7 @@
 
 [中文版本](README.zh-CN.md)
 
-This repository currently supports Codex, Openclaw, and Claude Code with WEEX skills.
+This repository provides WEEX skill installation paths for Codex, Claude Code, Cursor, GitHub Copilot, and OpenClaw. Local installer dry-runs cover the first four hosts; OpenClaw requires its native installer and has not yet completed an on-machine smoke test in this workspace.
 
 After installing the skills, you can ask your AI tool to check WEEX market data, review account state, collect trading history, preview order risk, create an automated monitor, or analyze WEEX trading records. For normal use, you do not need to run the Python scripts directly. Start from the skill name in chat.
 
@@ -107,6 +107,8 @@ Use [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md) for read-only WEE
 
 It reuses the same saved profile and Application Vault as `weex-trader-skill`; REST access and credentials remain in trader. A Partner-capable profile can still place normal orders through trader's existing preview and explicit confirmation gates.
 
+Partner-only turns use trader's safe Partner preflight, which reports the selected profile identity and `partner_production|partner_test` label without placing the concrete test origin, API-key hint, or unrelated profile routing metadata in the tool transcript.
+
 Example: `"Use $weex-partner-skill to query my commission for the official default time range and explain the actual UTC range."`
 
 ## Which Skill Should I Use?
@@ -131,11 +133,18 @@ If you downloaded or cloned this repository and want to install from that local 
 python3 tools/install_local_skills.py --all --agent codex
 ```
 
-Use `--agent claude-code` for Claude Code. The local installer validates the agents supported by `gh skill install`; if your host is not in that list, install to its expected skills directory with `--dir`.
+Use `--agent claude-code`, `--agent cursor`, or `--agent github-copilot` for those hosts. The local installer validates the agents supported by `gh skill install`.
 
 `weex-monitor-skill` and `weex-partner-skill` depend on `weex-trader-skill`. Installing either one from the local installer automatically includes trader; installing all skills is still recommended.
 
-OpenClaw uses its native skill installer. Install `weex-trader-skill` first and `weex-partner-skill` second, then verify with `openclaw skills list --eligible`, `openclaw skills info weex-partner-skill`, and `openclaw skills check`.
+OpenClaw uses its native installer. From the repository root, install trader first and partner second:
+
+```bash
+openclaw skills install ./skills/weex-trader-skill --as weex-trader-skill
+openclaw skills install ./skills/weex-partner-skill --as weex-partner-skill
+```
+
+Append `--global` to both commands for the shared `~/.openclaw/skills` directory, or append `--agent <id>` to both for one Agent workspace. Then run `openclaw skills list --eligible`, `openclaw skills info weex-partner-skill`, and `openclaw skills check`. Do not use `gh skill install --agent openclaw`.
 
 Most users only need the GitHub install command in [Start Here](#start-here).
 
@@ -145,6 +154,7 @@ Most users only need the GitHub install command in [Start Here](#start-here).
 - Do not paste API keys, API secrets, passphrases, vault passwords, or temporary secret files into chat, issue trackers, public logs, or screenshots.
 - Prefer saved profiles, the local profile manager, `--prompt-secrets`, environment variables, or `--secrets-stdin-json` for local secret entry.
 - Use least-privilege API keys for this workflow. If credentials may have been exposed, revoke or rotate them immediately.
+- Partner queries use the production default or a saved HTTPS `https://*.weex.tech` test subdomain. Results disclose only the Partner environment label, not the concrete test origin; API base environment overrides and authenticated redirects remain forbidden.
 - `weex-analysis-skill` output is for review and risk reference only. It is not investment or trading advice.
 - When in doubt, ask the AI tool to preview or explain before asking it to execute anything.
 

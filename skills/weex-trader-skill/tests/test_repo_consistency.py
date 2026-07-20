@@ -41,6 +41,7 @@ LINUX_VAULT_REFERENCE = ROOT / "references" / "linux-vault.md"
 TROUBLESHOOTING_REFERENCE = ROOT / "references" / "troubleshooting.md"
 TRADE_DATA_SCHEMA_REFERENCE = ROOT / "references" / "trade-data-schema.md"
 CONTRACT_API_DEFINITIONS_REFERENCE = ROOT / "references" / "contract-api-definitions.md"
+PARTNER_API_DEFINITIONS = ROOT / "references" / "partner-api-definitions.json"
 CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
 TRADE_DATA_AGGREGATOR_SCRIPT = ROOT / "scripts" / "weex_trade_data_aggregator.py"
 TRADE_GUARD_SCRIPT = ROOT / "scripts" / "weex_trade_guard.py"
@@ -149,6 +150,28 @@ def extract_shell_comments(path: Path) -> list[str]:
 
 
 class RepoConsistencyTests(unittest.TestCase):
+    def test_partner_origin_policy_is_structured_and_documented(self) -> None:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        definitions = json.loads(PARTNER_API_DEFINITIONS.read_text(encoding="utf-8"))
+        policy = manifest["routing"]["domains"]["partner"]["origin_policy"]
+
+        self.assertEqual(policy["production_default"], "https://api-spot.weex.com")
+        self.assertEqual(policy["saved_profile_test_pattern"], "https://*.weex.tech")
+        self.assertEqual(policy["environment_overrides"], "forbidden")
+        self.assertEqual(policy["authenticated_redirects"], "forbidden")
+        self.assertEqual(definitions["base_url"], policy["production_default"])
+        self.assertEqual(
+            definitions["saved_profile_test_origin_pattern"],
+            policy["saved_profile_test_pattern"],
+        )
+        partner_role = file_index["file_guide"]["scripts/weex_partner_api.py"]["role"]
+        self.assertIn("saved HTTPS `*.weex.tech`", partner_role)
+        skill_text = SKILL.read_text(encoding="utf-8")
+        self.assertIn("`partner_production`", skill_text)
+        self.assertIn("`partner_test`", skill_text)
+        self.assertIn("`https://*.weex.tech`", skill_text)
+
     def test_docs_and_comments_do_not_contain_cjk_text(self) -> None:
         markdown_files = sorted(ROOT.rglob("*.md"))
         python_files = sorted((ROOT / "scripts").glob("*.py")) + sorted((ROOT / "tests").glob("*.py"))

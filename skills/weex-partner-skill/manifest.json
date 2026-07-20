@@ -33,7 +33,13 @@
     ],
     "rest_owner": "weex-trader-skill",
     "profile_vault_owner": "weex-trader-skill",
-    "capability_mode": "read_only_query"
+    "capability_mode": "read_only_query",
+    "origin_policy": {
+      "production_default": "https://api-spot.weex.com",
+      "saved_profile_test_pattern": "https://*.weex.tech",
+      "environment_overrides": "forbidden",
+      "authenticated_redirects": "forbidden"
+    }
   },
   "read_order": {
     "default": [
@@ -43,6 +49,7 @@
     "open_if_needed": {
       "query_policy": "references/partner-query-policy.md",
       "output_schema": "references/partner-output-schema.md",
+      "natural_language_regression": "references/natural-language-regression.json",
       "file_level_details": "file-index.json"
     }
   },

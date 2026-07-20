@@ -64,7 +64,7 @@ That wrapper exports only the selected skill directory plus small repo metadata 
 
 Saved profiles and vault files are runtime state under the local WEEX config directory. Do not ship, version, or share that state as part of the skill checkout.
 AI helper cache files `agent-init.json` and `agent-runtime.json` may also appear there. They help route later AI actions faster, but they are not secret storage.
-AI agents using this skill should run `py -3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on Windows or `python3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on macOS/Linux before each routed task so the cache is always present and fresh.
+AI agents using this skill should refresh preflight before each routed task. Partner-only tasks with a selected profile use `weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`, which refreshes the same cache while keeping concrete Partner origin and unrelated profile routing metadata out of the tool transcript. Other tasks use `py -3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on Windows or `python3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on macOS/Linux.
 On Windows and macOS, GUI profile and vault flows always require the managed GUI runtime. The preflight step reports whether that runtime is ready, but it does not download or install one implicitly; AI should ask for confirmation before running the reported setup command.
 When a GUI must be launched from an AI/tool-managed shell, the detached launcher tries to show only the WEEX window: macOS uses a transient `.app` wrapper, while Windows prefers `pythonw.exe` or another hidden background process instead of a visible console window.
 If `agent-init.json` is missing and the AI is about to use an auto-language wrapper such as `scripts/weex_vault.py`, the AI should refresh the cache first instead of guessing.
@@ -140,6 +140,8 @@ Use this safety order for trading tasks:
 
 For demo futures, the skill uses only the official WEEX contract demo endpoints listed as `sim.*` in [Contract API definitions](references/contract-api-definitions.md). Demo order submission is not a local dry-run; it sends a mutating request to WEEX futures demo mode. First-phase demo support covers balance, all positions, historical orders, and order placement. Missing demo-only equivalents for fills, bills, open orders, conditional orders, and TP/SL state are reported as degraded data instead of falling back to live endpoints.
 Convenience order and guard flows accept normal contract symbols such as `BTCUSDT` and map them to the official demo-order symbol shape required by WEEX before submission. Normalized payloads map demo futures rows back to the normal symbol shape so analysis and monitor tasks can match `BTCUSDT` consistently.
+
+Partner queries use the exact production default unless the selected saved profile contains a strictly validated `https://*.weex.tech` test subdomain. Partner output reports only `partner_production` or `partner_test`; it does not expose the concrete test origin. API base environment overrides and authenticated redirects remain forbidden.
 
 ## Saved Profile Setup
 

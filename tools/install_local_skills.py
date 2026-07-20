@@ -28,7 +28,7 @@ SUPPORTED_AGENTS = {
 }
 AGENT_HINTS = {
     "claude": "Use --agent claude-code for Claude Code.",
-    "openclaw": "Openclaw is not supported by gh skill install --agent; use --dir for an Openclaw skills directory if that host expects one.",
+    "openclaw": "OpenClaw requires its native 'openclaw skills install' command; install trader before partner.",
 }
 ROOT_METADATA_FILES = (
     Path("README.md"),

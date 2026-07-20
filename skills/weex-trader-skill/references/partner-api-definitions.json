@@ -2,6 +2,8 @@
   "schema_version": 1,
   "contract_version": "partner-v3-2026-06-22",
   "base_url": "https://api-spot.weex.com",
+  "base_url_role": "production_default",
+  "saved_profile_test_origin_pattern": "https://*.weex.tech",
   "definitions": [
     {
       "key": "partner.get-affiliate-uids",

@@ -82,7 +82,12 @@
         ],
         "needs_profile_for_private": true,
         "operation_class": "read_only_query",
-        "exact_origin": "https://api-spot.weex.com"
+        "origin_policy": {
+          "production_default": "https://api-spot.weex.com",
+          "saved_profile_test_pattern": "https://*.weex.tech",
+          "environment_overrides": "forbidden",
+          "authenticated_redirects": "forbidden"
+        }
       },
       "trade_analysis": {
         "entrypoints": [
@@ -216,7 +221,7 @@
     ],
     "env_vars": {
       "WEEX_TRADER_SKILL_HOME": "Override the runtime state directory for profiles, vault data, and agent cache.",
-      "WEEX_API_TIMEOUT": "Override HTTP timeout in seconds.",
+      "WEEX_API_TIMEOUT": "Override HTTP timeout in seconds; Partner REST defaults to 30 seconds.",
       "WEEX_ORDER_INTENT_TTL_SECONDS": "Override the pending order confirmation TTL in seconds for trade guard flows.",
       "WEEX_GUI_FORCE_FOREGROUND": "Disable GUI auto-detach and keep the GUI entrypoint attached to the current shell, which can reintroduce a Terminal/cmd window."
     }

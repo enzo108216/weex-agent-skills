@@ -8,7 +8,7 @@ name: weex-trader-skill
 # WEEX Trader Skill
 
 Read `manifest.json` for routing rules. Open `file-index.json` only for file-level guidance.
-For every turn that uses this skill, before routing or UI launch, AI must run `scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` so `agent-init.json` and `agent-runtime.json` stay fresh.
+For every turn that uses this skill, before routing or UI launch, AI must refresh preflight state. For Partner-only turns with a selected saved profile, run `scripts/weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`; it refreshes `agent-init.json` and `agent-runtime.json` while projecting only Partner-safe fields to the tool transcript. For other turns, run `scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty`.
 Before any private profile, vault, or trading action, inspect the preflight output and stop if `runtime.host.requirements_ready` is `false`, `runtime.host.missing_modules` is non-empty, or `runtime.env_validation.ok` is `false`.
 On Windows and macOS, GUI profile and vault flows must use the managed GUI runtime. AI must not launch GUI entrypoints with the system, miniforge, pyenv, Homebrew, or OS Python even if that interpreter passes Tk or dependency probes. System interpreters may run preflight and the managed-runtime bootstrap only; they are not valid GUI runtimes. Preflight reports whether the managed GUI runtime is ready but must not download or install it implicitly. If `init.host.gui_runtime.action` is `explicit_setup_required`, explain the pinned uv/Python/dependency setup and checksum/hash verification, ask whether AI should install it, and only after clear user approval run `init.host.gui_runtime.setup_command` / `scripts/weex_gui_bootstrap.py ensure --accept-managed-runtime --pretty`. Use `scripts/weex_gui_launcher.py` for detached launch after runtime setup is ready.
 
@@ -56,6 +56,7 @@ These auto-detect language from `agent-init.json`.
 - If `cryptography` or another dependency is missing, install `requirements.lock` with `--require-hashes` using the same interpreter and retry
 - Private contract and spot CLIs now auto-attempt `scripts/weex_runtime_setup.py` with the current interpreter when required Python dependencies are missing
 - `skill.preflight` also validates `WEEX_API_TIMEOUT` plus any `WEEX_*_API_BASE` overrides; private contract/spot commands now fail fast until those issues are fixed
+- Partner REST requests default to a 30-second timeout because Partner queries can legitimately exceed the 15-second contract/spot default; a valid positive `WEEX_API_TIMEOUT` still overrides it. Timeout failures remain fail-closed and are never retried automatically.
 - Windows/macOS GUI flows ignore system `tkinter` availability and require the managed GUI runtime; if the user declines managed-runtime setup, use the terminal profile manager instead of launching a GUI
 - If `agent-init.json` is missing and AI is about to use an auto-language wrapper, refresh `skill.preflight` first instead of guessing
 
@@ -127,7 +128,7 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 
 - Never send live mutating requests without `--confirm-live`; never send demo mutating requests without `--trading-mode demo --confirm-demo`
 - Partner execution is limited to the eight `operation_class=read` entries in `references/partner-api-definitions.json`. The query-only POST is read-only by contract; the internal-withdrawal write endpoint and every unknown path are forbidden.
-- Partner credentials may only be sent to the exact origin `https://api-spot.weex.com`. Partner execution rejects custom profile base URLs, API base environment overrides, URL variants, and authenticated redirects.
+- Partner credentials may only be sent to the exact production origin `https://api-spot.weex.com` or a saved, strictly validated HTTPS `https://*.weex.tech` test subdomain. Partner execution labels results as `partner_production` or `partner_test`, rejects the bare test-domain suffix, malformed URL variants, API base environment overrides, and authenticated redirects, and never includes the concrete test origin in Partner query output.
 - Demo futures orders are not local dry-runs; they are mutating requests to WEEX futures demo mode
 - Keep `live` and `demo` as internal CLI/API values only. In user-facing dialogue, risk previews, order confirmations, and account queries, use localized trading-mode labels, not environment labels and not account labels. For Chinese, use `模拟盘` and `真实盘`; for English, use `demo trading` and `real trading`. Never present raw `live` or `demo` as the trading-mode label for the user.
 - In natural-language private account queries and direct non-preview trading actions, if the user did not clearly choose `模拟盘` or `真实盘` in Chinese, or `demo trading` or `real trading` in English, ask them to choose before calling private account or order commands.
