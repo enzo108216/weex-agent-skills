@@ -258,6 +258,20 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertEqual(skill_name, manifest["identity"]["name"])
         self.assertEqual(manifest["identity"]["source_of_truth"], "SKILL.md")
 
+    def test_skill_requires_numbered_profile_choice_when_account_is_ambiguous(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("cannot resolve one unique saved profile", skill_text)
+        self.assertIn("numbered list", skill_text)
+        self.assertIn("profile display names only", skill_text)
+        self.assertIn("reply with either the number or the exact profile name", skill_text)
+        self.assertIn("standalone question", skill_text)
+        self.assertIn("Do not guess", skill_text)
+        self.assertIn("most recent numbered list", skill_text)
+        self.assertIn("out-of-range or stale number", skill_text)
+        self.assertIn("show the current choices again", skill_text)
+        self.assertIn("reuse that saved profile for later turns in the same conversation", skill_text)
+
     def test_skill_documents_localized_user_facing_trading_mode_labels(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
         readme_text = README.read_text(encoding="utf-8")

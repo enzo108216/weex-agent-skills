@@ -241,6 +241,14 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
         self.assertIn("current conversation", text)
         self.assertIn("general trader preflight payload", text)
 
+    def test_skill_uses_trader_numbered_profile_choice_when_account_is_ambiguous(self) -> None:
+        text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("trader's numbered profile-choice rule", text)
+        self.assertIn("number or exact profile name", text)
+        self.assertIn("standalone account-selection question", text)
+        self.assertIn("Do not choose a profile on the user's behalf", text)
+
     def test_skill_routes_normal_orders_to_existing_trader_confirmation_gate(self) -> None:
         self.assertTrue(SKILL.exists(), "Partner SKILL.md is not implemented yet; expected T1 RED.")
         text = SKILL.read_text(encoding="utf-8").lower()

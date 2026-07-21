@@ -23,6 +23,8 @@ Before a Partner query, use the trader-owned safe preflight command: `weex_partn
 
 When the user explicitly identifies a saved profile in the current conversation, reuse that profile for later Partner turns in the same conversation. Do not ask for it again unless the user changes it or the reference is ambiguous. A profile is missing only when no unique saved-profile reference exists in the current conversation, not merely because the latest sentence omits it. Apply the same conversation-aware check before asking for UID scope, product type, time, or other required fields, and ask only for fields still missing after current-turn and prior-turn context are combined.
 
+If no unique saved-profile reference exists and trader finds multiple usable profiles, use trader's numbered profile-choice rule before Partner preflight: show only the profile display names as a numbered list and ask the user to reply with the number or exact profile name. Make it a standalone account-selection question rather than combining it with UID, scope, product, or time questions. Do not choose a profile on the user's behalf. After a valid selection, reuse it under the conversation rule above.
+
 ## Operations and Chinese intent mapping
 
 - `list-referral-uids`: referral UID list.

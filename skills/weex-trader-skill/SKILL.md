@@ -63,6 +63,18 @@ These auto-detect language from `agent-init.json`.
 ## Profile Policy
 
 - Before private account/trading setup or any task that requires a saved account, check whether any profile already exists
+- Resolve the saved profile from an explicit current-turn choice, an unambiguous choice already made in the current conversation, or the configured default profile. If these sources cannot resolve one unique saved profile and multiple usable profiles exist, inspect them with the localized profile `list --pretty` command and ask the user to choose. Do not guess from list order, notes, IDs, or name similarity.
+- Present ambiguous profile choices as a numbered list containing profile display names only; do not expose profile IDs, credential hints, base URLs, or raw profile records. Ask this as a standalone question so the user can reply with either the number or the exact profile name. Do not combine it with trading-mode or other missing-field questions.
+- Use this localized response shape:
+
+  ```text
+  Choose an account. Reply with either the number or the exact profile name:
+  1. main
+  2. quant-bot
+  3. backup
+  ```
+
+- Accept a bare number only against the most recent numbered list in the current conversation. Reject an out-of-range or stale number and show the current choices again. After a valid choice, reuse that saved profile for later turns in the same conversation unless the user changes it or the reference becomes ambiguous.
 - When asking the user for account setup inputs, introduce the full profile parameter set rather than only the credential tuple
 - Complete profile parameter list:
   - profile name: required; this is how later commands refer to the saved account through `--profile`, while `profile_id` stays the stable internal identity
