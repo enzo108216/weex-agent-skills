@@ -623,6 +623,9 @@ def _submit_order(
             "quantity": raw_order["quantity"],
             "price": raw_order.get("price"),
             "timeInForce": raw_order.get("time_in_force") or raw_order.get("timeInForce"),
+            "newClientOrderId": raw_order.get("new_client_order_id")
+            or raw_order.get("newClientOrderId")
+            or spot_api.generate_client_order_id(),
         }
         body = {key: value for key, value in body.items() if value not in (None, "")}
         prepared = client.prepare_request(endpoint, query={}, body=body)
