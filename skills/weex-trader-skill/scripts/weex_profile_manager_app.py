@@ -891,6 +891,7 @@ class ProfileManagerApp:
         self.account_surface_shell = None
         self.account_lock_overlay = None
         self.account_surface_locked = False
+        self.account_surface_state = "unknown"
         self.mode_badge = None
         self.credential_badge = None
         self.api_key_entry = None
@@ -2359,6 +2360,39 @@ class ProfileManagerApp:
         if overlay is None or shell is None:
             return
         if self.account_surface_locked:
+            state = getattr(self, "account_surface_state", "unknown")
+            title_var = getattr(self, "account_lock_title_var", None)
+            body_var = getattr(self, "account_lock_body_var", None)
+            action_button = getattr(self, "account_lock_unlock_button", None)
+            reset_button = getattr(self, "account_lock_reset_button", None)
+            if state == "uninitialized":
+                if title_var is not None:
+                    title_var.set(self.local_text("Profile Manager Setup Required", "账号管理器需要先初始化"))
+                if body_var is not None:
+                    body_var.set(
+                        self.local_text(
+                            "Initialize the shared vault before using any profile management features.",
+                            "请先初始化共享 Vault，再使用任何账号管理功能。",
+                        )
+                    )
+                if action_button is not None:
+                    action_button.configure(text=self.local_text("Initialize Vault", "初始化 Vault"))
+                if reset_button is not None:
+                    reset_button.grid_remove()
+            elif state == "locked":
+                if title_var is not None:
+                    title_var.set(self.local_text("Profile Workspace Locked", "账号工作区已锁定"))
+                if body_var is not None:
+                    body_var.set(
+                        self.local_text(
+                            "Unlock the shared vault to continue. If you forgot the passphrase, reset the vault here.",
+                            "请先解锁共享 Vault 后继续；如果忘记密码，可在这里直接重置 Vault。",
+                        )
+                    )
+                if action_button is not None:
+                    action_button.configure(text=self.local_text("Unlock Vault", "解锁 Vault"))
+                if reset_button is not None:
+                    reset_button.grid()
             overlay.place(in_=shell, x=0, y=0, relwidth=1, relheight=1)
             overlay.lift()
             return
@@ -2433,7 +2467,8 @@ class ProfileManagerApp:
         self.vault_state_var.set(state_text)
         self.vault_guidance_var.set(guidance_text)
         self.profile_actions_enabled = vault_ready
-        self.account_surface_locked = current_state == "locked"
+        self.account_surface_state = current_state
+        self.account_surface_locked = current_state in {"uninitialized", "locked"}
         self.header_var.set(header_text)
         self._sync_profile_action_controls()
         self._sync_account_surface_lock()
