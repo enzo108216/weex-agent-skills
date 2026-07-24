@@ -191,15 +191,20 @@ class ProfileManagerLayoutTests(unittest.TestCase):
         profile_app.profile_actions_enabled = False
         profile_app.profile_action_hint_var = FakeVar()
         profile_app.header_var = FakeVar()
+        profile_app.account_lock_eyebrow_var = FakeVar()
         profile_app.account_lock_title_var = FakeVar()
         profile_app.account_lock_body_var = FakeVar()
+        profile_app.account_lock_hint_var = FakeVar()
         profile_app.account_surface_shell = object()
         profile_app.account_lock_overlay = types.SimpleNamespace(
             place=mock.Mock(),
             lift=mock.Mock(),
             place_forget=mock.Mock(),
         )
-        profile_app.account_lock_unlock_button = types.SimpleNamespace(configure=mock.Mock())
+        profile_app.account_lock_unlock_button = types.SimpleNamespace(
+            configure=mock.Mock(),
+            grid_configure=mock.Mock(),
+        )
         profile_app.account_lock_reset_button = types.SimpleNamespace(
             grid=mock.Mock(),
             grid_remove=mock.Mock(),
@@ -213,8 +218,10 @@ class ProfileManagerLayoutTests(unittest.TestCase):
                 profile_app.refresh_vault_status()
 
         self.assertTrue(profile_app.account_surface_locked)
-        self.assertEqual(profile_app.account_lock_title_var.get(), "Profile Manager Setup Required")
-        self.assertIn("initialize the shared vault", profile_app.account_lock_body_var.get().lower())
+        self.assertEqual(profile_app.account_lock_eyebrow_var.get(), "FIRST-TIME SETUP")
+        self.assertEqual(profile_app.account_lock_title_var.get(), "Set Up Secure Storage")
+        self.assertIn("local encrypted vault", profile_app.account_lock_body_var.get().lower())
+        self.assertEqual(profile_app.account_lock_hint_var.get(), "Set it up once, then unlock only when needed.")
         profile_app.account_lock_overlay.place.assert_called_once_with(
             in_=profile_app.account_surface_shell,
             x=0,
@@ -223,7 +230,8 @@ class ProfileManagerLayoutTests(unittest.TestCase):
             relheight=1,
         )
         profile_app.account_lock_overlay.lift.assert_called_once_with()
-        profile_app.account_lock_unlock_button.configure.assert_called_once_with(text="Initialize Vault")
+        profile_app.account_lock_unlock_button.configure.assert_called_once_with(text="Start Setup")
+        profile_app.account_lock_unlock_button.grid_configure.assert_called_once_with(sticky="w", padx=(0, 0))
         profile_app.account_lock_reset_button.grid_remove.assert_called_once_with()
         profile_app.account_lock_reset_button.grid.assert_not_called()
 
@@ -499,6 +507,18 @@ class ProfileManagerLayoutTests(unittest.TestCase):
         self.assertLess(layout["page_pad_x"], 24)
         self.assertLess(layout["card_pad_x"], 16)
         self.assertGreaterEqual(layout["workspace_min_row_height"], 180)
+
+    def test_compute_layout_metrics_keeps_account_lock_card_compact(self) -> None:
+        desktop_layout = app.compute_layout_metrics(viewport_width=1360, viewport_height=880)
+        minimum_layout = app.compute_layout_metrics(viewport_width=1280, viewport_height=820)
+
+        self.assertEqual(desktop_layout.get("overlay_card_width"), 520)
+        self.assertGreaterEqual(minimum_layout.get("overlay_card_width", 0), 440)
+        self.assertLess(minimum_layout.get("overlay_card_width", 999), 520)
+        self.assertLess(
+            desktop_layout.get("overlay_wraplength", 999),
+            desktop_layout.get("overlay_card_width", 0),
+        )
 
     def test_compute_window_geometry_caps_requested_size_to_screen(self) -> None:
         geometry = app.compute_window_geometry(
