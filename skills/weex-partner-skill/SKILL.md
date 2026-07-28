@@ -60,11 +60,15 @@ Use `references/natural-language-regression.json` as the executable host-dialogu
 - Before applying any continuation action, explain every `continuation.usage_warnings` code. The warning set is part of continuation integrity and must match the returned action types exactly. `continuation_reuse_may_repeat_or_overwrite` means the same action can repeat/overwrite perceived coverage; `offset_pagination_data_may_change` means records or totals can change between pages or after a page-1 restart.
 - Stop before another page or UID batch when any returned remaining weight bucket is lower than the endpoint weight. Preserve the rate-limit metadata and never retry automatically.
 
-The trader executor allows only eight `operation_class=read` entries. It uses the exact production default or a strictly validated saved `https://*.weex.tech` test subdomain, while rejecting the bare suffix, API base environment overrides, authenticated redirects, unknown endpoints, the internal-withdrawal write endpoint, and credential disclosure. Partner query output exposes only `partner_production` or `partner_test`, never the concrete test origin. The query-only POST is not a mutation.
+The trader executor allows only eight `operation_class=read` entries. It uses the exact production default or a strictly validated saved `https://*.weex.tech` test subdomain, while rejecting the bare suffix, API base environment overrides, authenticated redirects, all Partner write endpoints, unknown endpoints, and credential disclosure. Partner query output exposes only `partner_production` or `partner_test`, never the concrete test origin. The query-only POST is not a mutation.
 
 ## Explain Results
 
-Open `references/partner-output-schema.md`. In the user's language, start with the query scope and actual UTC range, then present:
+Open `references/partner-output-schema.md` and `references/partner-field-catalog.json`. The catalog is the field-name and field-meaning authority for all eight operations. For every known business value, use `official_description_zh` for Chinese output or `official_description_en` for English output, preserving the official wording verbatim, and retain the original field name. Format this as `official description (original field name)`. Never infer, shorten, or freely translate a field meaning from its spelling.
+
+Keep official wire fields separate from declared internal aliases. `isRefferal` is the official response spelling; `is_referral` is only the normalized output name. Do not present an internal alias as an official API field.
+
+The official English table defines `unimarginTotalUsdt` as `Total contract account equity in USDT`; use the corresponding `official_description_zh` for Chinese output and never call it unified-account total assets. `contractTotalUsdt` is currently undocumented in both official response-parameter tables, so keep it under `unknown_response_fields` and hide its value. In the user's language, start with the query scope and actual UTC range, then present:
 
 `environment` and `capability_mode` remain structured identity and safety metadata. They are not a standalone fixed prefix. Mention the returned Partner environment only when it materially affects interpretation, such as `partner_test_upstream_default`, or when explaining an environment-binding or safety failure. Never display the concrete test origin or claim that the API key itself is read-only.
 

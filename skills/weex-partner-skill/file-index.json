@@ -11,6 +11,9 @@
     "references/partner-output-schema.md": {
       "role": "Stable result envelope and user-visible completeness fields."
     },
+    "references/partner-field-catalog.json": {
+      "role": "Official request and response field names, types, verbatim Chinese and English descriptions, structural roles, and internal alias boundaries for all eight Partner operations."
+    },
     "references/natural-language-regression.json": {
       "role": "Machine-readable host-dialogue routing, clarification, and rejection regression fixtures."
     },

@@ -182,52 +182,127 @@ OPERATION_FILTER_FIELDS: Dict[str, set[str]] = {
 }
 
 
+FIELD_CATALOG_PATH = (
+    Path(__file__).resolve().parents[1] / "references" / "partner-field-catalog.json"
+)
+FIELD_ROLES = {"record", "records_container", "pagination", "query_echo"}
+FIELD_FORMATS = {"millisecond_timestamp", "date", "hidden_container"}
+
+
+def _load_partner_field_catalog() -> Dict[str, Any]:
+    try:
+        payload = json.loads(FIELD_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The official Partner field catalog is missing or invalid.") from exc
+    if payload.get("schema_version") != 2:
+        raise RuntimeError("The official Partner field catalog schema version is unsupported.")
+    operations = payload.get("operations")
+    if not isinstance(operations, Mapping) or set(operations) != set(OPERATION_POLICIES):
+        raise RuntimeError("The official Partner field catalog must cover all Partner operations.")
+    for operation, definition in operations.items():
+        if not isinstance(definition, Mapping):
+            raise RuntimeError(f"Invalid field catalog operation: {operation}.")
+        if definition.get("endpoint") != OPERATION_POLICIES[operation].endpoint:
+            raise RuntimeError(f"Field catalog endpoint mismatch for {operation}.")
+        for key in ("official_name_zh", "official_name_en", "doc_url", "doc_url_en"):
+            if not isinstance(definition.get(key), str) or not definition[key].strip():
+                raise RuntimeError(f"Field catalog {key} must be non-empty for {operation}.")
+        for section in ("request_fields", "response_fields"):
+            fields = definition.get(section)
+            if not isinstance(fields, list) or not all(isinstance(item, Mapping) for item in fields):
+                raise RuntimeError(f"Field catalog {section} must be a list for {operation}.")
+            wire_names = [item.get("wire_name") for item in fields]
+            if any(not isinstance(name, str) or not name for name in wire_names):
+                raise RuntimeError(f"Field catalog wire names must be non-empty for {operation}.")
+            if len(wire_names) != len(set(wire_names)):
+                raise RuntimeError(f"Field catalog wire names must be unique for {operation}.")
+            for field in fields:
+                for language in ("zh", "en"):
+                    description = field.get(f"official_description_{language}")
+                    if not isinstance(description, str) or not description.strip():
+                        raise RuntimeError(
+                            f"Field catalog official {language} description must be non-empty "
+                            f"for {operation}/{field['wire_name']}."
+                        )
+                if "label_zh" in field or "label_en" in field:
+                    raise RuntimeError(
+                        f"Field catalog normalized labels are not allowed for {operation}."
+                    )
+        for field in definition["response_fields"]:
+            if field.get("role") not in FIELD_ROLES:
+                raise RuntimeError(f"Invalid response field role for {operation}.")
+            if field.get("format") is not None and field.get("format") not in FIELD_FORMATS:
+                raise RuntimeError(f"Invalid response field format for {operation}.")
+    return dict(payload)
+
+
+PARTNER_FIELD_CATALOG = _load_partner_field_catalog()
+_CATALOG_OPERATIONS = PARTNER_FIELD_CATALOG["operations"]
+
+
+def _catalog_record_names(definition: Mapping[str, Any]) -> set[str]:
+    return {
+        str(field["wire_name"])
+        for field in definition["response_fields"]
+        if field["role"] == "record"
+    }
+
+
 KNOWN_FIELDS: Dict[str, set[str]] = {
-    "list-referral-uids": {
-        "uid", "registerTime", "kycResult", "inviteCode", "firstDeposit",
-        "firstTrade", "lastDeposit", "lastTrade",
-    },
-    "get-direct-trade-asset": {
-        "uid", "depositAmount", "withdrawalAmount", "spotTradingAmount",
-        "futuresTradingAmount", "commission",
-    },
-    "get-commission": {
-        "uid", "date", "coin", "fee", "commission", "rate", "productType",
-        "symbol", "sourceType", "takerAmount", "makerAmount",
-    },
-    "get-internal-withdrawals": {
-        "fromUserId", "toUserId", "withdrawId", "coin", "status", "amount",
-        "createTime", "updateTime",
-    },
-    "get-sub-agent-stats": {
-        "subAffiliateUid", "productType", "date", "tradingVolume",
-        "netTradingFee", "paidCommission",
-    },
-    "verify-referrals": {"uid", "isRefferal", "is_referral"},
-    "get-referral-assets": {
-        "availableBalance", "fundingTotalUsdt", "spotProTotalUsdt",
-        "unimarginTotalUsdt", "depositTotalAmount", "depositList",
-    },
-    "get-referral-deal-data": {
-        "userId", "spotDealAmountUsdt", "futuresProDealAmountUsdt",
-        "spotProDealAmountUsdtTemp",
-    },
+    operation: _catalog_record_names(definition)
+    for operation, definition in _CATALOG_OPERATIONS.items()
 }
-
 CONTAINER_FIELDS: Dict[str, set[str]] = {
-    "get-referral-assets": {"depositList"},
+    operation: {
+        str(field["wire_name"])
+        for field in definition["response_fields"]
+        if field.get("format") == "hidden_container"
+    }
+    for operation, definition in _CATALOG_OPERATIONS.items()
+    if any(
+        field.get("format") == "hidden_container"
+        for field in definition["response_fields"]
+    )
 }
-
 TIMESTAMP_FIELDS: Dict[str, set[str]] = {
-    "list-referral-uids": {
-        "registerTime", "firstDeposit", "firstTrade", "lastDeposit", "lastTrade",
-    },
-    "get-commission": {"date"},
-    "get-internal-withdrawals": {"createTime", "updateTime"},
+    operation: {
+        str(field["wire_name"])
+        for field in definition["response_fields"]
+        if field.get("format") == "millisecond_timestamp" and field["role"] == "record"
+    }
+    for operation, definition in _CATALOG_OPERATIONS.items()
+    if any(
+        field.get("format") == "millisecond_timestamp" and field["role"] == "record"
+        for field in definition["response_fields"]
+    )
 }
-
 DATE_FIELDS: Dict[str, set[str]] = {
-    "get-sub-agent-stats": {"date"},
+    operation: {
+        str(field["wire_name"])
+        for field in definition["response_fields"]
+        if field.get("format") == "date" and field["role"] == "record"
+    }
+    for operation, definition in _CATALOG_OPERATIONS.items()
+    if any(
+        field.get("format") == "date" and field["role"] == "record"
+        for field in definition["response_fields"]
+    )
+}
+REQUEST_FIELD_ALIASES: Dict[str, Dict[str, str]] = {
+    operation: {
+        str(field["internal_name"]): str(field["wire_name"])
+        for field in definition["request_fields"]
+        if field.get("internal_name")
+    }
+    for operation, definition in _CATALOG_OPERATIONS.items()
+}
+RESPONSE_FIELD_ALIASES: Dict[str, Dict[str, str]] = {
+    operation: {
+        str(field["wire_name"]): str(field["output_name"])
+        for field in definition["response_fields"]
+        if field.get("output_name")
+    }
+    for operation, definition in _CATALOG_OPERATIONS.items()
 }
 
 REQUIRED_RECORD_FIELDS: Dict[str, tuple[set[str], ...]] = {
@@ -236,7 +311,7 @@ REQUIRED_RECORD_FIELDS: Dict[str, tuple[set[str], ...]] = {
     "get-commission": ({"uid"}, {"commission"}),
     "get-internal-withdrawals": ({"withdrawId"}, {"status"}),
     "get-sub-agent-stats": ({"subAffiliateUid"},),
-    "verify-referrals": ({"uid"}, {"isRefferal", "is_referral"}),
+    "verify-referrals": ({"uid"}, {"isRefferal"}),
     "get-referral-assets": (
         {
             "availableBalance", "fundingTotalUsdt", "spotProTotalUsdt",
@@ -913,13 +988,7 @@ def _apply_time_and_filters(request: Dict[str, Any], plan: Mapping[str, Any]) ->
         else:
             target["startTime"] = time_range["actual_start"]
             target["endTime"] = time_range["actual_end"]
-    field_map = {
-        "coin": "coin",
-        "product_type": "productType",
-        "withdraw_id": "withdrawID",
-        "from_account_type": "fromAccountType",
-        "to_account_type": "toAccountType",
-    }
+    field_map = REQUEST_FIELD_ALIASES.get(operation, {})
     for source, destination in field_map.items():
         if source in plan.get("filters", {}):
             target[destination] = plan["filters"][source]
@@ -1052,6 +1121,7 @@ def project_known_fields(
     known_fields: set[str],
     timestamp_fields: Optional[set[str]] = None,
     date_fields: Optional[set[str]] = None,
+    field_aliases: Optional[Mapping[str, str]] = None,
     language: str = "en",
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {}
@@ -1075,8 +1145,14 @@ def project_known_fields(
                 unknown_fields.append(f"{key}.*")
         else:
             record[key] = value
-    if "isRefferal" in record:
-        record["is_referral"] = _normalize_referral_flag(record.pop("isRefferal"))
+    aliases = field_aliases or RESPONSE_FIELD_ALIASES.get("verify-referrals", {})
+    for source, destination in aliases.items():
+        if source not in record:
+            continue
+        value = record.pop(source)
+        record[destination] = (
+            _normalize_referral_flag(value) if source == "isRefferal" else value
+        )
     return {"record": record, "unknown_fields": sorted(set(unknown_fields))}
 
 
@@ -1810,6 +1886,17 @@ def _validate_record_schema(operation: str, records: Sequence[Mapping[str, Any]]
                 "response_schema_mismatch",
                 f"Record {index} is missing required Partner response fields: {missing_groups}.",
             )
+        invalid_containers = sorted(
+            str(field)
+            for field in container_fields
+            if field in record and not isinstance(record[field], list)
+        )
+        if invalid_containers:
+            raise PartnerQueryError(
+                "invalid_record_field_type",
+                "Partner response contains non-array values for hidden container fields: "
+                f"{invalid_containers}.",
+            )
         invalid_fields = sorted(
             str(field)
             for field, value in record.items()
@@ -2137,10 +2224,11 @@ def execute_query(
                     and resolved_environment == "partner_test"
                     and plan["operation"] == "get-internal-withdrawals"
                 )
-                if test_empty_null_page:
-                    current_page = requested_page
-                else:
-                    current_page = int(current_page_value)
+                current_page = (
+                    requested_page
+                    if test_empty_null_page
+                    else int(current_page_value)
+                )
                 page_size_value = metadata.get("pageSize", metadata.get("size"))
                 remote_page_size = (
                     int(page_size_value) if page_size_value is not None else None
@@ -2367,6 +2455,7 @@ def execute_query(
                         known_fields=KNOWN_FIELDS[str(plan["operation"])],
                         timestamp_fields=TIMESTAMP_FIELDS.get(str(plan["operation"])),
                         date_fields=DATE_FIELDS.get(str(plan["operation"])),
+                        field_aliases=RESPONSE_FIELD_ALIASES.get(str(plan["operation"])),
                         language=str(plan.get("language") or "en"),
                     )
                 except PartnerQueryError as exc:

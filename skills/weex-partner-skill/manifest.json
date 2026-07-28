@@ -49,6 +49,7 @@
     "open_if_needed": {
       "query_policy": "references/partner-query-policy.md",
       "output_schema": "references/partner-output-schema.md",
+      "field_catalog": "references/partner-field-catalog.json",
       "natural_language_regression": "references/natural-language-regression.json",
       "file_level_details": "file-index.json"
     }

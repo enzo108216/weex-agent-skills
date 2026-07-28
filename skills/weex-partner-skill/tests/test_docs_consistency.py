@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unittest
@@ -15,6 +16,10 @@ FILE_INDEX = ROOT / "file-index.json"
 QUERY_POLICY = ROOT / "references" / "partner-query-policy.md"
 OUTPUT_SCHEMA = ROOT / "references" / "partner-output-schema.md"
 NATURAL_LANGUAGE_REGRESSION = ROOT / "references" / "natural-language-regression.json"
+FIELD_CATALOG = ROOT / "references" / "partner-field-catalog.json"
+TRADER_PARTNER_DEFINITIONS = (
+    ROOT.parent / "weex-trader-skill" / "references" / "partner-api-definitions.json"
+)
 CLI = ROOT / "scripts" / "weex_partner_cli.py"
 TESTS = ROOT / "tests"
 
@@ -31,6 +36,248 @@ EXPECTED_COMMANDS = {
 
 
 class PartnerDocsConsistencyTests(unittest.TestCase):
+    def test_internal_withdrawal_status_remains_a_read_only_partner_capability(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        query_policy = QUERY_POLICY.read_text(encoding="utf-8")
+        fixtures = json.loads(NATURAL_LANGUAGE_REGRESSION.read_text(encoding="utf-8"))
+        catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
+
+        self.assertIn("get-internal-withdrawals", skill_text)
+        self.assertIn("query status only and never initiate a transfer", skill_text)
+        self.assertIn("get-internal-withdrawals", manifest["routing"]["operations"])
+        self.assertIn("get-internal-withdrawals", query_policy)
+        self.assertIn("get-internal-withdrawals", catalog["operations"])
+        self.assertTrue(
+            any(
+                scenario["expected"].get("operation") == "get-internal-withdrawals"
+                for scenario in fixtures["scenarios"]
+            )
+        )
+        self.assertNotIn("partner.internal-withdrawal", skill_text)
+
+    def test_skill_and_indexes_require_the_official_field_catalog_for_descriptions(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        schema_text = OUTPUT_SCHEMA.read_text(encoding="utf-8")
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+
+        self.assertIn("references/partner-field-catalog.json", skill_text)
+        self.assertIn("official_description_zh", skill_text)
+        self.assertIn("official_description_en", skill_text)
+        self.assertIn("original field name", skill_text)
+        self.assertIn("unimarginTotalUsdt", skill_text)
+        self.assertIn("Total contract account equity in USDT", skill_text)
+        self.assertIn("contractTotalUsdt", skill_text)
+        self.assertIn("currently undocumented", skill_text)
+        self.assertIn("partner-field-catalog.json", schema_text)
+        self.assertIn("official_description_zh", schema_text)
+        self.assertIn("official_description_en", schema_text)
+        self.assertNotIn("localized official label", skill_text)
+        self.assertIn(
+            "field_catalog",
+            manifest["read_order"]["open_if_needed"],
+        )
+        self.assertEqual(
+            manifest["read_order"]["open_if_needed"]["field_catalog"],
+            "references/partner-field-catalog.json",
+        )
+        self.assertIn(
+            "references/partner-field-catalog.json",
+            file_index["file_guide"],
+        )
+
+    def test_official_field_catalog_covers_all_operations_and_wire_request_fields(self) -> None:
+        self.assertTrue(FIELD_CATALOG.exists(), "official Partner field catalog is missing")
+        catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
+        trader = json.loads(TRADER_PARTNER_DEFINITIONS.read_text(encoding="utf-8"))
+
+        self.assertEqual(catalog["schema_version"], 2)
+        self.assertEqual(catalog["last_verified_utc"], "2026-07-28")
+        self.assertEqual(set(catalog["operations"]), EXPECTED_COMMANDS)
+        trader_by_key = {item["key"]: item for item in trader["definitions"]}
+
+        for operation, definition in catalog["operations"].items():
+            with self.subTest(operation=operation):
+                endpoint = definition["endpoint"]
+                self.assertIn(endpoint, trader_by_key)
+                trader_definition = trader_by_key[endpoint]
+                request_by_name = {
+                    item["wire_name"]: item for item in definition["request_fields"]
+                }
+                self.assertEqual(
+                    {name for name, item in request_by_name.items() if item["transport"] == "query"},
+                    set(trader_definition["query_fields"]),
+                )
+                self.assertEqual(
+                    {name for name, item in request_by_name.items() if item["transport"] == "body"},
+                    set(trader_definition["body_fields"]),
+                )
+                self.assertEqual(definition["doc_url"], trader_definition["doc_url"])
+                self.assertTrue(str(definition["official_name_zh"]).strip())
+                self.assertEqual(
+                    len(request_by_name), len(definition["request_fields"]),
+                    "request wire names must be unique",
+                )
+
+    def test_official_field_catalog_descriptions_and_aliases_match_the_documented_contract(self) -> None:
+        self.assertTrue(FIELD_CATALOG.exists(), "official Partner field catalog is missing")
+        catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
+        operations = catalog["operations"]
+
+        assets = {
+            item["wire_name"]: item
+            for item in operations["get-referral-assets"]["response_fields"]
+        }
+        self.assertIn("official_description_en", assets["unimarginTotalUsdt"])
+        self.assertEqual(
+            assets["unimarginTotalUsdt"]["official_description_zh"],
+            "合约账户权益（USDT）",
+        )
+        self.assertEqual(
+            assets["unimarginTotalUsdt"]["official_description_en"],
+            "Total contract account equity in USDT",
+        )
+        self.assertNotIn("统一账户", assets["unimarginTotalUsdt"]["official_description_zh"])
+        self.assertNotIn("contractTotalUsdt", assets)
+        self.assertEqual(assets["depositList"]["format"], "hidden_container")
+
+        referrals = {
+            item["wire_name"]: item
+            for item in operations["verify-referrals"]["response_fields"]
+        }
+        self.assertEqual(referrals["isRefferal"]["output_name"], "is_referral")
+        self.assertEqual(referrals["isRefferal"]["alias_kind"], "normalized_output")
+        self.assertIn("official_description_en", referrals["isRefferal"])
+        self.assertEqual(
+            referrals["isRefferal"]["official_description_en"],
+            "true if the UID belongs to the current affiliate",
+        )
+
+        for operation, definition in operations.items():
+            with self.subTest(operation=operation, section="operation"):
+                self.assertTrue(str(definition["official_name_zh"]).strip())
+                self.assertTrue(str(definition["official_name_en"]).strip())
+                self.assertRegex(
+                    definition["doc_url_en"],
+                    r"^https://www\.weex\.com/api-doc/partner/rebate-endpoints/",
+                )
+            for section in ("request_fields", "response_fields"):
+                for field in definition[section]:
+                    with self.subTest(
+                        operation=operation,
+                        section=section,
+                        field=field["wire_name"],
+                    ):
+                        self.assertTrue(str(field["official_description_zh"]).strip())
+                        self.assertTrue(str(field["official_description_en"]).strip())
+                        self.assertNotIn("label_zh", field)
+                        self.assertNotIn("label_en", field)
+
+    def test_official_bilingual_titles_and_descriptions_preserve_verbatim_examples(self) -> None:
+        catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
+        operations = catalog["operations"]
+
+        self.assertTrue(
+            all("official_name_en" in definition for definition in operations.values()),
+            "every operation must preserve the official English title",
+        )
+        self.assertTrue(
+            all("doc_url_en" in definition for definition in operations.values()),
+            "every operation must preserve the official English URL",
+        )
+
+        self.assertEqual(operations["list-referral-uids"]["official_name_en"], "Get Affiliate UIDs")
+        self.assertEqual(
+            operations["get-direct-trade-asset"]["official_name_en"],
+            "Get Affiliate Referral Data",
+        )
+        self.assertEqual(
+            operations["get-sub-agent-stats"]["official_name_en"],
+            "Get Subaffiliates Data (affiliate only)",
+        )
+        self.assertEqual(
+            operations["get-internal-withdrawals"]["official_name_en"],
+            "Get Internal Withdrawal Status",
+        )
+
+        direct_fields = {
+            item["wire_name"]: item
+            for item in operations["get-direct-trade-asset"]["response_fields"]
+        }
+        self.assertEqual(direct_fields["depositAmount"]["official_description_en"], "Deposit Amount")
+
+        asset_requests = {
+            item["wire_name"]: item
+            for item in operations["get-referral-assets"]["request_fields"]
+        }
+        self.assertEqual(asset_requests["userId"]["official_description_en"], "Direct customer UID")
+
+        deal_fields = {
+            item["wire_name"]: item
+            for item in operations["get-referral-deal-data"]["response_fields"]
+        }
+        self.assertEqual(
+            deal_fields["spotProDealAmountUsdtTemp"]["official_description_en"],
+            "Spot trading volume (raw value returned by partner system)",
+        )
+        internal_fields = {
+            item["wire_name"]: item
+            for item in operations["get-internal-withdrawals"]["response_fields"]
+        }
+        self.assertEqual(
+            internal_fields["amount"]["official_description_zh"],
+            "转账金额",
+        )
+        self.assertEqual(
+            internal_fields["createTime"]["format"],
+            "millisecond_timestamp",
+        )
+
+    def test_official_bilingual_contract_matches_the_verified_full_snapshot(self) -> None:
+        catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
+        operations = catalog["operations"]
+        self.assertEqual(
+            sum(len(definition["request_fields"]) for definition in operations.values()),
+            38,
+        )
+        self.assertEqual(
+            sum(len(definition["response_fields"]) for definition in operations.values()),
+            77,
+        )
+
+        snapshot = {}
+        for operation, definition in operations.items():
+            normalized = {
+                key: definition[key]
+                for key in ("official_name_zh", "official_name_en", "doc_url", "doc_url_en")
+            }
+            for section in ("request_fields", "response_fields"):
+                fields = []
+                for field in sorted(definition[section], key=lambda item: item["wire_name"]):
+                    official = {
+                        key: field[key]
+                        for key in ("wire_name", "type")
+                    }
+                    if section == "request_fields":
+                        official["official_required"] = field["official_required"]
+                    official["official_description_zh"] = field["official_description_zh"]
+                    official["official_description_en"] = field["official_description_en"]
+                    fields.append(official)
+                normalized[section] = fields
+            snapshot[operation] = normalized
+
+        serialized = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(
+            hashlib.sha256(serialized).hexdigest(),
+            "6af088325b792b9a9ad72a99ae24086bc6bb4aa8c450cef9464bc18369c51d58",
+        )
+
     def test_natural_language_regression_fixture_is_executable_and_read_only(self) -> None:
         self.assertTrue(
             NATURAL_LANGUAGE_REGRESSION.exists(),
