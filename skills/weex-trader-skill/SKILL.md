@@ -16,7 +16,7 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 
 - `scripts/weex_contract_api.py`: contract/futures REST
 - `scripts/weex_spot_api.py`: spot REST
-- `scripts/weex_partner_api.py`: strict read-only Partner REST executor for the eight allowlisted Partner endpoints
+- `scripts/weex_partner_api.py`: strict read-only Partner REST executor for the seven allowlisted Partner endpoints
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
 - `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
 - `scripts/weex_trade_risk_review.py`: local risk review helpers for standalone trade-guard preview/account-scan flows
@@ -139,7 +139,7 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 ## Safety Policy
 
 - Never send live mutating requests without `--confirm-live`; never send demo mutating requests without `--trading-mode demo --confirm-demo`
-- Partner execution is limited to the eight `operation_class=read` entries in `references/partner-api-definitions.json`. The query-only POST is read-only by contract; the internal-withdrawal write endpoint and every unknown path are forbidden.
+- Partner execution is limited to the seven `operation_class=read` entries in `references/partner-api-definitions.json`. The query-only POST is read-only by contract; the internal-withdrawal write endpoint and every unknown path are forbidden.
 - Partner credentials may only be sent to the exact production origin `https://api-spot.weex.com` or a saved, strictly validated HTTPS `https://*.weex.tech` test subdomain. Partner execution labels results as `partner_production` or `partner_test`, rejects the bare test-domain suffix, malformed URL variants, API base environment overrides, and authenticated redirects, and never includes the concrete test origin in Partner query output.
 - Demo futures orders are not local dry-runs; they are mutating requests to WEEX futures demo mode
 - Keep `live` and `demo` as internal CLI/API values only. In user-facing dialogue, risk previews, order confirmations, and account queries, use localized trading-mode labels, not environment labels and not account labels. For Chinese, use `模拟盘` and `真实盘`; for English, use `demo trading` and `real trading`. Never present raw `live` or `demo` as the trading-mode label for the user.

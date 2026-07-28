@@ -103,7 +103,7 @@ Example prompts:
 
 ### `weex-partner-skill`
 
-Use [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md) for read-only WEEX Partner referral, commission, direct-user asset/trade, internal-transfer-status, sub-agent, relationship, asset, and deal-data queries.
+Use [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md) for read-only WEEX Partner referral, commission, direct-user asset/trade, sub-agent, relationship, asset, and deal-data queries.
 
 It reuses the same saved profile and Application Vault as `weex-trader-skill`; REST access and credentials remain in trader. A Partner-capable profile can still place normal orders through trader's existing preview and explicit confirmation gates.
 

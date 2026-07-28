@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic orchestration for the eight WEEX Partner query operations."""
+"""Deterministic orchestration for the seven WEEX Partner query operations."""
 
 from __future__ import annotations
 
@@ -132,15 +132,6 @@ OPERATION_POLICIES: Dict[str, OperationPolicy] = {
         page_field="page",
         page_size_field="pageSize",
     ),
-    "get-internal-withdrawals": OperationPolicy(
-        endpoint="partner.get-internal-withdrawal-status",
-        time_format="milliseconds",
-        time_required=True,
-        max_months=1,
-        history_months=1,
-        page_field="page",
-        page_size_field="pageSize",
-    ),
     "get-sub-agent-stats": OperationPolicy(
         endpoint="partner.query-sub-channel-transactions",
         time_format="milliseconds",
@@ -172,9 +163,6 @@ OPERATION_FILTER_FIELDS: Dict[str, set[str]] = {
     "list-referral-uids": set(),
     "get-direct-trade-asset": set(),
     "get-commission": {"coin", "product_type"},
-    "get-internal-withdrawals": {
-        "withdraw_id", "coin", "from_account_type", "to_account_type",
-    },
     "get-sub-agent-stats": {"product_type"},
     "verify-referrals": set(),
     "get-referral-assets": set(),
@@ -309,7 +297,6 @@ REQUIRED_RECORD_FIELDS: Dict[str, tuple[set[str], ...]] = {
     "list-referral-uids": ({"uid"},),
     "get-direct-trade-asset": ({"uid"},),
     "get-commission": ({"uid"}, {"commission"}),
-    "get-internal-withdrawals": ({"withdrawId"}, {"status"}),
     "get-sub-agent-stats": ({"subAffiliateUid"},),
     "verify-referrals": ({"uid"}, {"isRefferal"}),
     "get-referral-assets": (
@@ -324,7 +311,6 @@ REQUIRED_RECORD_FIELDS: Dict[str, tuple[set[str], ...]] = {
 RECORD_IDENTITY_FIELDS: Dict[str, tuple[str, ...]] = {
     "list-referral-uids": ("uid",),
     "get-direct-trade-asset": ("uid",),
-    "get-internal-withdrawals": ("withdrawId",),
     "get-sub-agent-stats": ("subAffiliateUid", "productType", "date"),
     "get-referral-deal-data": ("userId",),
 }
@@ -2217,18 +2203,7 @@ def execute_query(
                     "current",
                     metadata.get("page", metadata.get("pageNum", requested_page)),
                 )
-                test_empty_null_page = (
-                    current_page_value is None
-                    and remote_total == 0
-                    and not records
-                    and resolved_environment == "partner_test"
-                    and plan["operation"] == "get-internal-withdrawals"
-                )
-                current_page = (
-                    requested_page
-                    if test_empty_null_page
-                    else int(current_page_value)
-                )
+                current_page = int(current_page_value)
                 page_size_value = metadata.get("pageSize", metadata.get("size"))
                 remote_page_size = (
                     int(page_size_value) if page_size_value is not None else None

@@ -74,16 +74,8 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
                 )
             },
         )
-        self.assertIn("get-internal-withdrawals", catalog_operations)
-        self.assertEqual(
-            partner.REQUEST_FIELD_ALIASES["get-internal-withdrawals"],
-            {
-                "withdraw_id": "withdrawID",
-                "coin": "coin",
-                "from_account_type": "fromAccountType",
-                "to_account_type": "toAccountType",
-            },
-        )
+        self.assertNotIn("get-internal-withdrawals", catalog_operations)
+        self.assertNotIn("get-internal-withdrawals", partner.REQUEST_FIELD_ALIASES)
         self.assertEqual(partner.RESPONSE_FIELD_ALIASES["verify-referrals"]["isRefferal"], "is_referral")
 
 
@@ -369,7 +361,7 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
             partner.plan_query(request, now=datetime(2026, 7, 15, tzinfo=timezone.utc))
         self.assertEqual(exc_info.exception.code, "time_range_required")
 
-    def test_internal_withdrawal_history_limit_is_not_used_as_a_default_time(self) -> None:
+    def test_removed_internal_withdrawal_operation_is_rejected_locally(self) -> None:
         partner = self.require_partner()
         request = {
             "operation": "get-internal-withdrawals",
@@ -382,29 +374,7 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
 
         with self.assertRaises(partner.PartnerQueryError) as exc_info:
             partner.plan_query(request, now=datetime(2026, 7, 15, tzinfo=timezone.utc))
-        self.assertEqual(exc_info.exception.code, "time_range_required")
-
-    def test_internal_withdrawal_exact_month_boundary_uses_request_second_precision(self) -> None:
-        partner = self.require_partner()
-        request = {
-            "operation": "get-internal-withdrawals",
-            "profile": "main",
-            "scope": {"mode": "none", "all_confirmed": False},
-            "time_range": {
-                "start": "2026-06-20T06:26:09Z",
-                "end": "2026-07-20T06:26:09Z",
-            },
-            "filters": {},
-            "result_mode": "summary_with_first_20",
-        }
-
-        plan = partner.plan_query(
-            request,
-            now=datetime(2026, 7, 20, 6, 26, 9, 500000, tzinfo=timezone.utc),
-        )
-
-        self.assertEqual(plan["time_range"]["actual_start"], request["time_range"]["start"])
-        self.assertEqual(plan["time_range"]["actual_end"], request["time_range"]["end"])
+        self.assertEqual(exc_info.exception.code, "unsupported_operation")
 
     def test_implicit_all_scope_is_rejected_before_any_executor_call(self) -> None:
         partner = self.require_partner()
@@ -502,36 +472,6 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
                 with self.assertRaises(partner.PartnerQueryError) as exc_info:
                     partner.plan_query(dict(base, filters=filters), now=now)
                 self.assertEqual(exc_info.exception.code, expected_code)
-
-    def test_internal_withdrawal_filters_and_scope_are_strict(self) -> None:
-        partner = self.require_partner()
-        now = datetime(2026, 7, 15, tzinfo=timezone.utc)
-        base = {
-            "operation": "get-internal-withdrawals",
-            "profile": "main",
-            "scope": {"mode": "none"},
-            "time_range": {
-                "start": "2026-07-01T00:00:00Z",
-                "end": "2026-07-10T00:00:00Z",
-            },
-        }
-
-        for filters, expected_code in (
-            ({"status": "SUCCESS"}, "invalid_filters"),
-            ({"from_account_type": "MARGIN"}, "invalid_account_type"),
-            ({"coin": ""}, "invalid_coin"),
-        ):
-            with self.subTest(filters=filters):
-                with self.assertRaises(partner.PartnerQueryError) as exc_info:
-                    partner.plan_query(dict(base, filters=filters), now=now)
-                self.assertEqual(exc_info.exception.code, expected_code)
-
-        with self.assertRaises(partner.PartnerQueryError) as scope_error:
-            partner.plan_query(
-                dict(base, filters={}, scope={"mode": "uids", "uids": [10001]}),
-                now=now,
-            )
-        self.assertEqual(scope_error.exception.code, "invalid_scope")
 
     def test_language_is_strict(self) -> None:
         partner = self.require_partner()
@@ -691,13 +631,12 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["unknown_fields"], ["contractTotalUsdt"])
         self.assertNotIn("999.9", repr(normalized))
 
-    def test_all_eight_operations_map_to_the_exact_trader_allowlist_keys(self) -> None:
+    def test_all_seven_operations_map_to_the_exact_trader_allowlist_keys(self) -> None:
         partner = self.require_partner()
         expected = {
             "list-referral-uids": "partner.get-affiliate-uids",
             "get-direct-trade-asset": "partner.get-channel-user-trade-and-asset",
             "get-commission": "partner.get-affiliate-commission",
-            "get-internal-withdrawals": "partner.get-internal-withdrawal-status",
             "get-sub-agent-stats": "partner.query-sub-channel-transactions",
             "verify-referrals": "partner.verify-referrals",
             "get-referral-assets": "partner.get-referral-assets",
@@ -707,36 +646,6 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
             {name: policy.endpoint for name, policy in partner.OPERATION_POLICIES.items()},
             expected,
         )
-
-    def test_internal_withdrawal_request_uses_exact_official_query_fields(self) -> None:
-        partner = self.require_partner()
-        plan = partner.plan_query(
-            {
-                "operation": "get-internal-withdrawals",
-                "profile": "main",
-                "scope": {"mode": "none"},
-                "time_range": {
-                    "start": "2026-07-01T00:00:00Z",
-                    "end": "2026-07-10T00:00:00Z",
-                },
-                "filters": {
-                    "withdraw_id": "withdraw-1",
-                    "coin": "usdt",
-                    "from_account_type": "SPOT",
-                    "to_account_type": "FUND",
-                },
-                "result_mode": "summary_with_first_20",
-            },
-            now=datetime(2026, 7, 15, tzinfo=timezone.utc),
-        )
-        query = partner.build_executor_requests(plan)[0]["query"]
-
-        self.assertEqual(query["withdrawID"], "withdraw-1")
-        self.assertEqual(query["coin"], "USDT")
-        self.assertEqual(query["fromAccountType"], "SPOT")
-        self.assertEqual(query["toAccountType"], "FUND")
-        self.assertEqual(query["page"], 1)
-        self.assertEqual(query["pageSize"], 100)
 
     def test_commission_missing_time_uses_official_seven_day_minimum(self) -> None:
         partner = self.require_partner()
@@ -2528,76 +2437,6 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["category"], "schema")
         self.assertEqual(result["error"]["code"], "missing_pagination_metadata")
-
-    def test_empty_internal_withdrawal_null_page_uses_requested_page_in_test_environment(self) -> None:
-        partner = self.require_partner()
-        result = partner.execute_query(
-            {
-                "operation": "get-internal-withdrawals",
-                "profile": "main",
-                "scope": {"mode": "none"},
-                "time_range": {
-                    "start": "2026-07-01T00:00:00Z",
-                    "end": "2026-07-17T00:00:00Z",
-                },
-                "filters": {},
-                "result_mode": "complete_list",
-            },
-            executor=lambda _request: {
-                "ok": True,
-                "environment": "partner_test",
-                "profile": {"resolved_profile_id": "profile-a", "name": "main"},
-                "weight": 100,
-                "rate_limit": {"used": {"10S": 100}, "remaining": {"10S": 400}},
-                "data": {
-                    "items": [],
-                    "total": 0,
-                    "pageSize": 100,
-                    "pages": 1,
-                    "page": None,
-                    "hasNextPage": False,
-                },
-            },
-            now=datetime(2026, 7, 17, tzinfo=timezone.utc),
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["complete"])
-        self.assertEqual(result["pagination"]["current_page"], 1)
-
-    def test_internal_withdrawal_null_page_is_rejected_in_production(self) -> None:
-        partner = self.require_partner()
-        result = partner.execute_query(
-            {
-                "operation": "get-internal-withdrawals",
-                "profile": "main",
-                "scope": {"mode": "none"},
-                "time_range": {
-                    "start": "2026-07-01T00:00:00Z",
-                    "end": "2026-07-17T00:00:00Z",
-                },
-                "filters": {},
-                "result_mode": "complete_list",
-            },
-            executor=lambda _request: {
-                "ok": True,
-                "environment": "partner_production",
-                "profile": {"resolved_profile_id": "profile-a", "name": "main"},
-                "data": {
-                    "items": [],
-                    "total": 0,
-                    "pageSize": 100,
-                    "pages": 1,
-                    "page": None,
-                    "hasNextPage": False,
-                },
-            },
-            now=datetime(2026, 7, 17, tzinfo=timezone.utc),
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["category"], "schema")
-        self.assertEqual(result["error"]["code"], "invalid_pagination_metadata")
 
     def test_unknown_request_scope_and_time_fields_are_rejected(self) -> None:
         partner = self.require_partner()

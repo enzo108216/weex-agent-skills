@@ -130,8 +130,8 @@ def load_endpoint_map() -> Dict[str, Endpoint]:
         if endpoint.operation_class != "read":
             raise PartnerPolicyError(f"Partner endpoint {endpoint.key!r} is not read-only")
         endpoints[endpoint.key] = endpoint
-    if len(endpoints) != 8:
-        raise PartnerPolicyError("Partner endpoint allowlist must contain exactly eight entries")
+    if len(endpoints) != 7:
+        raise PartnerPolicyError("Partner endpoint allowlist must contain exactly seven entries")
     return endpoints
 
 

@@ -103,7 +103,7 @@ npx skills add https://github.com/weex-labs/weex-trader-skill --all
 
 ### `weex-partner-skill`
 
-查询 WEEX 合伙人直客 UID、直客交易与资金、返佣、内部转账状态、子代理统计、直客关系、直客资产或交易统计时，使用 [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md)。
+查询 WEEX 合伙人直客 UID、直客交易与资金、返佣、子代理统计、直客关系、直客资产或交易统计时，使用 [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md)。
 
 它复用 `weex-trader-skill` 的现有 profile 和 Application Vault，REST、凭据和签名仍由 trader 负责；同一个 profile 仍可通过 trader 的既有预览和明确确认门禁正常下单。
 

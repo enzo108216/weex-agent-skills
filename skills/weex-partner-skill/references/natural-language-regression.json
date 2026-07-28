@@ -44,22 +44,6 @@
       }
     },
     {
-      "id": "route_internal_withdrawal_status",
-      "language": "zh",
-      "prompt": "查 2026-06-20 到 2026-07-20 的内部转账状态",
-      "context": {
-        "saved_profile": "partner-profile",
-        "time_range": {
-          "start": "2026-06-20T00:00:00Z",
-          "end": "2026-07-20T00:00:00Z"
-        }
-      },
-      "expected": {
-        "disposition": "route",
-        "operation": "get-internal-withdrawals"
-      }
-    },
-    {
       "id": "route_sub_agent_stats",
       "language": "zh",
       "prompt": "查全部子代理的现货交易量、手续费和佣金",
@@ -156,22 +140,6 @@
         "reason": "uid_or_explicit_all_scope_required",
         "missing_fields": [
           "uid_or_explicit_all_scope"
-        ],
-        "partner_rest_request_sent": false
-      }
-    },
-    {
-      "id": "clarify_internal_withdrawal_time",
-      "language": "zh",
-      "prompt": "查内部转账状态",
-      "context": {
-        "saved_profile": "partner-profile"
-      },
-      "expected": {
-        "disposition": "clarify",
-        "reason": "explicit_time_range_required",
-        "missing_fields": [
-          "time_range"
         ],
         "partner_rest_request_sent": false
       }

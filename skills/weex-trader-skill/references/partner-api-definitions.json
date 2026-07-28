@@ -45,19 +45,6 @@
       "doc_url": "https://www.weex.com/api-doc/zh-CN/partner/rebate-endpoints/GetAffiliateCommission"
     },
     {
-      "key": "partner.get-internal-withdrawal-status",
-      "category": "partner",
-      "title": "Get internal withdrawal status",
-      "method": "GET",
-      "path": "/api/v3/rebate/affiliate/getInternalWithdrawalStatus",
-      "requires_auth": true,
-      "operation_class": "read",
-      "weight": 100,
-      "query_fields": ["withdrawID", "coin", "startTime", "endTime", "fromAccountType", "toAccountType", "page", "pageSize"],
-      "body_fields": [],
-      "doc_url": "https://www.weex.com/api-doc/zh-CN/partner/rebate-endpoints/GetInternalWithdrawalStatus"
-    },
-    {
       "key": "partner.query-sub-channel-transactions",
       "category": "partner",
       "title": "Query sub-channel transactions",

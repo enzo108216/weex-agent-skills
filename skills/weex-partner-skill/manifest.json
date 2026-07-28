@@ -3,7 +3,7 @@
   "identity": {
     "name": "weex-partner-skill",
     "source_of_truth": "SKILL.md",
-    "purpose": "Natural-language orchestration for eight read-only WEEX Partner query capabilities."
+    "purpose": "Natural-language orchestration for seven read-only WEEX Partner query capabilities."
   },
   "path_policy": {
     "skill_root": ".",
@@ -25,7 +25,6 @@
       "list-referral-uids",
       "get-direct-trade-asset",
       "get-commission",
-      "get-internal-withdrawals",
       "get-sub-agent-stats",
       "verify-referrals",
       "get-referral-assets",

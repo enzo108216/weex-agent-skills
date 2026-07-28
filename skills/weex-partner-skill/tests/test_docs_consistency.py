@@ -27,7 +27,6 @@ EXPECTED_COMMANDS = {
     "list-referral-uids",
     "get-direct-trade-asset",
     "get-commission",
-    "get-internal-withdrawals",
     "get-sub-agent-stats",
     "verify-referrals",
     "get-referral-assets",
@@ -36,24 +35,21 @@ EXPECTED_COMMANDS = {
 
 
 class PartnerDocsConsistencyTests(unittest.TestCase):
-    def test_internal_withdrawal_status_remains_a_read_only_partner_capability(self) -> None:
+    def test_internal_withdrawal_status_is_removed_from_partner_contracts(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         query_policy = QUERY_POLICY.read_text(encoding="utf-8")
         fixtures = json.loads(NATURAL_LANGUAGE_REGRESSION.read_text(encoding="utf-8"))
         catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
 
-        self.assertIn("get-internal-withdrawals", skill_text)
-        self.assertIn("query status only and never initiate a transfer", skill_text)
-        self.assertIn("get-internal-withdrawals", manifest["routing"]["operations"])
-        self.assertIn("get-internal-withdrawals", query_policy)
-        self.assertIn("get-internal-withdrawals", catalog["operations"])
-        self.assertTrue(
-            any(
-                scenario["expected"].get("operation") == "get-internal-withdrawals"
-                for scenario in fixtures["scenarios"]
-            )
-        )
+        self.assertNotIn("get-internal-withdrawals", skill_text)
+        self.assertNotIn("get-internal-withdrawals", manifest["routing"]["operations"])
+        self.assertNotIn("get-internal-withdrawals", query_policy)
+        self.assertNotIn("get-internal-withdrawals", catalog["operations"])
+        self.assertFalse(any(
+            scenario["expected"].get("operation") == "get-internal-withdrawals"
+            for scenario in fixtures["scenarios"]
+        ))
         self.assertNotIn("partner.internal-withdrawal", skill_text)
 
     def test_skill_and_indexes_require_the_official_field_catalog_for_descriptions(self) -> None:
@@ -196,10 +192,6 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             operations["get-sub-agent-stats"]["official_name_en"],
             "Get Subaffiliates Data (affiliate only)",
         )
-        self.assertEqual(
-            operations["get-internal-withdrawals"]["official_name_en"],
-            "Get Internal Withdrawal Status",
-        )
 
         direct_fields = {
             item["wire_name"]: item
@@ -221,29 +213,16 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             deal_fields["spotProDealAmountUsdtTemp"]["official_description_en"],
             "Spot trading volume (raw value returned by partner system)",
         )
-        internal_fields = {
-            item["wire_name"]: item
-            for item in operations["get-internal-withdrawals"]["response_fields"]
-        }
-        self.assertEqual(
-            internal_fields["amount"]["official_description_zh"],
-            "转账金额",
-        )
-        self.assertEqual(
-            internal_fields["createTime"]["format"],
-            "millisecond_timestamp",
-        )
-
     def test_official_bilingual_contract_matches_the_verified_full_snapshot(self) -> None:
         catalog = json.loads(FIELD_CATALOG.read_text(encoding="utf-8"))
         operations = catalog["operations"]
         self.assertEqual(
             sum(len(definition["request_fields"]) for definition in operations.values()),
-            38,
+            30,
         )
         self.assertEqual(
             sum(len(definition["response_fields"]) for definition in operations.values()),
-            77,
+            63,
         )
 
         snapshot = {}
@@ -275,7 +254,7 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
         ).encode("utf-8")
         self.assertEqual(
             hashlib.sha256(serialized).hexdigest(),
-            "6af088325b792b9a9ad72a99ae24086bc6bb4aa8c450cef9464bc18369c51d58",
+            "8ddc20ce6cbbfe5cebfbcc49e3f447238dfaeb992e6237a1eb7d1b444d4d57d9",
         )
 
     def test_natural_language_regression_fixture_is_executable_and_read_only(self) -> None:
@@ -307,7 +286,6 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             "list-referral-uids": {"saved_profile", "scope_mode"},
             "get-direct-trade-asset": {"saved_profile", "scope_mode"},
             "get-commission": {"saved_profile", "uid"},
-            "get-internal-withdrawals": {"saved_profile", "time_range"},
             "get-sub-agent-stats": {"saved_profile", "product_type"},
             "verify-referrals": {"saved_profile", "uid"},
             "get-referral-assets": {"saved_profile", "uid", "time_range"},
@@ -338,10 +316,6 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             "clarify_missing_uid": (
                 {"saved_profile"},
                 ["uid_or_explicit_all_scope"],
-            ),
-            "clarify_internal_withdrawal_time": (
-                {"saved_profile"},
-                ["time_range"],
             ),
             "clarify_sub_agent_product": (
                 {"saved_profile", "uid", "time_range"},
@@ -578,7 +552,6 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             "list-referral-uids": "referral UID list",
             "get-direct-trade-asset": "direct-user trading and funding statistics",
             "get-commission": "commission records",
-            "get-internal-withdrawals": "internal-transfer records",
             "get-sub-agent-stats": "sub-agent volume, fees, and commission",
             "verify-referrals": "direct-referral relationship verification",
             "get-referral-assets": "direct-user asset snapshots",
@@ -597,7 +570,6 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             "route_referral_uids": "`list-referral-uids`",
             "route_direct_trade_asset": "`get-direct-trade-asset`",
             "route_commission": "`get-commission`",
-            "route_internal_withdrawal_status": "`get-internal-withdrawals`",
             "route_sub_agent_stats": "`get-sub-agent-stats`",
             "route_verify_referral": "`verify-referrals`",
             "route_referral_assets": "`get-referral-assets`",

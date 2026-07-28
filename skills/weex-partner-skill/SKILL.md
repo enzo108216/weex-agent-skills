@@ -1,15 +1,15 @@
 ---
 name: weex-partner-skill
-description: Use when the user wants WEEX Partner referral, commission, referral asset, direct-user trade, internal transfer status, sub-agent, or referral relationship queries.
+description: Use when the user wants WEEX Partner referral, commission, referral asset, direct-user trade, sub-agent, or referral relationship queries.
 ---
 
 # WEEX Partner Skill
 
-Use this skill as the natural-language entry point for the eight read-only WEEX Partner query capabilities. REST access, profile resolution, Vault credentials, signing, HTTPS, exact-host enforcement, and transport remain owned by `weex-trader-skill` through `scripts/weex_partner_cli.py`.
+Use this skill as the natural-language entry point for the seven read-only WEEX Partner query capabilities. REST access, profile resolution, Vault credentials, signing, HTTPS, exact-host enforcement, and transport remain owned by `weex-trader-skill` through `scripts/weex_partner_cli.py`.
 
 ## Route First
 
-- Partner data query: use this skill and one of the eight CLI operations below.
+- Partner data query: use this skill and one of the seven CLI operations below.
 - Normal order, cancel, or conditional-order request: route to `weex-trader-skill`. A profile that can call Partner APIs can still trade normally. Preserve trader risk preview and the existing `--confirm-live` gate for live mutation.
 - PnL, fills, exposure, or account-risk analysis: route to `weex-analysis-skill` after trader collects normalized live data.
 - PnL monitoring: route to `weex-monitor-skill`, which delegates any live action to trader.
@@ -30,7 +30,6 @@ If no unique saved-profile reference exists and trader finds multiple usable pro
 - `list-referral-uids`: referral UID list.
 - `get-direct-trade-asset`: direct-user trading and funding statistics, including deposits, withdrawals, spot/futures volume, and commission.
 - `get-commission`: commission records.
-- `get-internal-withdrawals`: internal-transfer records; query status only and never initiate a transfer.
 - `get-sub-agent-stats`: sub-agent volume, fees, and commission.
 - `verify-referrals`: direct-referral relationship verification; determine only whether a UID is a direct referral of the current Partner.
 - `get-referral-assets`: direct-user asset snapshots.
@@ -40,7 +39,7 @@ When an ambiguous Chinese direct-user trading-statistics phrase does not disting
 
 Open `references/partner-query-policy.md` before constructing a request. Pass structured JSON by stdin or a non-secret request file to `scripts/weex_partner_cli.py <operation>`. Do not call Partner REST directly from this skill.
 
-Use `references/natural-language-regression.json` as the executable host-dialogue contract when adding or changing intent, clarification, or rejection wording. Route outcomes are limited to the eight operations above. Clarification and rejection fixtures must not send a Partner REST request.
+Use `references/natural-language-regression.json` as the executable host-dialogue contract when adding or changing intent, clarification, or rejection wording. Route outcomes are limited to the seven operations above. Clarification and rejection fixtures must not send a Partner REST request.
 
 ## Required Gates
 
@@ -52,7 +51,7 @@ Use `references/natural-language-regression.json` as the executable host-dialogu
 - A bounded explicit `get-commission` range longer than three calendar months is the PRD exception: query only its latest three-calendar-month segment, then offer the exact returned earlier-time action until the user's original start is reached. Commission continuation actions are closed millisecond ranges; the earlier segment ends one millisecond before the current segment starts. Do not infer an unbounded history limit; an upstream rejection stops fail-closed.
 - Test-only exception: after trader preflight or a prior response has verified the same profile as `partner_test`, pass `expected_environment=partner_test`. For `get-sub-agent-stats` only, omitted time then uses `source=partner_test_upstream_default` and sends documented null time values. Never use this exception for production or claim that it enforces a bounded time range.
 - Treat `all_confirmed` as the literal JSON boolean `true`; strings and numbers do not authorize an all-referrals query. Normalize every UID as a positive signed 64-bit decimal integer and reject comma-containing or nested values before REST execution.
-- Accept only the documented filters for the selected operation. Reject unknown filter/top-level fields and invalid language, coin, product, account-type, withdrawal-ID, or scope combinations instead of silently dropping them.
+- Accept only the documented filters for the selected operation. Reject unknown filter/top-level fields and invalid language, coin, product, or scope combinations instead of silently dropping them.
 - Default to `summary_with_first_20`. An all-referrals scope does not imply `complete_list` or `aggregate_all`: the Chinese all/every/list wording cataloged in `references/natural-language-regression.json` authorizes only `scope.mode=all`. Fetch all server pages only when the user explicitly asks for a complete list, all details, a total, or an aggregate; otherwise fetch the current server page, show at most the first 20 records, and use the returned continuation for more displayed records or the next server page.
 - Treat `complete`, `partial`, and pagination fields as authoritative. Never convert a partial aggregate into a total.
 - Reuse the returned continuation object and one exact `continuation.actions[].request_patch`; it binds the resolved profile, scope, operation, filters, result mode, contract version, and actual time range. Never reconstruct or edit those bindings from memory.
@@ -60,11 +59,11 @@ Use `references/natural-language-regression.json` as the executable host-dialogu
 - Before applying any continuation action, explain every `continuation.usage_warnings` code. The warning set is part of continuation integrity and must match the returned action types exactly. `continuation_reuse_may_repeat_or_overwrite` means the same action can repeat/overwrite perceived coverage; `offset_pagination_data_may_change` means records or totals can change between pages or after a page-1 restart.
 - Stop before another page or UID batch when any returned remaining weight bucket is lower than the endpoint weight. Preserve the rate-limit metadata and never retry automatically.
 
-The trader executor allows only eight `operation_class=read` entries. It uses the exact production default or a strictly validated saved `https://*.weex.tech` test subdomain, while rejecting the bare suffix, API base environment overrides, authenticated redirects, all Partner write endpoints, unknown endpoints, and credential disclosure. Partner query output exposes only `partner_production` or `partner_test`, never the concrete test origin. The query-only POST is not a mutation.
+The trader executor allows only seven `operation_class=read` entries. It uses the exact production default or a strictly validated saved `https://*.weex.tech` test subdomain, while rejecting the bare suffix, API base environment overrides, authenticated redirects, all Partner write endpoints, unknown endpoints, and credential disclosure. Partner query output exposes only `partner_production` or `partner_test`, never the concrete test origin. The query-only POST is not a mutation.
 
 ## Explain Results
 
-Open `references/partner-output-schema.md` and `references/partner-field-catalog.json`. The catalog is the field-name and field-meaning authority for all eight operations. For every known business value, use `official_description_zh` for Chinese output or `official_description_en` for English output, preserving the official wording verbatim, and retain the original field name. Format this as `official description (original field name)`. Never infer, shorten, or freely translate a field meaning from its spelling.
+Open `references/partner-output-schema.md` and `references/partner-field-catalog.json`. The catalog is the field-name and field-meaning authority for all seven operations. For every known business value, use `official_description_zh` for Chinese output or `official_description_en` for English output, preserving the official wording verbatim, and retain the original field name. Format this as `official description (original field name)`. Never infer, shorten, or freely translate a field meaning from its spelling.
 
 Keep official wire fields separate from declared internal aliases. `isRefferal` is the official response spelling; `is_referral` is only the normalized output name. Do not present an internal alias as an official API field.
 

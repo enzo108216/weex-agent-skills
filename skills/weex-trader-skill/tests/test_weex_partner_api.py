@@ -35,10 +35,6 @@ EXPECTED_ENDPOINTS = {
         "GET",
         "/api/v3/rebate/affiliate/getAffiliateCommission",
     ),
-    "partner.get-internal-withdrawal-status": (
-        "GET",
-        "/api/v3/rebate/affiliate/getInternalWithdrawalStatus",
-    ),
     "partner.query-sub-channel-transactions": (
         "POST",
         "/api/v3/rebate/affiliate/querySubChannelTransactions",
@@ -61,7 +57,6 @@ EXPECTED_DOC_SUFFIXES = {
     "partner.get-affiliate-uids": "GetAffiliateUIDs",
     "partner.get-channel-user-trade-and-asset": "GetChannelUserTradeAndAsset",
     "partner.get-affiliate-commission": "GetAffiliateCommission",
-    "partner.get-internal-withdrawal-status": "GetInternalWithdrawalStatus",
     "partner.query-sub-channel-transactions": "QuerySubChannelTransactions",
     "partner.verify-referrals": "VerifyReferrals",
     "partner.get-referral-assets": "GetAffiliateAssets",
@@ -92,7 +87,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         )
         return self.partner
 
-    def test_registry_contains_exactly_eight_read_operations(self) -> None:
+    def test_registry_contains_exactly_seven_read_operations(self) -> None:
         partner = self.require_partner()
         endpoints = partner.load_endpoint_map()
 
@@ -113,6 +108,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         self.assertEqual(read_post.method, "POST")
         self.assertEqual(read_post.operation_class, "read")
         all_paths = {endpoint.path for endpoint in endpoints.values()}
+        self.assertNotIn("/api/v3/rebate/affiliate/getInternalWithdrawalStatus", all_paths)
         self.assertNotIn("/api/v3/rebate/affiliate/internalWithdrawal", all_paths)
 
     def test_registry_links_each_endpoint_to_its_exact_official_document(self) -> None:
@@ -131,7 +127,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         )
         payload = json.loads(DEFINITIONS_PATH.read_text(encoding="utf-8"))
         definitions = payload["definitions"]
-        self.assertEqual(len(definitions), 8)
+        self.assertEqual(len(definitions), 7)
         self.assertTrue(all(item["operation_class"] == "read" for item in definitions))
 
     def test_partner_host_policy_accepts_only_the_exact_official_origin(self) -> None:

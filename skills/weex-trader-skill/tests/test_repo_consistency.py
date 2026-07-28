@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import io
 import json
 import re
@@ -42,6 +43,8 @@ TROUBLESHOOTING_REFERENCE = ROOT / "references" / "troubleshooting.md"
 TRADE_DATA_SCHEMA_REFERENCE = ROOT / "references" / "trade-data-schema.md"
 CONTRACT_API_DEFINITIONS_REFERENCE = ROOT / "references" / "contract-api-definitions.md"
 PARTNER_API_DEFINITIONS = ROOT / "references" / "partner-api-definitions.json"
+SPOT_API_DEFINITIONS = ROOT / "references" / "spot-api-definitions.json"
+SPOT_API_DEFINITIONS_MD = ROOT / "references" / "spot-api-definitions.md"
 CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
 TRADE_DATA_AGGREGATOR_SCRIPT = ROOT / "scripts" / "weex_trade_data_aggregator.py"
 TRADE_GUARD_SCRIPT = ROOT / "scripts" / "weex_trade_guard.py"
@@ -149,7 +152,55 @@ def extract_shell_comments(path: Path) -> list[str]:
     return comments
 
 
+def load_api_definition_generator():
+    spec = importlib.util.spec_from_file_location(
+        "generate_weex_api_definitions",
+        API_DEFINITION_GENERATOR,
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load API definition generator")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class RepoConsistencyTests(unittest.TestCase):
+    def test_internal_withdrawal_status_is_removed_and_cannot_be_regenerated(self) -> None:
+        removed_key = "spot.rebate.get_internal_withdrawal_status"
+        removed_path = "/api/v3/rebate/affiliate/getInternalWithdrawalStatus"
+        removed_doc = (
+            "https://www.weex.com/api-doc/spot/rebate-endpoints/"
+            "GetInternalWithdrawalStatus"
+        )
+        kept_doc = (
+            "https://www.weex.com/api-doc/spot/rebate-endpoints/"
+            "GetAffiliateCommission"
+        )
+        partner = json.loads(PARTNER_API_DEFINITIONS.read_text(encoding="utf-8"))
+        spot = json.loads(SPOT_API_DEFINITIONS.read_text(encoding="utf-8"))
+        spot_md = SPOT_API_DEFINITIONS_MD.read_text(encoding="utf-8")
+        spot_by_key = {item["key"]: item for item in spot["definitions"]}
+
+        self.assertNotIn(
+            "partner.get-internal-withdrawal-status",
+            {item["key"] for item in partner["definitions"]},
+        )
+        self.assertEqual(len(spot_by_key), 32)
+        self.assertNotIn(removed_key, spot_by_key)
+        self.assertNotIn(removed_path, spot_md)
+        kept_write = spot_by_key["spot.rebate.internal_withdrawal"]
+        self.assertEqual(kept_write["method"], "POST")
+        self.assertEqual(
+            kept_write["path"],
+            "/api/v3/rebate/affiliate/internalWithdrawal",
+        )
+
+        generator = load_api_definition_generator()
+        generated_urls = generator.iter_doc_urls("spot", [removed_doc, kept_doc])
+        self.assertNotIn(removed_doc, generated_urls)
+        self.assertIn(kept_doc, generated_urls)
+
     def test_partner_origin_policy_is_structured_and_documented(self) -> None:
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
