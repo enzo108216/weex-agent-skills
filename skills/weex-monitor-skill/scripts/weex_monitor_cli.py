@@ -1598,7 +1598,13 @@ def _position_snapshot_for_task(
         "liquidation_price": _snapshot_value(
             _first_present(
                 position,
-                ("liquidation_price", "liquidationPrice", "liq_price", "liqPrice"),
+                (
+                    "liquidation_price",
+                    "liquidatePrice",
+                    "liquidationPrice",
+                    "liq_price",
+                    "liqPrice",
+                ),
             ),
             language=resolved_language,
         ),
@@ -1678,16 +1684,16 @@ def _entry_price_for_position(position: dict[str, Any]) -> Any:
     if direct_value is not None:
         return direct_value
 
-    notional_value = _first_present(position, ("openValue", "notional"))
+    open_value = _first_present(position, ("open_value", "openValue"))
     quantity_value = _first_present(position, ("size", "quantity", "qty"))
     try:
-        notional = _decimal_from_any(notional_value, "position.notional")
+        opening_notional = _decimal_from_any(open_value, "position.open_value")
         quantity = _decimal_from_any(quantity_value, "position.quantity")
     except MonitorInputError:
         return None
     if quantity <= 0:
         return None
-    return str(notional / quantity)
+    return str(opening_notional / quantity)
 
 
 def _current_price_for_position(
@@ -1722,7 +1728,10 @@ def _missing_value_label(language: str = "zh") -> str:
 
 
 def _snapshot_value(value: Any, *, language: str = "zh") -> str:
-    text = "" if value is None else str(value).strip()
+    if isinstance(value, float):
+        text = format(value, ".15g")
+    else:
+        text = "" if value is None else str(value).strip()
     if text in {"", "未返回", "not returned"}:
         return _missing_value_label(language)
     return text

@@ -764,25 +764,107 @@ def _normalize_positions(
     rows = _extract_rows(payload, "positions", "items")
     if not rows and isinstance(payload, list):
         rows = [item for item in payload if isinstance(item, dict)]
-    return [
-        {
-            "account_scope": _normalize_account_scope(market, row, trading_mode=trading_mode),
-            "market": market,
-            "symbol": _normalize_symbol_for_trading_mode(_pick(row, "symbol", "instId"), trading_mode),
-            "side": str(_pick(row, "side", "positionSide") or "unknown").lower(),
-            "margin_type": _normalize_margin_type(_pick(row, "marginType", "margin_type")),
-            "position_mode": _normalize_position_mode(
-                _pick(row, "positionMode", "position_mode", "separatedMode")
-            ),
-            "quantity": _to_float(_pick(row, "size", "quantity", "qty")),
-            "notional": _to_float(_pick(row, "openValue", "value", "notional")),
-            "unrealized_pnl": _to_float(_pick(row, "unrealizePnl", "unrealizedPnl", "unrealized_pnl")),
-            "leverage": _to_float(_pick(row, "leverage")),
-            "created_time": int(_pick(row, "createdTime", "time") or 0),
-            "updated_time": int(_pick(row, "updatedTime", "updateTime") or 0),
-        }
-        for row in rows
-    ]
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        quantity = _to_float(_pick(row, "size", "quantity", "qty"))
+        side = str(_pick(row, "side", "positionSide") or "unknown").lower()
+        open_value = _to_float(_pick(row, "openValue", "open_value"))
+        unrealized_pnl = _to_float(
+            _pick(row, "unrealizePnl", "unrealizedPnl", "unrealized_pnl")
+        )
+        mark_price = _to_float(
+            _pick(
+                row,
+                "markPrice",
+                "mark_price",
+                "currentPrice",
+                "current_price",
+                "lastPrice",
+                "last_price",
+            )
+        )
+        notional = _to_float(
+            _pick(
+                row,
+                "notional",
+                "positionValue",
+                "position_value",
+                "markValue",
+                "mark_value",
+                "currentValue",
+                "current_value",
+                "value",
+            )
+        )
+        absolute_quantity = abs(quantity) if quantity is not None else None
+        entry_price = None
+        if (
+            open_value is not None
+            and absolute_quantity is not None
+            and absolute_quantity > POSITION_EPSILON
+        ):
+            entry_price = abs(open_value) / absolute_quantity
+        if notional is not None:
+            notional = abs(notional)
+        elif mark_price is not None and absolute_quantity is not None:
+            notional = absolute_quantity * abs(mark_price)
+        elif open_value is not None and unrealized_pnl is not None:
+            if side in {"long", "buy"}:
+                candidate_notional = abs(open_value) + unrealized_pnl
+            elif side in {"short", "sell"}:
+                candidate_notional = abs(open_value) - unrealized_pnl
+            else:
+                candidate_notional = None
+            if candidate_notional is not None and candidate_notional >= 0.0:
+                notional = candidate_notional
+        if mark_price is not None:
+            mark_price = abs(mark_price)
+        elif (
+            notional is not None
+            and absolute_quantity is not None
+            and absolute_quantity > POSITION_EPSILON
+        ):
+            mark_price = notional / absolute_quantity
+
+        normalized_rows.append(
+            {
+                "account_scope": _normalize_account_scope(
+                    market,
+                    row,
+                    trading_mode=trading_mode,
+                ),
+                "market": market,
+                "symbol": _normalize_symbol_for_trading_mode(
+                    _pick(row, "symbol", "instId"),
+                    trading_mode,
+                ),
+                "side": side,
+                "margin_type": _normalize_margin_type(_pick(row, "marginType", "margin_type")),
+                "position_mode": _normalize_position_mode(
+                    _pick(row, "positionMode", "position_mode", "separatedMode")
+                ),
+                "quantity": quantity,
+                "open_value": open_value,
+                "entry_price": entry_price,
+                "mark_price": mark_price,
+                "notional": notional,
+                "unrealized_pnl": unrealized_pnl,
+                "margin_size": _to_float(_pick(row, "marginSize", "margin_size")),
+                "liquidation_price": _to_float(
+                    _pick(
+                        row,
+                        "liquidatePrice",
+                        "liquidationPrice",
+                        "liquidation_price",
+                        "liqPrice",
+                    )
+                ),
+                "leverage": _to_float(_pick(row, "leverage")),
+                "created_time": int(_pick(row, "createdTime", "time") or 0),
+                "updated_time": int(_pick(row, "updatedTime", "updateTime") or 0),
+            }
+        )
+    return normalized_rows
 
 
 def _normalize_orders(
@@ -1147,12 +1229,35 @@ def _estimate_futures_position_price(
     for row in positions:
         if str(row.get("symbol") or "").strip().upper() != normalized_symbol:
             continue
+        mark_price = abs(_to_float(row.get("mark_price")) or 0.0)
+        if mark_price > 0.0:
+            return mark_price
         quantity = abs(_to_float(row.get("quantity")) or 0.0)
         notional = abs(_to_float(row.get("notional")) or 0.0)
         if quantity <= POSITION_EPSILON or notional <= 0.0:
             continue
         return notional / quantity
     return None
+
+
+def _apply_futures_position_price(
+    *,
+    positions: list[dict[str, Any]],
+    symbol: str | None,
+    current_price: float | None,
+) -> None:
+    normalized_symbol = str(symbol or "").strip().upper()
+    price = abs(_to_float(current_price) or 0.0)
+    if not normalized_symbol or price <= 0.0:
+        return
+    for row in positions:
+        if str(row.get("symbol") or "").strip().upper() != normalized_symbol:
+            continue
+        quantity = abs(_to_float(row.get("quantity")) or 0.0)
+        if quantity <= POSITION_EPSILON:
+            continue
+        row["mark_price"] = price
+        row["notional"] = quantity * price
 
 
 def _mark_market_snapshot_estimated(
@@ -1177,7 +1282,11 @@ def _pick_primary_futures_symbol(
     if positions:
         primary_position = max(
             positions,
-            key=lambda row: abs(_to_float(row.get("notional")) or 0.0),
+            key=lambda row: abs(
+                _to_float(row.get("notional"))
+                or _to_float(row.get("open_value"))
+                or 0.0
+            ),
         )
         symbol = str(primary_position.get("symbol") or "").strip().upper()
         if symbol:
@@ -1791,6 +1900,14 @@ class TradeDataAggregator:
                             market="futures",
                             reason="futures_market_snapshot_estimated_from_position",
                         )
+                if current_price is None:
+                    partial = True
+                else:
+                    _apply_futures_position_price(
+                        positions=positions,
+                        symbol=symbol,
+                        current_price=current_price,
+                    )
         else:
             balances, spot_balance_partial = self._collect_spot_balances(
                 profile_name=profile_name,
@@ -1983,6 +2100,14 @@ class TradeDataAggregator:
                             market="futures",
                             reason="futures_market_snapshot_estimated_from_position",
                         )
+                if current_price is None:
+                    partial = True
+                else:
+                    _apply_futures_position_price(
+                        positions=positions,
+                        symbol=market_snapshot_symbol,
+                        current_price=current_price,
+                    )
         else:
             balances, spot_balance_partial = self._collect_spot_balances(
                 profile_name=profile_name,
@@ -2274,6 +2399,12 @@ class WeexApiFetcher:
     ) -> Any:
         mode = _normalize_trading_mode(trading_mode)
         endpoint_key = "sim.transaction.get_order_history" if mode == "demo" else "transaction.get_order_history"
+        normalized_symbol = str(symbol or "").strip().upper() or None
+        upstream_symbol = normalized_symbol
+        local_demo_symbol = None
+        if mode == "demo" and normalized_symbol and not normalized_symbol.endswith("SUSDT"):
+            upstream_symbol = None
+            local_demo_symbol = normalized_symbol
         rows: list[dict[str, Any]] = []
         for window in split_time_range(start_ms, end_ms, max_span_days=MAX_FUTURES_WINDOW_DAYS):
             page = 0
@@ -2284,8 +2415,8 @@ class WeexApiFetcher:
                     "limit": FUTURES_ORDER_LIMIT,
                     "page": page,
                 }
-                if symbol:
-                    query["symbol"] = symbol
+                if upstream_symbol:
+                    query["symbol"] = upstream_symbol
                 kwargs: dict[str, Any] = {
                     "profile_name": profile_name,
                     "endpoint_key": endpoint_key,
@@ -2305,6 +2436,13 @@ class WeexApiFetcher:
                 if len(page_rows) < FUTURES_ORDER_LIMIT:
                     break
                 page += 1
+        if local_demo_symbol:
+            rows = [
+                row
+                for row in rows
+                if _normalize_demo_symbol_for_display(_pick(row, "symbol", "instId"))
+                == local_demo_symbol
+            ]
         return rows
 
     def fetch_futures_fills(
@@ -2610,15 +2748,17 @@ class WeexApiFetcher:
 
         def collect_window(window_start: int, window_end: int) -> None:
             nonlocal partial
+            body: dict[str, Any] = {
+                "before": window_end + 1,
+                "limit": SPOT_BILL_LIMIT,
+            }
+            if window_start > 0:
+                body["after"] = window_start - 1
             payload = self._send_spot_request(
                 profile_name=profile_name,
                 endpoint_key="spot.account.get_bill_records",
                 query={},
-                body={
-                    "after": window_start,
-                    "before": window_end,
-                    "limit": SPOT_BILL_LIMIT,
-                },
+                body=body,
             )
             page_rows = _extract_list_payload(payload, "items", "bills")
             if len(page_rows) >= SPOT_BILL_LIMIT and (window_end - window_start) > MIN_SPLIT_WINDOW_MS:

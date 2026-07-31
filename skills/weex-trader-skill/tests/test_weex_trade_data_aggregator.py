@@ -148,6 +148,62 @@ class ReplayCollectionTests(unittest.TestCase):
         self.assertEqual(result["price_series"][0]["close"], 65000.0)
         self.assertEqual(result["price_series"][0]["symbol"], "BTCUSDT")
 
+    def test_normalize_positions_preserves_open_and_current_value_semantics(self) -> None:
+        positions = aggregator._normalize_positions(
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "size": "0.020000",
+                    "openValue": "1801.0670000",
+                    "unrealizePnl": "-85.5690000",
+                    "marginSize": "90.05335",
+                    "liquidatePrice": "0",
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "side": "SHORT",
+                    "size": "0.5",
+                    "openValue": "1500",
+                    "unrealizePnl": "100",
+                    "marginSize": "150",
+                    "liquidatePrice": "4200",
+                },
+            ],
+            "futures",
+        )
+
+        long_position, short_position = positions
+        self.assertEqual(long_position["open_value"], 1801.067)
+        self.assertAlmostEqual(long_position["entry_price"], 90053.35)
+        self.assertAlmostEqual(long_position["notional"], 1715.498)
+        self.assertAlmostEqual(long_position["mark_price"], 85774.9)
+        self.assertEqual(long_position["margin_size"], 90.05335)
+        self.assertEqual(long_position["liquidation_price"], 0.0)
+        self.assertEqual(short_position["open_value"], 1500.0)
+        self.assertEqual(short_position["entry_price"], 3000.0)
+        self.assertEqual(short_position["notional"], 1400.0)
+        self.assertEqual(short_position["mark_price"], 2800.0)
+        self.assertEqual(short_position["liquidation_price"], 4200.0)
+
+    def test_normalize_positions_keeps_current_value_unknown_without_current_evidence(self) -> None:
+        position = aggregator._normalize_positions(
+            [
+                {
+                    "symbol": "GOMININGUSDT",
+                    "side": "LONG",
+                    "size": "460",
+                    "openValue": "152.4",
+                }
+            ],
+            "futures",
+        )[0]
+
+        self.assertEqual(position["open_value"], 152.4)
+        self.assertAlmostEqual(position["entry_price"], 152.4 / 460.0)
+        self.assertIsNone(position["notional"])
+        self.assertIsNone(position["mark_price"])
+
     def test_collect_replay_payload_marks_demo_futures_as_partial_without_live_fallback(self) -> None:
         fetcher = mock.Mock()
         fetcher.fetch_futures_balance.return_value = {
@@ -1171,6 +1227,7 @@ class ReplayCollectionTests(unittest.TestCase):
         )
 
         self.assertIsNone(result["market_snapshot"]["current_price"])
+        self.assertTrue(result["partial"])
         self.assertIn("futures_market_snapshot_unavailable", result["degraded_reasons"])
 
     def test_collect_order_risk_payload_estimates_spot_equity_and_uses_latest_price(self) -> None:
@@ -1349,10 +1406,13 @@ class ReplayCollectionTests(unittest.TestCase):
 
         self.assertIsNone(result["symbol"])
         self.assertEqual(result["market_snapshot"]["current_price"], 3150.0)
+        eth_position = next(row for row in result["positions"] if row["symbol"] == "ETHUSDT")
+        self.assertEqual(eth_position["mark_price"], 3150.0)
+        self.assertEqual(eth_position["notional"], 1575.0)
         self.assertEqual(result["positions"][0]["unrealized_pnl"], 51.2)
         fetcher.fetch_futures_latest_price.assert_called_once_with(symbol="ETHUSDT")
 
-    def test_collect_account_risk_payload_estimates_price_from_position_when_market_lookup_fails(self) -> None:
+    def test_collect_account_risk_payload_does_not_use_open_value_when_market_lookup_fails(self) -> None:
         fetcher = mock.Mock()
         fetcher.fetch_futures_balance.return_value = {
             "asset": "USDT",
@@ -1385,7 +1445,47 @@ class ReplayCollectionTests(unittest.TestCase):
             symbol=None,
         )
 
-        self.assertAlmostEqual(result["market_snapshot"]["current_price"], 152.4 / 460.0)
+        self.assertIsNone(result["market_snapshot"]["current_price"])
+        self.assertTrue(result["partial"])
+        self.assertNotIn("futures_market_snapshot_estimated_from_position", result["degraded_reasons"])
+        self.assertIn("futures_market_snapshot_unavailable", result["degraded_reasons"])
+
+    def test_collect_account_risk_payload_estimates_current_price_from_position_pnl(self) -> None:
+        fetcher = mock.Mock()
+        fetcher.fetch_futures_balance.return_value = {
+            "asset": "USDT",
+            "balance": "1000",
+            "availableBalance": "500",
+        }
+        fetcher.fetch_futures_positions.return_value = [
+            {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "size": "0.02",
+                "openValue": "1801.067",
+                "unrealizePnl": "-85.569",
+                "leverage": "20",
+            }
+        ]
+        fetcher.fetch_futures_orders.return_value = []
+        fetcher.fetch_futures_open_orders.return_value = []
+        fetcher.fetch_futures_pending_orders.return_value = []
+        fetcher.fetch_futures_latest_price.side_effect = aggregator.AggregationInputError(
+            "latest price unavailable"
+        )
+        fetcher.fetch_futures_klines.side_effect = aggregator.AggregationInputError(
+            "kline price unavailable"
+        )
+        trade_aggregator = aggregator.TradeDataAggregator(fetcher=fetcher)
+
+        result = trade_aggregator.collect_account_risk_payload(
+            profile_name="demo",
+            market="futures",
+            symbol="BTCUSDT",
+        )
+
+        self.assertAlmostEqual(result["market_snapshot"]["current_price"], 85774.9)
+        self.assertAlmostEqual(result["positions"][0]["notional"], 1715.498)
         self.assertIn("futures_market_snapshot_estimated_from_position", result["degraded_reasons"])
         self.assertNotIn("futures_market_snapshot_unavailable", result["degraded_reasons"])
 
@@ -1588,10 +1688,64 @@ class ReplayCollectionTests(unittest.TestCase):
         self.assertEqual(payload, [])
         self.assertGreater(len(bodies), 1)
         for body in bodies:
+            exclusive_after = int(body.get("after", -1))
             self.assertLessEqual(
-                int(body["before"]) - int(body["after"]),
-                (90 * aggregator.DAY_MS) - 1,
+                int(body["before"]) - exclusive_after,
+                (90 * aggregator.DAY_MS) + 1,
             )
+
+    def test_fetch_spot_bills_maps_closed_windows_to_gapless_strict_bounds(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        bodies: list[dict[str, object]] = []
+        full_page = [
+            {"billId": str(index), "cTime": str(1000 + index)}
+            for index in range(aggregator.SPOT_BILL_LIMIT)
+        ]
+
+        def fake_send_spot_request(
+            *,
+            profile_name: str,
+            endpoint_key: str,
+            query: dict[str, object],
+            body: dict[str, object] | None = None,
+            **_: object,
+        ) -> dict[str, object]:
+            self.assertEqual(profile_name, "demo")
+            self.assertEqual(endpoint_key, "spot.account.get_bill_records")
+            self.assertEqual(query, {})
+            bodies.append(dict(body or {}))
+            return {"items": full_page if len(bodies) == 1 else []}
+
+        with mock.patch.object(fetcher, "_send_spot_request", side_effect=fake_send_spot_request):
+            fetcher.fetch_spot_bills(
+                profile_name="demo",
+                start_ms=1000,
+                end_ms=7_201_000,
+                symbol=None,
+            )
+
+        self.assertEqual(
+            [(body["after"], body["before"]) for body in bodies],
+            [
+                (999, 7_201_001),
+                (999, 3_601_001),
+                (3_601_000, 7_201_001),
+            ],
+        )
+
+    def test_fetch_spot_bills_omits_negative_after_at_epoch_start(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        with mock.patch.object(fetcher, "_send_spot_request", return_value={"items": []}) as send_mock:
+            fetcher.fetch_spot_bills(
+                profile_name="demo",
+                start_ms=0,
+                end_ms=1000,
+                symbol=None,
+            )
+
+        body = send_mock.call_args.kwargs["body"]
+        self.assertNotIn("after", body)
+        self.assertEqual(body["before"], 1001)
 
 
 class ProfileCollectionTests(unittest.TestCase):
@@ -2056,6 +2210,39 @@ class ApiFetcherTests(unittest.TestCase):
             endpoint_key="sim.transaction.get_order_history",
             query={
                 "symbol": "BTCSUSDT",
+                "startTime": 10,
+                "endTime": 20,
+                "limit": 1000,
+                "page": 0,
+            },
+            trading_mode="demo",
+        )
+
+    def test_fetch_futures_orders_omits_normal_symbol_for_demo_and_filters_locally(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        upstream_rows = [
+            {"orderId": 1, "symbol": "BTCSUSDT"},
+            {"orderId": 2, "symbol": "ETHSUSDT"},
+        ]
+
+        with mock.patch.object(
+            fetcher,
+            "_send_contract_request",
+            return_value=upstream_rows,
+        ) as send_mock:
+            payload = fetcher.fetch_futures_orders(
+                profile_name="demo",
+                trading_mode="demo",
+                start_ms=10,
+                end_ms=20,
+                symbol="BTCUSDT",
+            )
+
+        self.assertEqual(payload, [{"orderId": 1, "symbol": "BTCSUSDT"}])
+        send_mock.assert_called_once_with(
+            profile_name="demo",
+            endpoint_key="sim.transaction.get_order_history",
+            query={
                 "startTime": 10,
                 "endTime": 20,
                 "limit": 1000,
