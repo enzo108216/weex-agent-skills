@@ -169,7 +169,7 @@ python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"limit":50}' --pretty
 ```
 
-For raw contract calls, `--profile is a global argument`; place it before `call`, then use `--endpoint <key>` for the official endpoint key. Some official query endpoints use POST and are therefore protected as mutating by the local guard even when the business action is a query; preview the request with `--dry-run` first, then pass the matching confirmation flag only when you intentionally want to send that POST request.
+For raw contract calls, `--profile is a global argument`; place it before `call`, then use `--endpoint <key>` for the official endpoint key. The client uses each endpoint's generated `request_transport` and rejects query fields sent in a documented JSON body or body fields sent in a documented query. `USER_DATA` POST endpoints are read-only queries and do not require a trade confirmation flag; `TRADE` endpoints still require the matching live or demo confirmation flag.
 
 For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 

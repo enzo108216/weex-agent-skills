@@ -77,6 +77,8 @@ Total endpoints: **47**
 - Path: `/capi/v3/account/positionMargin`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `15`
 - Source: https://www.weex.com/api-doc/contract/Account_API/AdjustPositionMarginTRADE
@@ -103,6 +105,8 @@ Total endpoints: **47**
 - Path: `/capi/v3/account/marginType`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `20`
 - Source: https://www.weex.com/api-doc/contract/Account_API/ChangeMarginModeTRADE
@@ -129,6 +133,8 @@ Total endpoints: **47**
 - Path: `/capi/v3/account/balance`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetAccountBalance
@@ -155,6 +161,8 @@ NONE
 - Path: `/capi/v3/account/accountConfig`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetAccountConfig
@@ -181,6 +189,8 @@ NONE
 - Path: `/capi/v3/account/position/allPosition`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetAllPositions
@@ -231,6 +241,8 @@ NONE
 - Path: `/capi/v3/account/commissionRate`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetCommissionRate
@@ -255,6 +267,8 @@ NONE
 - Path: `/capi/v3/account/income`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetContractBills
@@ -297,6 +311,8 @@ NONE
 - Path: `/capi/v3/account/position/singlePosition`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetSinglePosition
@@ -311,7 +327,35 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Equivalent to Get All Positions . |
+| `id` | `Long` | Position ID |
+| `asset` | `String` | Associated collateral asset |
+| `symbol` | `String` | Trading pair |
+| `side` | `String` | Position direction such as LONG or SHORT |
+| `marginType` | `String` | Margin mode of current position CROSSED: Cross Mode ISOLATED: Isolated Mode |
+| `separatedMode` | `String` | Current position's separated mode COMBINED: Combined mode SEPARATED: Separated mode |
+| `separatedOpenOrderId` | `Long` | Opening order ID of separated position |
+| `leverage` | `String` | Position leverage |
+| `size` | `String` | Current position size |
+| `openValue` | `String` | Initial value at position opening |
+| `openFee` | `String` | Opening fee |
+| `fundingFee` | `String` | Funding fee |
+| `marginSize` | `String` | Margin amount (margin coin) |
+| `isolatedMargin` | `String` | Isolated margin |
+| `isAutoAppendIsolatedMargin` | `Boolean` | Whether the auto-adding of funds for the isolated margin is enabled (only for isolated mode) |
+| `cumOpenSize` | `String` | Accumulated opened positions |
+| `cumOpenValue` | `String` | Accumulated value of opened positions |
+| `cumOpenFee` | `String` | Accumulated fees paid for opened positions |
+| `cumCloseSize` | `String` | Accumulated closed positions |
+| `cumCloseValue` | `String` | Accumulated value of closed positions |
+| `cumCloseFee` | `String` | Accumulated fees paid for closing positions |
+| `cumFundingFee` | `String` | Accumulated settled funding fees |
+| `cumLiquidateFee` | `String` | Accumulated liquidation fees |
+| `createdMatchSequenceId` | `Long` | Matching engine sequence ID at creation |
+| `updatedMatchSequenceId` | `Long` | Matching engine sequence ID at last update |
+| `createdTime` | `Long` | Creation time Unix millisecond timestamp |
+| `updatedTime` | `Long` | Update time Unix millisecond timestamp |
+| `unrealizePnl` | `String` | Unrealized PnL |
+| `liquidatePrice` | `String` | Estimated liquidation price If the value = 0, it means the position is at low risk and there is no liquidation price at this time |
 
 ## account.get_symbol_config — Get Symbol Configuration (USER_DATA)
 
@@ -319,6 +363,8 @@ NONE
 - Path: `/capi/v3/account/symbolConfig`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Account_API/GetSymbolConfig
@@ -346,6 +392,8 @@ NONE
 - Path: `/capi/v3/account/modifyAutoAppendMargin`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `15`
 - Source: https://www.weex.com/api-doc/contract/Account_API/ModifyAutoAppendMarginTRADE
@@ -371,6 +419,8 @@ NONE
 - Path: `/capi/v3/account/leverage`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/contract/Account_API/UpdateLeverageTRADE
@@ -405,6 +455,8 @@ NONE
 - Path: `/capi/v3/market/apiTradingSymbols`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetApiTradingSymbols
 - Request Constraints:
@@ -418,7 +470,7 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | Returns an array containing all trading pairs that are currently eligible for API futures trading. |
+| `symbols[]` | `Array<String>` | Raw response is an array of futures symbols available for API trading. |
 
 ## market.get_book_ticker — Get Best Bid/Ask
 
@@ -426,6 +478,8 @@ NONE
 - Path: `/capi/v3/market/ticker/bookTicker`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetBookTicker
 
@@ -452,6 +506,8 @@ NONE
 - Path: `/capi/v3/market/exchangeInfo`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetContractInfo
 
@@ -503,6 +559,8 @@ NONE
 - Path: `/capi/v3/market/premiumIndex`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetCurrentFundingRate
 
@@ -532,6 +590,8 @@ NONE
 - Path: `/capi/v3/market/depth`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetDepthData
 
@@ -556,6 +616,8 @@ NONE
 - Path: `/capi/v3/market/fundingRate`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetFundingRateHistory
 - Request Constraints:
@@ -585,6 +647,8 @@ NONE
 - Path: `/capi/v3/market/historyKlines`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetHistoryKlines
 
@@ -603,7 +667,17 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Same structure as Get Kline Data . |
+| `index[0]` | `Long` | Open time Unix millisecond timestamp |
+| `index[1]` | `String` | Open price |
+| `index[2]` | `String` | High price |
+| `index[3]` | `String` | Low price |
+| `index[4]` | `String` | Close price |
+| `index[5]` | `String` | Volume (base asset) |
+| `index[6]` | `Long` | Close time Unix millisecond timestamp |
+| `index[7]` | `String` | Quote volume (quote asset) |
+| `index[8]` | `Long` | Number of trades |
+| `index[9]` | `String` | Taker buy volume (base asset) |
+| `index[10]` | `String` | Taker buy volume (quote asset) |
 
 ## market.get_index_price_klines — Get Index Price Klines
 
@@ -611,6 +685,8 @@ NONE
 - Path: `/capi/v3/market/indexPriceKlines`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetIndexPriceKlines
 
@@ -626,7 +702,17 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Same structure as Get Kline Data , with prices derived from the index price feed. |
+| `index[0]` | `Long` | Open time Unix millisecond timestamp |
+| `index[1]` | `String` | Open price |
+| `index[2]` | `String` | High price |
+| `index[3]` | `String` | Low price |
+| `index[4]` | `String` | Close price |
+| `index[5]` | `String` | Volume (base asset) |
+| `index[6]` | `Long` | Close time Unix millisecond timestamp |
+| `index[7]` | `String` | Quote volume (quote asset) |
+| `index[8]` | `Long` | Number of trades |
+| `index[9]` | `String` | Taker buy volume (base asset) |
+| `index[10]` | `String` | Taker buy volume (quote asset) |
 
 ## market.get_klines — Get Kline Data
 
@@ -634,6 +720,8 @@ NONE
 - Path: `/capi/v3/market/klines`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetKlines
 
@@ -667,6 +755,8 @@ NONE
 - Path: `/capi/v3/market/markPriceKlines`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetMarkPriceKlines
 
@@ -682,7 +772,17 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Identical to Get Kline Data , with prices taken from the mark price feed. |
+| `index[0]` | `Long` | Open time Unix millisecond timestamp |
+| `index[1]` | `String` | Open price |
+| `index[2]` | `String` | High price |
+| `index[3]` | `String` | Low price |
+| `index[4]` | `String` | Close price |
+| `index[5]` | `String` | Volume (base asset) |
+| `index[6]` | `Long` | Close time Unix millisecond timestamp |
+| `index[7]` | `String` | Quote volume (quote asset) |
+| `index[8]` | `Long` | Number of trades |
+| `index[9]` | `String` | Taker buy volume (base asset) |
+| `index[10]` | `String` | Taker buy volume (quote asset) |
 
 ## market.get_open_interest — Get Open Interest
 
@@ -690,6 +790,8 @@ NONE
 - Path: `/capi/v3/market/openInterest`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetOpenInterest
 
@@ -713,6 +815,8 @@ NONE
 - Path: `/capi/v3/market/trades`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetRecentTrades
 
@@ -741,6 +845,8 @@ NONE
 - Path: `/capi/v3/market/time`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetServerTime
 - Request Constraints:
@@ -762,6 +868,8 @@ NONE
 - Path: `/capi/v3/market/symbolPrice`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetSymbolPrice
 
@@ -786,6 +894,8 @@ NONE
 - Path: `/capi/v3/market/ticker/24hr`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `40`
 - Source: https://www.weex.com/api-doc/contract/Market_API/GetTicker24h
 
@@ -821,6 +931,8 @@ NONE
 - Path: `/capi/v3/sim/balance`
 - Category: `sim`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/demo/GetAccountBalance
@@ -847,6 +959,8 @@ NONE
 - Path: `/capi/v3/sim/position/allPosition`
 - Category: `sim`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/contract/demo/GetAllPositions
@@ -897,6 +1011,8 @@ NONE
 - Path: `/capi/v3/sim/order/history`
 - Category: `sim`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/contract/demo/GetOrderHistory
@@ -915,7 +1031,24 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | Returns an array of objects identical to Get Order Info . |
+| `avgPrice` | `String` | Average fill price. |
+| `clientOrderId` | `String` | Client-defined order ID. |
+| `cumQuote` | `String` | Cumulative filled amount in the quote asset. |
+| `executedQty` | `String` | Filled quantity in the base asset. |
+| `orderId` | `Long` | System order ID. |
+| `origQty` | `String` | Original order quantity. |
+| `price` | `String` | Order price. |
+| `reduceOnly` | `Boolean` | Whether the order can only reduce positions. |
+| `side` | `String` | Order side. See Order Side for possible values. |
+| `positionSide` | `String` | Position side. See Position Mode . |
+| `status` | `String` | Order status. See Order Status . |
+| `stopPrice` | `String` | Stop price / trigger price (if applicable). |
+| `symbol` | `String` | Trading pair. |
+| `time` | `Long` | Order creation time (ms). |
+| `timeInForce` | `String` | Time-in-force policy. See Time in Force . |
+| `type` | `String` | Order type. See Order Type . |
+| `updateTime` | `Long` | Last update time (ms). |
+| `workingType` | `String` | Trigger price type. See Trigger Price Type . |
 
 ## sim.transaction.place_order — Place Order Demo (TRADE)
 
@@ -923,6 +1056,8 @@ NONE
 - Path: `/capi/v3/sim/order`
 - Category: `sim`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=1, X-ORDER-COUNT-1M=1, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/contract/demo/PlaceOrder
@@ -962,6 +1097,8 @@ NONE
 - Path: `/capi/v3/allOpenOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `TRADE`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/CancelAllOrders
@@ -987,6 +1124,8 @@ NONE
 - Path: `/capi/v3/algoOpenOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `TRADE`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/CancelAllPendingOrders
@@ -1012,6 +1151,8 @@ NONE
 - Path: `/capi/v3/order`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/CancelOrder
@@ -1039,6 +1180,8 @@ NONE
 - Path: `/capi/v3/batchOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `array`
 - Permission: `TRADE`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/CancelOrdersBatch
@@ -1054,7 +1197,11 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | Returns an array of objects that follow the schema described in Cancel Order (TRADE) . |
+| `orderId` | `String` | Cancelled order ID. |
+| `origClientOrderId` | `String` | Client order ID (if provided). |
+| `success` | `Boolean` | Whether the cancel request succeeded. |
+| `errorCode` | `String` | Error code when success = false . |
+| `errorMessage` | `String` | Error description when success = false . |
 
 ## transaction.cancel_pending_order — Cancel Conditional Order (TRADE)
 
@@ -1062,6 +1209,8 @@ NONE
 - Path: `/capi/v3/algoOrder`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/CancelPendingOrder
@@ -1076,7 +1225,11 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Identical to the schema described in Cancel Order (TRADE) . |
+| `orderId` | `String` | Cancelled order ID. |
+| `origClientOrderId` | `String` | Client order ID (if provided). |
+| `success` | `Boolean` | Whether the cancel request succeeded. |
+| `errorCode` | `String` | Error code when success = false . |
+| `errorMessage` | `String` | Error description when success = false . |
 
 ## transaction.close_positions — Close Positions (TRADE)
 
@@ -1084,6 +1237,8 @@ NONE
 - Path: `/capi/v3/closePositions`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `array`
 - Permission: `TRADE`
 - Weight(IP): `40`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/ClosePositions
@@ -1116,6 +1271,8 @@ NONE
 - Path: `/capi/v3/openOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/GetCurrentOrderStatus
@@ -1135,7 +1292,24 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | Returns an array of objects identical to Get Order Info . |
+| `avgPrice` | `String` | Average fill price. |
+| `clientOrderId` | `String` | Client-defined order ID. |
+| `cumQuote` | `String` | Cumulative filled amount in the quote asset. |
+| `executedQty` | `String` | Filled quantity in the base asset. |
+| `orderId` | `Long` | System order ID. |
+| `origQty` | `String` | Original order quantity. |
+| `price` | `String` | Order price. |
+| `reduceOnly` | `Boolean` | Whether the order can only reduce positions. |
+| `side` | `String` | Order side. See Order Side for possible values. |
+| `positionSide` | `String` | Position side. See Position Mode . |
+| `status` | `String` | Order status. See Order Status . |
+| `stopPrice` | `String` | Stop price / trigger price (if applicable). |
+| `symbol` | `String` | Trading pair. |
+| `time` | `Long` | Order creation time (ms). |
+| `timeInForce` | `String` | Time-in-force policy. See Time in Force . |
+| `type` | `String` | Order type. See Order Type . |
+| `updateTime` | `Long` | Last update time (ms). |
+| `workingType` | `String` | Trigger price type. See Trigger Price Type . |
 
 ## transaction.get_current_pending_orders — Get Current Conditional Orders (USER_DATA)
 
@@ -1143,6 +1317,8 @@ NONE
 - Path: `/capi/v3/openAlgoOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `3`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/GetCurrentPendingOrders
@@ -1193,6 +1369,8 @@ NONE
 - Path: `/capi/v3/allAlgoOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/GetHistoricalPendingOrders
@@ -1219,6 +1397,8 @@ NONE
 - Path: `/capi/v3/order/history`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/GetOrderHistory
@@ -1237,7 +1417,24 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | Returns an array of objects identical to Get Order Info . |
+| `avgPrice` | `String` | Average fill price. |
+| `clientOrderId` | `String` | Client-defined order ID. |
+| `cumQuote` | `String` | Cumulative filled amount in the quote asset. |
+| `executedQty` | `String` | Filled quantity in the base asset. |
+| `orderId` | `Long` | System order ID. |
+| `origQty` | `String` | Original order quantity. |
+| `price` | `String` | Order price. |
+| `reduceOnly` | `Boolean` | Whether the order can only reduce positions. |
+| `side` | `String` | Order side. See Order Side for possible values. |
+| `positionSide` | `String` | Position side. See Position Mode . |
+| `status` | `String` | Order status. See Order Status . |
+| `stopPrice` | `String` | Stop price / trigger price (if applicable). |
+| `symbol` | `String` | Trading pair. |
+| `time` | `Long` | Order creation time (ms). |
+| `timeInForce` | `String` | Time-in-force policy. See Time in Force . |
+| `type` | `String` | Order type. See Order Type . |
+| `updateTime` | `Long` | Last update time (ms). |
+| `workingType` | `String` | Trigger price type. See Trigger Price Type . |
 
 ## transaction.get_single_order_info — Get Order Info (USER_DATA)
 
@@ -1245,6 +1442,8 @@ NONE
 - Path: `/capi/v3/order`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/GetSingleOrderInfo
@@ -1284,6 +1483,8 @@ NONE
 - Path: `/capi/v3/userTrades`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/GetTradeDetails
@@ -1327,6 +1528,8 @@ NONE
 - Path: `/capi/v3/modifyTpSlOrder`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=1, X-ORDER-COUNT-1M=1, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/ModifyTpSlOrder
@@ -1352,6 +1555,8 @@ NONE
 - Path: `/capi/v3/order`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=1, X-ORDER-COUNT-1M=1, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/PlaceOrder
@@ -1389,6 +1594,8 @@ NONE
 - Path: `/capi/v3/batchOrders`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `array`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=5, X-ORDER-COUNT-1M=5, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/PlaceOrdersBatch
@@ -1403,7 +1610,11 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | A JSON array where each element matches the response schema of Place Order (TRADE) . |
+| `orderId` | `String` | Order ID assigned by the system. |
+| `clientOrderId` | `String` | Echo of newClientOrderId . |
+| `success` | `Boolean` | Whether the order request was accepted. |
+| `errorCode` | `String` | Error code when success = false ; otherwise empty. |
+| `errorMessage` | `String` | Error message when success = false ; otherwise empty. |
 
 ## transaction.place_pending_order — Place Conditional Order (TRADE)
 
@@ -1411,6 +1622,8 @@ NONE
 - Path: `/capi/v3/algoOrder`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=1, X-ORDER-COUNT-1M=1, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/PlacePendingOrder
@@ -1436,7 +1649,11 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Identical to the schema described in Place Order (TRADE) . |
+| `orderId` | `String` | Order ID assigned by the system. |
+| `clientOrderId` | `String` | Echo of newClientOrderId . |
+| `success` | `Boolean` | Whether the order request was accepted. |
+| `errorCode` | `String` | Error code when success = false ; otherwise empty. |
+| `errorMessage` | `String` | Error message when success = false ; otherwise empty. |
 
 ## transaction.place_tp_sl_order — Place TP/SL Conditional Orders (TRADE)
 
@@ -1444,6 +1661,8 @@ NONE
 - Path: `/capi/v3/placeTpSlOrder`
 - Category: `transaction`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `array`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=1, X-ORDER-COUNT-1M=1, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/contract/Transaction_API/PlaceTpSlOrder

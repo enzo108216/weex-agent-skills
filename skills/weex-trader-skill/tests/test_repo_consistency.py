@@ -166,6 +166,27 @@ def load_api_definition_generator():
 
 
 class RepoConsistencyTests(unittest.TestCase):
+    def test_skill_frontmatter_is_portable_and_monitor_description_is_trigger_only(self) -> None:
+        analysis_skill = REPO_ROOT / "skills" / "weex-analysis-skill" / "SKILL.md"
+        monitor_skill = REPO_ROOT / "skills" / "weex-monitor-skill" / "SKILL.md"
+
+        for path in (SKILL, analysis_skill):
+            with self.subTest(path=path.as_posix()):
+                frontmatter = path.read_text(encoding="utf-8").split("---", 2)[1]
+                self.assertNotIn("metadata:", frontmatter)
+                self.assertNotIn("local-path", frontmatter)
+                self.assertNotIn("/var/folders/", frontmatter)
+
+        monitor_frontmatter = monitor_skill.read_text(encoding="utf-8").split("---", 2)[1]
+        description = next(
+            line.removeprefix("description:").strip()
+            for line in monitor_frontmatter.splitlines()
+            if line.startswith("description:")
+        )
+        self.assertTrue(description.startswith("Use when "))
+        for workflow_word in ("drafts", "confirms", "stores", "evaluates", "runs", "reports"):
+            self.assertNotIn(workflow_word, description)
+
     def test_internal_withdrawal_status_is_removed_and_cannot_be_regenerated(self) -> None:
         removed_key = "spot.rebate.get_internal_withdrawal_status"
         removed_path = "/api/v3/rebate/affiliate/getInternalWithdrawalStatus"
@@ -409,14 +430,15 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn(expected, PROFILE_ONBOARDING_REFERENCE.read_text(encoding="utf-8"))
         self.assertIn(expected, LINUX_VAULT_REFERENCE.read_text(encoding="utf-8"))
 
-    def test_script_operations_documents_raw_call_argument_order_and_post_query_guard(self) -> None:
+    def test_script_operations_documents_raw_call_argument_order_and_transport_guard(self) -> None:
         text = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
 
         self.assertIn("--profile is a global argument", text)
         self.assertIn("place it before `call`", text)
         self.assertIn("use `--endpoint <key>`", text)
-        self.assertIn("Some official query endpoints use POST", text)
-        self.assertIn("protected as mutating by the local guard", text)
+        self.assertIn("generated `request_transport`", text)
+        self.assertIn("`USER_DATA` POST endpoints are read-only", text)
+        self.assertIn("`TRADE` endpoints", text)
 
     def test_tp_sl_full_position_quantity_semantics_are_documented(self) -> None:
         for path in (SKILL, README):

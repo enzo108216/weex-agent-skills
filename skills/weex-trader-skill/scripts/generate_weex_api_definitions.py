@@ -69,6 +69,10 @@ class ParsedDoc:
     request_params: List[Dict[str, str]]
     response_params: List[Dict[str, str]]
     constraints: List[str]
+    request_transport: str
+    query_fields: List[str]
+    body_fields: List[str]
+    response_container: str
     permission: Optional[str] = None
 
 
@@ -282,6 +286,84 @@ def _extract_sections(markdown: Tag) -> tuple[List[Dict[str, str]], List[Dict[st
     return request_params, response_params, constraints
 
 
+def _find_code_example(markdown: Tag, *labels: str) -> str:
+    normalized_labels = {clean_text(label).rstrip(":：").lower() for label in labels}
+    for node in markdown.find_all(["p", "h2", "h3", "h4"], recursive=True):
+        value = clean_text(node.get_text(" ", strip=True)).rstrip(":：").lower()
+        if value not in normalized_labels:
+            continue
+        example = node.find_next("pre")
+        if example is not None:
+            return example.get_text("", strip=True)
+    return ""
+
+
+def _request_transport(method: str, request_example: str) -> str:
+    normalized_method = method.upper()
+    if normalized_method == "GET":
+        return "query"
+    if normalized_method in {"POST", "PUT", "PATCH"}:
+        return "body"
+    if normalized_method == "DELETE":
+        normalized_example = request_example.replace("\\", " ")
+        has_data = re.search(
+            r"(?:^|\s)(?:-d|--data(?:-raw)?)(?=\s|['\"{])",
+            normalized_example,
+            flags=re.IGNORECASE,
+        )
+        return "body" if has_data else "query"
+    raise ValueError(f"Unsupported HTTP method in official API document: {method}")
+
+
+def _response_narrative(markdown: Tag) -> str:
+    collecting = False
+    values: List[str] = []
+    start_markers = {"response", "response parameters", "返回参数"}
+    end_markers = {"response example", "返回示例"}
+    for node in markdown.find_all(["p", "li", "table"], recursive=True):
+        if node.find_parent("table") is not None:
+            continue
+        value = clean_text(node.get_text(" ", strip=True))
+        normalized = value.rstrip(":：").lower()
+        if normalized in start_markers:
+            collecting = True
+            continue
+        if normalized in end_markers:
+            break
+        if collecting and node.name in {"p", "li"} and value:
+            values.append(value)
+    return " ".join(values)
+
+
+def _response_container(markdown: Tag, response_params: List[Dict[str, str]]) -> str:
+    narrative = _response_narrative(markdown).lower()
+    if (
+        "single object" in narrative
+        and "array" in narrative
+        or "either a single object or an array" in narrative
+    ):
+        return "conditional_object_or_array"
+
+    response_example = _find_code_example(markdown, "Response example", "返回示例")
+    if response_example:
+        try:
+            value = json.loads(response_example)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, dict):
+            return "object"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, str):
+            return "string"
+
+    if len(response_params) == 1 and response_params[0].get("name") == "$":
+        narrative_type = response_params[0].get("type", "").strip().lower()
+        if narrative_type in {"object", "array", "string"}:
+            return narrative_type
+    return "object"
+
+
 def parse_doc(url: str) -> Optional[ParsedDoc]:
     html = fetch_text(url)
     soup = BeautifulSoup(html, "html.parser")
@@ -330,6 +412,14 @@ def parse_doc(url: str) -> Optional[ParsedDoc]:
     requires_auth = permission is not None or category == "rebate"
 
     request_params, response_params, constraints = _extract_sections(markdown)
+    request_transport = _request_transport(
+        method,
+        _find_code_example(markdown, "Request example", "请求示例"),
+    )
+    request_fields = [row["name"] for row in request_params if row.get("name")]
+    query_fields = request_fields if request_transport == "query" else []
+    body_fields = request_fields if request_transport == "body" else []
+    response_container = _response_container(markdown, response_params)
 
     return ParsedDoc(
         product=product,
@@ -345,6 +435,10 @@ def parse_doc(url: str) -> Optional[ParsedDoc]:
         request_params=request_params,
         response_params=response_params,
         constraints=constraints,
+        request_transport=request_transport,
+        query_fields=query_fields,
+        body_fields=body_fields,
+        response_container=response_container,
         permission=permission,
     )
 
@@ -391,15 +485,27 @@ def find_doc(docs: List[ParsedDoc], key: str) -> Optional[ParsedDoc]:
 
 
 def apply_known_overrides(product: str, docs: List[ParsedDoc]) -> None:
+    def has_only_narrative_placeholder(doc: ParsedDoc) -> bool:
+        return (
+            len(doc.response_params) == 1
+            and doc.response_params[0].get("name") == "$"
+        )
+
     def copy_response(target_key: str, source_key: str) -> None:
         target = find_doc(docs, target_key)
         source = find_doc(docs, source_key)
-        if target is not None and source is not None and not target.response_params:
+        if (
+            target is not None
+            and source is not None
+            and (not target.response_params or has_only_narrative_placeholder(target))
+        ):
             target.response_params = [dict(row) for row in source.response_params]
 
     if product == "spot":
         api_symbols = find_doc(docs, "spot.config.get_api_trading_symbols")
-        if api_symbols is not None and not api_symbols.response_params:
+        if api_symbols is not None and (
+            not api_symbols.response_params or has_only_narrative_placeholder(api_symbols)
+        ):
             api_symbols.response_params = [
                 {
                     "name": "symbols[]",
@@ -411,7 +517,9 @@ def apply_known_overrides(product: str, docs: List[ParsedDoc]) -> None:
 
     if product == "contract":
         api_symbols = find_doc(docs, "market.get_api_trading_symbols")
-        if api_symbols is not None and not api_symbols.response_params:
+        if api_symbols is not None and (
+            not api_symbols.response_params or has_only_narrative_placeholder(api_symbols)
+        ):
             api_symbols.response_params = [
                 {
                     "name": "symbols[]",
@@ -467,7 +575,11 @@ def docs_to_json(product: str, docs: List[ParsedDoc]) -> Dict[str, Any]:
             "path": doc.path,
             "doc_url": doc.doc_url,
             "requires_auth": doc.requires_auth,
+            "request_transport": doc.request_transport,
+            "query_fields": doc.query_fields,
+            "body_fields": doc.body_fields,
             "request_params": doc.request_params,
+            "response_container": doc.response_container,
             "response_params": doc.response_params,
             "rate_limits": doc.rate_limits,
             "constraints": doc.constraints,
@@ -564,6 +676,8 @@ def render_md(product: str, docs: List[ParsedDoc], generated_at: str) -> str:
                 f"- Path: `{doc.path}`",
                 f"- Category: `{doc.category}`",
                 f"- Requires Auth: `{doc.requires_auth}`",
+                f"- Request Transport: `{doc.request_transport}`",
+                f"- Response Container: `{doc.response_container}`",
             ]
         )
         if doc.permission is not None:

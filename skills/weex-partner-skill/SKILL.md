@@ -91,3 +91,7 @@ For Chinese output, convert returned millisecond timestamps to `YYYY-MM-DD HH:mm
 Unknown response field values, including nested values under otherwise known containers, stay hidden. A nested value in a documented scalar field is a schema failure; only documented container fields such as referral-asset `depositList` may be summarized as hidden count metadata. A 429 or insufficient remaining weight stops immediately with no automatic retry. Interrupted offset pagination must restart from page 1 for any complete result, and the user-facing result must warn that data may change while pages are being fetched or after a restart.
 
 The Skill does not persist Partner business responses itself. The host chat or tool transcript can still retain query inputs and outputs; do not promise automatic retention, access, or deletion behavior on behalf of Codex, Claude Code, Cursor, GitHub Copilot, or OpenClaw.
+
+## Maintenance
+
+After changing the Partner endpoint contract, run the independent read-only official drift check from this skill directory: `python3 scripts/check_official_partner_contract.py --pretty`. It fetches both Chinese and English official pages for all seven supported operations and compares method, path, request transport, request/response fields, types, required flags, descriptions, and weight with the checked-in Partner catalog and trader definitions. A nonzero exit means the checked-in contract must be reviewed; the checker never sends authenticated or mutating requests.

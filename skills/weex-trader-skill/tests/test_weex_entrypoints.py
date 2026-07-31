@@ -539,6 +539,55 @@ runpy.run_path(script_path, run_name="__main__")
 
         self.assertEqual(str(exc_info.exception), contract.GET_BODY_UNSUPPORTED_MESSAGE)
 
+    def test_contract_client_rejects_payload_in_wrong_documented_transport(self) -> None:
+        import weex_contract_api as contract
+
+        client = contract.WeexContractClient(
+            base_url=contract.DEFAULT_BASE_URL,
+            timeout=contract.DEFAULT_TIMEOUT,
+            locale=contract.DEFAULT_LOCALE,
+            api_key="api-key",
+            api_secret="api-secret",
+            api_passphrase="passphrase",
+        )
+        with mock.patch.object(client, "_require_auth"):
+            with self.assertRaisesRegex(SystemExit, "transport"):
+                client.prepare_request(
+                    contract.ENDPOINTS["transaction.cancel_order"],
+                    query={},
+                    body={"orderId": 1},
+                )
+            with self.assertRaisesRegex(SystemExit, "transport"):
+                client.prepare_request(
+                    contract.ENDPOINTS["transaction.cancel_orders_batch"],
+                    query={"orderIdList": [1]},
+                    body={},
+                )
+
+    def test_contract_user_data_post_is_read_only_and_does_not_require_trade_confirmation(self) -> None:
+        import weex_contract_api as contract
+
+        endpoint = contract.ENDPOINTS["account.get_contract_bills"]
+        self.assertEqual(endpoint.permission, "USER_DATA")
+        self.assertFalse(endpoint.mutating)
+
+    def test_contract_doc_suffix_lookup_rejects_ambiguous_matches(self) -> None:
+        import weex_contract_api as contract
+
+        endpoints = {
+            "live": types.SimpleNamespace(
+                key="live",
+                doc_url="https://www.weex.com/api-doc/contract/Transaction_API/PlaceOrder",
+            ),
+            "demo": types.SimpleNamespace(
+                key="demo",
+                doc_url="https://www.weex.com/api-doc/contract/demo/PlaceOrder",
+            ),
+        }
+        with mock.patch.object(contract, "ENDPOINTS", endpoints):
+            with self.assertRaisesRegex(SystemExit, "Ambiguous"):
+                contract.find_endpoint_key_by_doc_suffix("PlaceOrder")
+
     def test_contract_demo_order_dry_run_uses_sim_path_and_environment(self) -> None:
         import weex_contract_api as contract
 
@@ -916,6 +965,51 @@ runpy.run_path(script_path, run_name="__main__")
             client.prepare_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
 
         self.assertEqual(str(exc_info.exception), spot.GET_BODY_UNSUPPORTED_MESSAGE)
+
+    def test_spot_raw_registry_excludes_all_partner_rebate_endpoints(self) -> None:
+        import weex_spot_api as spot
+
+        self.assertTrue(spot.ENDPOINTS)
+        self.assertFalse(any(endpoint.category == "rebate" for endpoint in spot.ENDPOINTS.values()))
+        self.assertNotIn("spot.rebate.internal_withdrawal", spot.ENDPOINTS)
+
+    def test_spot_user_data_posts_are_read_only(self) -> None:
+        import weex_spot_api as spot
+
+        for key in (
+            "spot.account.get_bill_records",
+            "spot.account.get_fund_bill_records",
+            "spot.tax.get_spot_account_record",
+        ):
+            with self.subTest(key=key):
+                endpoint = spot.ENDPOINTS[key]
+                self.assertEqual(endpoint.permission, "USER_DATA")
+                self.assertFalse(spot.is_mutating(endpoint))
+
+    def test_spot_client_rejects_payload_in_wrong_documented_transport(self) -> None:
+        import weex_spot_api as spot
+
+        client = spot.WeexSpotClient(
+            base_url=spot.DEFAULT_BASE_URL,
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key="api-key",
+            api_secret="api-secret",
+            api_passphrase="passphrase",
+        )
+        with mock.patch.object(client, "_require_auth"):
+            with self.assertRaisesRegex(SystemExit, "transport"):
+                client.prepare_request(
+                    spot.ENDPOINTS["spot.order.cancel_order"],
+                    query={},
+                    body={"orderId": 1},
+                )
+            with self.assertRaisesRegex(SystemExit, "transport"):
+                client.prepare_request(
+                    spot.ENDPOINTS["spot.account.get_bill_records"],
+                    query={"limit": 10},
+                    body={},
+                )
 
     def test_spot_private_order_result_includes_live_environment_prefix(self) -> None:
         import weex_spot_api as spot

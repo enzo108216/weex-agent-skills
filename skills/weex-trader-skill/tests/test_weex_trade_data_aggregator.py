@@ -1969,6 +1969,62 @@ class ApiFetcherTests(unittest.TestCase):
             },
         )
 
+    def test_fetch_historical_pending_orders_splits_has_more_windows_without_undocumented_page(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        queries: list[dict[str, object]] = []
+
+        def fake_send(*, profile_name: str, endpoint_key: str, query: dict[str, object], **_: object) -> dict[str, object]:
+            self.assertEqual(profile_name, "demo")
+            self.assertEqual(endpoint_key, "transaction.get_historical_pending_orders")
+            self.assertNotIn("page", query)
+            queries.append(dict(query))
+            span = int(query["endTime"]) - int(query["startTime"])
+            return {
+                "orders": [
+                    {
+                        "algoId": f"{query['startTime']}-{query['endTime']}",
+                        "createTime": query["startTime"],
+                        "symbol": "BTCUSDT",
+                    }
+                ],
+                "hasMore": span > aggregator.MIN_SPLIT_WINDOW_MS,
+            }
+
+        with mock.patch.object(fetcher, "_send_contract_request", side_effect=fake_send):
+            payload = fetcher.fetch_futures_historical_pending_orders(
+                profile_name="demo",
+                start_ms=0,
+                end_ms=2 * aggregator.MIN_SPLIT_WINDOW_MS,
+                symbol="BTCUSDT",
+            )
+
+        self.assertIsInstance(payload, list)
+        self.assertGreater(len(queries), 1)
+        self.assertTrue(all("page" not in query for query in queries))
+
+    def test_fetch_historical_pending_orders_marks_partial_when_minimum_window_is_truncated(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        row = {"algoId": "stalled", "createTime": 0, "symbol": "BTCUSDT"}
+        with mock.patch.object(
+            fetcher,
+            "_send_contract_request",
+            side_effect=[{"orders": [row], "hasMore": True}, {"orders": [], "hasMore": False}],
+        ) as send_mock:
+            payload = fetcher.fetch_futures_historical_pending_orders(
+                profile_name="demo",
+                start_ms=0,
+                end_ms=aggregator.MIN_SPLIT_WINDOW_MS,
+                symbol="BTCUSDT",
+            )
+
+        self.assertEqual(payload["items"], [row])
+        self.assertTrue(payload["_meta"]["partial"])
+        self.assertIn(
+            "futures_historical_pending_orders_window_truncated",
+            payload["_meta"]["degraded_reasons"],
+        )
+        self.assertEqual(send_mock.call_count, 1)
+
     def test_fetch_futures_balance_uses_sim_endpoint_for_demo_mode(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
 

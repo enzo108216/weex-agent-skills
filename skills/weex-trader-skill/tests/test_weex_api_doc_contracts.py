@@ -99,6 +99,72 @@ class GeneratorRegressionTests(unittest.TestCase):
             ],
         )
 
+    def test_parse_doc_extracts_delete_body_transport_and_array_container(self) -> None:
+        generator = load_generator()
+        html = """
+        <article>
+          <div class="theme-doc-markdown markdown">
+            <h1>Cancel Orders Batch (TRADE)</h1>
+            <p>DELETE /capi/v3/batchOrders</p>
+            <p>Request parameters</p>
+            <table>
+              <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+              <tr><td>orderIdList</td><td>Array&lt;Long&gt;</td><td>No</td><td>Order IDs</td></tr>
+            </table>
+            <p>Request example</p>
+            <pre>curl -X DELETE "https://api-contract.weex.com/capi/v3/batchOrders" -H "Content-Type: application/json" -d '{"orderIdList":[1]}'</pre>
+            <p>Response parameters</p>
+            <p>Returns an array of cancelled orders.</p>
+            <p>Response example</p>
+            <pre>[{"orderId":1}]</pre>
+          </div>
+        </article>
+        """
+
+        with mock.patch.object(generator, "fetch_text", return_value=html):
+            parsed = generator.parse_doc(
+                "https://www.weex.com/api-doc/contract/Transaction_API/CancelOrdersBatch"
+            )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.request_transport, "body")
+        self.assertEqual(parsed.query_fields, [])
+        self.assertEqual(parsed.body_fields, ["orderIdList"])
+        self.assertEqual(parsed.response_container, "array")
+
+    def test_parse_doc_marks_documented_object_or_array_response_as_conditional(self) -> None:
+        generator = load_generator()
+        html = """
+        <article>
+          <div class="theme-doc-markdown markdown">
+            <h1>Get Book Ticker</h1>
+            <p>GET /api/v3/ticker/bookTicker</p>
+            <p>Request parameters</p>
+            <table>
+              <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+              <tr><td>symbol</td><td>String</td><td>No</td><td>Trading pair</td></tr>
+            </table>
+            <p>Request example</p>
+            <pre>curl "https://api-spot.weex.com/api/v3/ticker/bookTicker?symbol=BTCUSDT"</pre>
+            <p>Response parameters</p>
+            <p>If symbol is supplied the response is a single object; otherwise, it is an array.</p>
+            <p>Response example</p>
+            <pre>[{"symbol":"BTCUSDT"}]</pre>
+          </div>
+        </article>
+        """
+
+        with mock.patch.object(generator, "fetch_text", return_value=html):
+            parsed = generator.parse_doc(
+                "https://www.weex.com/api-doc/spot/MarketDataAPI/GetBookTicker"
+            )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.request_transport, "query")
+        self.assertEqual(parsed.query_fields, ["symbol"])
+        self.assertEqual(parsed.body_fields, [])
+        self.assertEqual(parsed.response_container, "conditional_object_or_array")
+
     def test_url_collection_includes_tax_current_partner_rebate_and_demo_pages(self) -> None:
         generator = load_generator()
         tax = "https://www.weex.com/api-doc/spot/tax/GetSpotAccountRecord"
@@ -117,6 +183,37 @@ class GeneratorRegressionTests(unittest.TestCase):
 
 
 class CheckedInDefinitionRegressionTests(unittest.TestCase):
+    def test_all_definitions_publish_machine_readable_transport_and_response_container(self) -> None:
+        expected_delete_body = {
+            "transaction.cancel_orders_batch",
+            "spot.order.bulk_cancel",
+        }
+        conditional = {
+            "spot.market.get_all_ticker_info",
+            "spot.market.get_book_ticker",
+            "spot.market.get_ticker_info",
+        }
+        for product in ("contract", "spot"):
+            payload, _ = load_definitions(product)
+            for definition in payload["definitions"]:
+                with self.subTest(product=product, key=definition["key"]):
+                    self.assertIn(definition["request_transport"], {"query", "body"})
+                    request_names = [item["name"] for item in definition["request_params"]]
+                    self.assertEqual(
+                        definition["query_fields"] + definition["body_fields"],
+                        request_names,
+                    )
+                    if definition["key"] in expected_delete_body:
+                        self.assertEqual(definition["request_transport"], "body")
+                    self.assertIn(
+                        definition["response_container"],
+                        {"object", "array", "conditional_object_or_array", "string"},
+                    )
+                    if definition["key"] in conditional:
+                        self.assertEqual(
+                            definition["response_container"],
+                            "conditional_object_or_array",
+                        )
     def test_spot_definitions_match_current_official_contract(self) -> None:
         payload, by_key = load_definitions("spot")
         self.assertEqual(len(payload["definitions"]), 33)
@@ -211,20 +308,33 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
 
     def test_cross_page_response_references_are_expanded(self) -> None:
         _, by_key = load_definitions("contract")
-        for key in (
-            "account.get_single_position",
-            "market.get_history_klines",
-            "market.get_index_price_klines",
-            "market.get_mark_price_klines",
-            "transaction.cancel_orders_batch",
-            "transaction.cancel_pending_order",
-            "transaction.get_current_order_status",
-            "transaction.place_orders_batch",
-            "transaction.place_pending_order",
-            "sim.transaction.get_order_history",
-        ):
+        expected_sources = {
+            "account.get_single_position": "account.get_all_positions",
+            "market.get_history_klines": "market.get_klines",
+            "market.get_index_price_klines": "market.get_klines",
+            "market.get_mark_price_klines": "market.get_klines",
+            "transaction.cancel_orders_batch": "transaction.cancel_order",
+            "transaction.cancel_pending_order": "transaction.cancel_order",
+            "transaction.get_current_order_status": "transaction.get_single_order_info",
+            "transaction.get_order_history": "transaction.get_single_order_info",
+            "transaction.place_orders_batch": "transaction.place_order",
+            "transaction.place_pending_order": "transaction.place_order",
+            "sim.transaction.get_order_history": "transaction.get_single_order_info",
+        }
+        for key, source_key in expected_sources.items():
             with self.subTest(key=key):
-                self.assertTrue(by_key[key]["response_params"])
+                self.assertEqual(by_key[key]["response_params"], by_key[source_key]["response_params"])
+                self.assertNotIn("$", params_by_name(by_key[key], "response_params"))
+
+        _, spot_by_key = load_definitions("spot")
+        self.assertEqual(
+            spot_by_key["spot.order.history_orders"]["response_params"],
+            spot_by_key["spot.order.order_details"]["response_params"],
+        )
+        self.assertNotIn(
+            "$",
+            params_by_name(spot_by_key["spot.order.history_orders"], "response_params"),
+        )
 
     def test_narrative_constraints_and_current_rate_limit_model_are_preserved(self) -> None:
         _, by_key = load_definitions("contract")

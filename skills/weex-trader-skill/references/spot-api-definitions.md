@@ -62,6 +62,8 @@ Total endpoints: **33**
 - Path: `/api/v3/account`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/AccountAPI/GetAccountBalance
@@ -102,6 +104,8 @@ NONE
 - Path: `/api/v3/account/bills`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/AccountAPI/GetBillRecords
@@ -137,6 +141,8 @@ NONE
 - Path: `/api/v3/account/fundingBills`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/AccountAPI/GetFundBillRecords
@@ -169,6 +175,8 @@ NONE
 - Path: `/api/v3/account/transferRecords`
 - Category: `account`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `3`
 - Source: https://www.weex.com/api-doc/spot/AccountAPI/TransferRecords
@@ -204,6 +212,8 @@ NONE
 - Path: `/api/v3/coins`
 - Category: `config`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/ConfigAPI/CurrencyInfo
 - Request Constraints:
@@ -242,6 +252,8 @@ NONE
 - Path: `/api/v3/apiTradingSymbols`
 - Category: `config`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/ConfigAPI/GetAllProductInfo
 - Request Constraints:
@@ -255,7 +267,7 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `Array` | Returns an array of trading pairs that are currently approved for API spot trading. |
+| `symbols[]` | `Array<String>` | Raw response is an array of spot symbols available for API trading. |
 
 ## spot.config.get_product_info — Exchange information
 
@@ -263,6 +275,8 @@ NONE
 - Path: `/api/v3/exchangeInfo`
 - Category: `config`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `20`
 - Source: https://www.weex.com/api-doc/spot/ConfigAPI/GetProductInfo
 
@@ -315,6 +329,8 @@ NONE
 - Path: `/api/v3/time`
 - Category: `config`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/spot/ConfigAPI/GetServerTime
 - Request Constraints:
@@ -336,6 +352,8 @@ NONE
 - Path: `/api/v3/ping`
 - Category: `config`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/spot/ConfigAPI/Ping
 - Request Constraints:
@@ -359,6 +377,8 @@ NONE
 - Path: `/api/v3/market/ticker/24hr`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `conditional_object_or_array`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/spot/MarketDataAPI/GetAllTickerInfo
 
@@ -396,6 +416,8 @@ NONE
 - Path: `/api/v3/market/ticker/bookTicker`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `conditional_object_or_array`
 - Weight(IP): `4`
 - Source: https://www.weex.com/api-doc/spot/MarketDataAPI/GetBookTicker
 
@@ -422,6 +444,8 @@ NONE
 - Path: `/api/v3/market/depth`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/MarketDataAPI/GetDepthData
 
@@ -446,6 +470,8 @@ NONE
 - Path: `/api/v3/market/klines`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/spot/MarketDataAPI/GetKLineData
 
@@ -478,6 +504,8 @@ NONE
 - Path: `/api/v3/market/ticker/price`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `conditional_object_or_array`
 - Weight(IP): `4`
 - Source: https://www.weex.com/api-doc/spot/MarketDataAPI/GetTickerInfo
 
@@ -501,6 +529,8 @@ NONE
 - Path: `/api/v3/market/trades`
 - Category: `market`
 - Requires Auth: `False`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `25`
 - Source: https://www.weex.com/api-doc/spot/MarketDataAPI/GetTradeData
 
@@ -531,6 +561,8 @@ NONE
 - Path: `/api/v3/order/batch`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/orderApi/BulkCancel
@@ -557,6 +589,8 @@ NONE
 - Path: `/api/v3/order/batch`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=5, X-ORDER-COUNT-1M=5, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/spot/orderApi/BulkOrder
@@ -594,6 +628,8 @@ NONE
 - Path: `/api/v3/order`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `TRADE`
 - Weight(IP): `1`
 - Source: https://www.weex.com/api-doc/spot/orderApi/CancelOrder
@@ -618,6 +654,8 @@ NONE
 - Path: `/api/v3/openOrders`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `TRADE`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/orderApi/Cancel-Symbol-Orders
@@ -641,6 +679,8 @@ NONE
 - Path: `/api/v3/allOrders`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/spot/orderApi/HistoryOrders
@@ -659,7 +699,20 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `$` | `` | Returns a list of order objects with the same fields described in Get Order Details . |
+| `symbol` | `String` | Trading pair. |
+| `orderId` | `Long` | Order ID. |
+| `clientOrderId` | `String` | Client-defined order ID. |
+| `price` | `String` | Order price. |
+| `origQty` | `String` | Original order quantity. |
+| `executedQty` | `String` | Filled quantity. |
+| `cummulativeQuoteQty` | `String` | Filled amount in quote asset. |
+| `status` | `String` | Order status (e.g. NEW , FILLED , CANCELED ). |
+| `timeInForce` | `String` | Time-in-force policy. |
+| `type` | `String` | Order type. |
+| `side` | `String` | BUY or SELL . |
+| `time` | `Long` | Creation time (ms). |
+| `updateTime` | `Long` | Last update time (ms). |
+| `isWorking` | `Boolean` | Whether the order is active. |
 
 ## spot.order.order_details — Get Order Details (USER_DATA)
 
@@ -667,6 +720,8 @@ NONE
 - Path: `/api/v3/order`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Permission: `USER_DATA`
 - Weight(IP): `2`
 - Source: https://www.weex.com/api-doc/spot/orderApi/OrderDetails
@@ -703,6 +758,8 @@ NONE
 - Path: `/api/v3/order`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Permission: `TRADE`
 - Rate Limits: `X-ORDER-COUNT-10S=1, X-ORDER-COUNT-1M=1, X-USED-WEIGHT-1M=0`
 - Source: https://www.weex.com/api-doc/spot/orderApi/PlaceOrder
@@ -734,6 +791,8 @@ NONE
 - Path: `/api/v3/myTrades`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/orderApi/TransactionDetails
@@ -768,6 +827,8 @@ NONE
 - Path: `/api/v3/openOrders`
 - Category: `order`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `3`
 - Source: https://www.weex.com/api-doc/spot/orderApi/UnfinishedOrders
@@ -805,6 +866,8 @@ NONE
 - Path: `/api/v3/agency/getAssert`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/GetAffiliateAssets
 
@@ -833,6 +896,8 @@ NONE
 - Path: `/api/v3/rebate/affiliate/getAffiliateCommission`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `20`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/GetAffiliateCommission
 
@@ -874,6 +939,8 @@ NONE
 - Path: `/api/v3/agency/getDealData`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/GetAffiliateDealData
 
@@ -903,6 +970,8 @@ NONE
 - Path: `/api/v3/rebate/affiliate/getAffiliateUIDs`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `20`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/GetAffiliateUIDs
 - Request Constraints:
@@ -943,6 +1012,8 @@ NONE
 - Path: `/api/v3/rebate/affiliate/getChannelUserTradeAndAsset`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `object`
 - Weight(IP): `20`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/GetChannelUserTradeAndAsset
 - Request Constraints:
@@ -981,6 +1052,8 @@ NONE
 - Path: `/api/v3/rebate/affiliate/internalWithdrawal`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `string`
 - Weight(IP): `100`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/InternalWithdrawal
 
@@ -1006,6 +1079,8 @@ NONE
 - Path: `/api/v3/rebate/affiliate/querySubChannelTransactions`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `object`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/QuerySubChannelTransactions
 
@@ -1042,6 +1117,8 @@ NONE
 - Path: `/api/v3/agency/verifyReferrals`
 - Category: `rebate`
 - Requires Auth: `True`
+- Request Transport: `query`
+- Response Container: `array`
 - Weight(IP): `10`
 - Source: https://www.weex.com/api-doc/partner/rebate-endpoints/VerifyReferrals
 
@@ -1066,6 +1143,8 @@ NONE
 - Path: `/api/v3/tax/income`
 - Category: `tax`
 - Requires Auth: `True`
+- Request Transport: `body`
+- Response Container: `array`
 - Permission: `USER_DATA`
 - Weight(IP): `5`
 - Source: https://www.weex.com/api-doc/spot/tax/GetSpotAccountRecord

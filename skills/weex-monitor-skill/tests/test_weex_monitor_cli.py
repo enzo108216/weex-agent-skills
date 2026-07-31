@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import subprocess
 import sys
@@ -1534,8 +1535,11 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("required", help_result.stdout.lower())
 
         parser = monitor.build_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["confirm-text-live", "--task-json", "{}"])
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["confirm-text-live", "--task-json", "{}"])
+        self.assertIn("--duration-seconds", stderr.getvalue())
 
     def test_run_loop_missing_mode_error_mentions_confirm_demo(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

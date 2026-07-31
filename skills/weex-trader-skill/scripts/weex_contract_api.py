@@ -65,6 +65,9 @@ class Endpoint:
     mutating: bool
     doc_url: str
     permission: str = ""
+    request_transport: str = "query"
+    query_fields: tuple[str, ...] = ()
+    body_fields: tuple[str, ...] = ()
 
 
 def load_endpoint_map() -> Dict[str, Endpoint]:
@@ -74,6 +77,7 @@ def load_endpoint_map() -> Dict[str, Endpoint]:
     for d in obj.get("definitions", []):
         method = d.get("method", "GET").upper()
         auth = bool(d.get("requires_auth", False))
+        permission = str(d.get("permission", ""))
         ep = Endpoint(
             key=d["key"],
             group=d.get("category", ""),
@@ -81,9 +85,12 @@ def load_endpoint_map() -> Dict[str, Endpoint]:
             method=method,
             path=d.get("path", ""),
             auth=auth,
-            mutating=auth and method in {"POST", "PUT", "DELETE"},
+            mutating=auth and permission == "TRADE",
             doc_url=d.get("doc_url", ""),
-            permission=d.get("permission", ""),
+            permission=permission,
+            request_transport=str(d.get("request_transport", "query")),
+            query_fields=tuple(str(value) for value in d.get("query_fields", [])),
+            body_fields=tuple(str(value) for value in d.get("body_fields", [])),
         )
         endpoint_map[ep.key] = ep
     return endpoint_map
@@ -216,6 +223,16 @@ class WeexContractClient:
         b = body or {}
         if method == "GET" and b:
             raise SystemExit(GET_BODY_UNSUPPORTED_MESSAGE)
+        if endpoint.request_transport == "query" and b:
+            raise SystemExit(
+                f"request_transport_mismatch: {endpoint.key} requires query fields; "
+                "pass them with --query and leave --body empty"
+            )
+        if endpoint.request_transport == "body" and q:
+            raise SystemExit(
+                f"request_transport_mismatch: {endpoint.key} requires a JSON body; "
+                "pass fields with --body and leave --query empty"
+            )
         query_string = parse.urlencode(q, doseq=True)
         body_str = compact_json(b)
 
@@ -526,9 +543,17 @@ def generate_client_oid() -> str:
 
 def find_endpoint_key_by_doc_suffix(doc_suffix: str) -> str:
     target = f"/{doc_suffix}"
-    for endpoint in ENDPOINTS.values():
-        if endpoint.doc_url.endswith(target):
-            return endpoint.key
+    matches = sorted(
+        endpoint.key
+        for endpoint in ENDPOINTS.values()
+        if endpoint.doc_url.endswith(target)
+    )
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise SystemExit(
+            f"Ambiguous endpoint doc suffix {doc_suffix}; matches: {', '.join(matches)}"
+        )
     raise SystemExit(f"Unable to find endpoint with doc suffix {doc_suffix}")
 
 
@@ -603,6 +628,9 @@ def cmd_list_endpoints(args: argparse.Namespace) -> int:
                 "auth": endpoint.auth,
                 "mutating": endpoint.mutating,
                 "permission": endpoint.permission,
+                "request_transport": endpoint.request_transport,
+                "query_fields": list(endpoint.query_fields),
+                "body_fields": list(endpoint.body_fields),
                 "doc_url": endpoint.doc_url,
             }
         )

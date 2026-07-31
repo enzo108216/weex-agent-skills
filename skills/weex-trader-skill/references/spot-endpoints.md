@@ -14,7 +14,7 @@ Base URL:
 Catalog groups include:
 - `spot.account.*`, `spot.config.*`, `spot.market.*`, and `spot.order.*`
 - `spot.tax.*` from the current spot tax pages
-- `spot.rebate.*` from the current Partner rebate raw pages; route and mutation safety still follow `SKILL.md`, not catalog membership alone
+- `spot.rebate.*` from the current Partner rebate pages for documentation drift coverage only; `weex_spot_api.py` excludes this group, and the seven supported read-only queries must use the Partner executor
 
 Quick commands:
 

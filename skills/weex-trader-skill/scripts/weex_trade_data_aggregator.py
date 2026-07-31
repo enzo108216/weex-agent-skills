@@ -2357,35 +2357,50 @@ class WeexApiFetcher:
         symbol: str | None,
     ) -> Any:
         rows: list[dict[str, Any]] = []
+        degraded_reasons: list[str] = []
+        partial = False
+
+        def collect_window(window_start: int, window_end: int) -> None:
+            nonlocal partial
+            query: dict[str, Any] = {
+                "startTime": window_start,
+                "endTime": window_end,
+                "limit": FUTURES_ORDER_LIMIT,
+            }
+            if symbol:
+                query["symbol"] = symbol
+            payload = self._send_contract_request(
+                profile_name=profile_name,
+                endpoint_key="transaction.get_historical_pending_orders",
+                query=query,
+            )
+            page_rows = _extract_list_payload(payload, "items", "orders")
+            _extend_unique_dict_rows(
+                rows,
+                page_rows,
+                identity_keys=("algoId", "actualOrderId", "createTime", "symbol"),
+            )
+            has_more = bool((payload or {}).get("hasMore")) if isinstance(payload, dict) else False
+            if not has_more:
+                return
+            if (window_end - window_start) > MIN_SPLIT_WINDOW_MS:
+                midpoint = window_start + ((window_end - window_start) // 2)
+                collect_window(window_start, midpoint)
+                collect_window(midpoint + 1, window_end)
+                return
+            partial = True
+            _merge_degraded_reasons(
+                degraded_reasons,
+                ["futures_historical_pending_orders_window_truncated"],
+            )
+
         for window in split_time_range(start_ms, end_ms, max_span_days=MAX_FUTURES_WINDOW_DAYS):
-            page = 1
-            while True:
-                query: dict[str, Any] = {
-                    "startTime": window.start_ms,
-                    "endTime": window.end_ms,
-                    "limit": FUTURES_ORDER_LIMIT,
-                    "page": page,
-                }
-                if symbol:
-                    query["symbol"] = symbol
-                payload = self._send_contract_request(
-                    profile_name=profile_name,
-                    endpoint_key="transaction.get_historical_pending_orders",
-                    query=query,
-                )
-                page_rows = _extract_list_payload(payload, "items", "orders")
-                if not page_rows:
-                    break
-                _extend_unique_dict_rows(
-                    rows,
-                    page_rows,
-                    identity_keys=("algoId", "actualOrderId", "createTime", "symbol"),
-                )
-                has_more = bool((payload or {}).get("hasMore")) if isinstance(payload, dict) else False
-                if not has_more:
-                    break
-                page += 1
-        return rows
+            collect_window(window.start_ms, window.end_ms)
+        return self._build_meta_payload(
+            rows,
+            partial=partial,
+            degraded_reasons=degraded_reasons,
+        )
 
     def fetch_futures_bills(
         self,
