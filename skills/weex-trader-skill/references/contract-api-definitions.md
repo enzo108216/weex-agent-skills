@@ -470,7 +470,7 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `symbols[]` | `Array<String>` | Raw response is an array of futures symbols available for API trading. |
+| `$` | `Array<String>` | Raw response is an array of futures symbols available for API trading. |
 
 ## market.get_book_ticker — Get Best Bid/Ask
 

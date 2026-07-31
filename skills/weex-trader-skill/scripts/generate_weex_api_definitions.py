@@ -508,7 +508,7 @@ def apply_known_overrides(product: str, docs: List[ParsedDoc]) -> None:
         ):
             api_symbols.response_params = [
                 {
-                    "name": "symbols[]",
+                    "name": "$",
                     "type": "Array<String>",
                     "description": "Raw response is an array of spot symbols available for API trading.",
                 }
@@ -522,7 +522,7 @@ def apply_known_overrides(product: str, docs: List[ParsedDoc]) -> None:
         ):
             api_symbols.response_params = [
                 {
-                    "name": "symbols[]",
+                    "name": "$",
                     "type": "Array<String>",
                     "description": "Raw response is an array of futures symbols available for API trading.",
                 }

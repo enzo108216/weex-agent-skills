@@ -267,6 +267,19 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(withdrawal_response["type"], "String")
         self.assertIn("transfer ID", withdrawal_response["description"])
 
+        api_symbols = by_key["spot.config.get_api_trading_symbols"]
+        self.assertEqual(api_symbols["response_container"], "array")
+        self.assertEqual(
+            params_by_name(api_symbols, "response_params"),
+            {
+                "$": {
+                    "name": "$",
+                    "type": "Array<String>",
+                    "description": "Raw response is an array of spot symbols available for API trading.",
+                }
+            },
+        )
+
     def test_contract_definitions_match_current_official_contract(self) -> None:
         payload, by_key = load_definitions("contract")
         self.assertEqual(len(payload["definitions"]), 47)
@@ -304,6 +317,19 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             set(params_by_name(by_key["market.get_klines"], "response_params")),
             {f"index[{index}]" for index in range(11)},
+        )
+
+        api_symbols = by_key["market.get_api_trading_symbols"]
+        self.assertEqual(api_symbols["response_container"], "array")
+        self.assertEqual(
+            params_by_name(api_symbols, "response_params"),
+            {
+                "$": {
+                    "name": "$",
+                    "type": "Array<String>",
+                    "description": "Raw response is an array of futures symbols available for API trading.",
+                }
+            },
         )
 
     def test_cross_page_response_references_are_expanded(self) -> None:

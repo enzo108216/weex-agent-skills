@@ -267,7 +267,7 @@ NONE
 
 | Name | Type | Description |
 |---|---|---|
-| `symbols[]` | `Array<String>` | Raw response is an array of spot symbols available for API trading. |
+| `$` | `Array<String>` | Raw response is an array of spot symbols available for API trading. |
 
 ## spot.config.get_product_info — Exchange information
 

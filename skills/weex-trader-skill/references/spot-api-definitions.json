@@ -544,7 +544,7 @@
       "response_container": "array",
       "response_params": [
         {
-          "name": "symbols[]",
+          "name": "$",
           "type": "Array<String>",
           "description": "Raw response is an array of spot symbols available for API trading."
         }
