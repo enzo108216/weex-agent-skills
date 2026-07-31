@@ -607,7 +607,7 @@ def _submit_order(
         endpoint_key = (
             "sim.transaction.place_order"
             if mode == "demo"
-            else contract_api.find_endpoint_key_by_doc_suffix("PlaceOrder")
+            else "transaction.place_order"
         )
         endpoint = contract_api.ENDPOINTS[endpoint_key]
         normalized_symbol = (
@@ -703,6 +703,10 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         trading_mode=trading_mode,
         environment=environment,
     )
+    analysis_output["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
+    )
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     intent = build_intent(
         profile_name=args.profile,
@@ -751,6 +755,10 @@ def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         analysis_output,
         trading_mode=trading_mode,
         environment=environment,
+    )
+    analysis_output["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
     )
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     intent = build_intent(

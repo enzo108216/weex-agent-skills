@@ -668,7 +668,7 @@ def cmd_place_order(args: argparse.Namespace, client: WeexContractClient) -> int
     endpoint_key = (
         "sim.transaction.place_order"
         if mode == "demo"
-        else find_endpoint_key_by_doc_suffix("PlaceOrder")
+        else "transaction.place_order"
     )
 
     return execute_endpoint(

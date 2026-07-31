@@ -810,6 +810,40 @@ runpy.run_path(script_path, run_name="__main__")
 
         client.prepare_request.assert_not_called()
 
+    def test_contract_live_place_order_routes_to_live_endpoint(self) -> None:
+        import weex_contract_api as contract
+
+        args = types.SimpleNamespace(
+            symbol="BTCUSDT",
+            side="BUY",
+            position_side="LONG",
+            order_type="LIMIT",
+            quantity="0.01",
+            price="69000",
+            time_in_force="GTC",
+            new_client_order_id="live-order-1",
+            tp_trigger_price=None,
+            sl_trigger_price=None,
+            tp_working_type=None,
+            sl_working_type=None,
+            dry_run=True,
+            confirm_live=True,
+            confirm_demo=False,
+            trading_mode="live",
+            pretty=True,
+        )
+
+        with mock.patch.object(contract, "execute_endpoint", return_value=0) as execute_mock:
+            exit_code = contract.cmd_place_order(args, client=object())
+
+        self.assertEqual(exit_code, 0)
+        call_kwargs = execute_mock.call_args.kwargs
+        self.assertEqual(call_kwargs["endpoint_key"], "transaction.place_order")
+        self.assertEqual(call_kwargs["trading_mode"], "live")
+        self.assertTrue(call_kwargs["confirm_live"])
+        self.assertFalse(call_kwargs["confirm_demo"])
+        self.assertEqual(call_kwargs["body"]["symbol"], "BTCUSDT")
+
     def test_contract_demo_place_order_routes_to_sim_endpoint_maps_symbol_and_preserves_official_fields(self) -> None:
         import weex_contract_api as contract
 
