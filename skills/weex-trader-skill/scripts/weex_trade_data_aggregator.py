@@ -2408,23 +2408,46 @@ class WeexApiFetcher:
             }
             if symbol:
                 body["symbol"] = symbol
-            payload = self._send_contract_request(
-                profile_name=profile_name,
-                endpoint_key="account.get_contract_bills",
-                query={},
-                body=body,
-            )
-            page_rows = _extract_list_payload(payload, "items", "bills")
-            has_next = bool((payload or {}).get("hasNextPage")) if isinstance(payload, dict) else False
-            if has_next and (window_end - window_start) > MIN_SPLIT_WINDOW_MS:
-                midpoint = window_start + ((window_end - window_start) // 2)
-                collect_window(window_start, midpoint)
-                collect_window(midpoint + 1, window_end)
-                return
-            if has_next:
+            seen_cursors: set[tuple[str, str]] = set()
+            while True:
+                payload = self._send_contract_request(
+                    profile_name=profile_name,
+                    endpoint_key="account.get_contract_bills",
+                    query={},
+                    body=body,
+                )
+                page_rows = _extract_list_payload(payload, "items", "bills")
+                _extend_unique_dict_rows(
+                    rows,
+                    page_rows,
+                    identity_keys=("billId", "time", "symbol", "incomeType"),
+                )
+                has_next = bool((payload or {}).get("hasNextPage")) if isinstance(payload, dict) else False
+                if not has_next:
+                    return
+
+                next_key = payload.get("nextKey") if isinstance(payload, dict) else None
+                next_key_id = next_key.get("nextKeyId") if isinstance(next_key, dict) else None
+                next_key_time = next_key.get("nextKeyTime") if isinstance(next_key, dict) else None
+                if next_key_id is not None and next_key_time is not None:
+                    cursor = (str(next_key_id), str(next_key_time))
+                    if cursor in seen_cursors:
+                        partial = True
+                        _merge_degraded_reasons(degraded_reasons, ["futures_bills_cursor_stalled"])
+                        return
+                    seen_cursors.add(cursor)
+                    body["nextKeyId"] = next_key_id
+                    body["nextKeyTime"] = next_key_time
+                    continue
+
+                if (window_end - window_start) > MIN_SPLIT_WINDOW_MS:
+                    midpoint = window_start + ((window_end - window_start) // 2)
+                    collect_window(window_start, midpoint)
+                    collect_window(midpoint + 1, window_end)
+                    return
                 partial = True
                 _merge_degraded_reasons(degraded_reasons, ["futures_bills_window_truncated"])
-            _extend_unique_dict_rows(rows, page_rows, identity_keys=("billId", "time", "symbol", "incomeType"))
+                return
 
         for window in split_time_range(start_ms, end_ms, max_span_days=MAX_BILLS_WINDOW_DAYS):
             collect_window(window.start_ms, window.end_ms)

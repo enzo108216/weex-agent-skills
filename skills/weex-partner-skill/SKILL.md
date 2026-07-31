@@ -46,6 +46,7 @@ Use `references/natural-language-regression.json` as the executable host-dialogu
 - Require a saved profile reference from the current conversation. Let trader load credentials from Vault.
 - Missing UID must never silently mean all referrals. Require `scope.mode=all` and `all_confirmed=true` for an all-referrals query.
 - Ask only for missing required fields, such as `product_type`, UID, or explicit start/end.
+- For `get-commission`, the optional `coin` filter accepts only `USDT` or `BTC`; reject every other value locally before any Partner REST request.
 - When the official contract supplies multiple legal ranges and time is omitted, use its smallest range. State the default basis and actual UTC start/end. Explicit valid user time takes priority.
 - If only a maximum/history limit is known and no minimum is published, require explicit start/end.
 - A bounded explicit `get-commission` range longer than three calendar months is the PRD exception: query only its latest three-calendar-month segment, then offer the exact returned earlier-time action until the user's original start is reached. Commission continuation actions are closed millisecond ranges; the earlier segment ends one millisecond before the current segment starts. Do not infer an unbounded history limit; an upstream rejection stops fail-closed.

@@ -35,6 +35,7 @@ DEFAULT_LOCALE = "en-US"
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_TRADING_MODE = "live"
 TRADING_MODES = ("live", "demo")
+DAY_MS = 24 * 60 * 60 * 1000
 GET_BODY_UNSUPPORTED_MESSAGE = (
     "GET requests do not accept --body. Pass request fields with --query instead."
 )
@@ -414,6 +415,58 @@ def validate_pending_order_routing(endpoint: Endpoint, body: Dict[str, Any]) -> 
         )
 
 
+def validate_endpoint_constraints(
+    endpoint: Endpoint,
+    query: Dict[str, Any],
+    body: Dict[str, Any],
+) -> None:
+    if endpoint.key == "transaction.place_orders_batch":
+        batch_orders = body.get("batchOrders")
+        if batch_orders is not None:
+            if not isinstance(batch_orders, list):
+                raise SystemExit("batchOrders must be an array")
+            if len(batch_orders) > 5:
+                raise SystemExit("batchOrders accepts at most 5 orders per request")
+
+    if endpoint.key == "account.update_leverage_trade":
+        leverage_fields = (
+            "crossLeverage",
+            "isolatedLongLeverage",
+            "isolatedShortLeverage",
+        )
+        if not any(body.get(field) not in (None, "") for field in leverage_fields):
+            raise SystemExit(
+                "At least one leverage field is required: crossLeverage, "
+                "isolatedLongLeverage, or isolatedShortLeverage"
+            )
+
+    if endpoint.key in {
+        "market.get_funding_rate_history",
+        "transaction.get_trade_details",
+    }:
+        start_raw = query.get("startTime")
+        end_raw = query.get("endTime")
+        parsed_times: Dict[str, int] = {}
+        for field, raw_value in (("startTime", start_raw), ("endTime", end_raw)):
+            if raw_value is None:
+                continue
+            try:
+                parsed_times[field] = int(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(f"{field} must be a Unix millisecond integer") from exc
+        if start_raw is not None and end_raw is not None:
+            start_ms = parsed_times["startTime"]
+            end_ms = parsed_times["endTime"]
+            if end_ms < start_ms:
+                raise SystemExit("endTime must be greater than or equal to startTime")
+            if end_ms - start_ms > 7 * DAY_MS:
+                raise SystemExit("startTime and endTime must span no more than 7 days")
+        if endpoint.key == "transaction.get_trade_details":
+            oldest_allowed = int(time.time() * 1000) - 365 * DAY_MS
+            if any(value < oldest_allowed for value in parsed_times.values()):
+                raise SystemExit("Trade details can only be queried within the past 365 days")
+
+
 def execute_endpoint(
     client: WeexContractClient,
     endpoint_key: str,
@@ -429,6 +482,7 @@ def execute_endpoint(
     mode = validate_endpoint_trading_mode(endpoint, trading_mode)
     validate_confirm_flags(endpoint, mode, dry_run, confirm_live, confirm_demo)
     validate_pending_order_routing(endpoint, body)
+    validate_endpoint_constraints(endpoint, query, body)
 
     prepared = client.prepare_request(
         endpoint,
@@ -762,7 +816,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_place.add_argument("--type", dest="order_type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET sends immediately at market price")
     p_place.add_argument("--quantity", required=True, help="Order quantity as expected by WEEX for this contract")
     p_place.add_argument("--price", default=None, help="Limit price; usually required for LIMIT orders and omitted for MARKET orders")
-    p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "gtc", "ioc", "fok"], help="Execution policy for LIMIT orders: GTC, IOC, or FOK")
+    p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "POST_ONLY", "gtc", "ioc", "fok", "post_only"], help="Execution policy for LIMIT orders: GTC, IOC, FOK, or POST_ONLY")
     p_place.add_argument("--new-client-order-id", default=None, help="Optional client-defined order identifier; auto-generated when omitted")
     p_place.add_argument("--tp-trigger-price", default=None, help="Optional take-profit trigger price")
     p_place.add_argument("--sl-trigger-price", default=None, help="Optional stop-loss trigger price")

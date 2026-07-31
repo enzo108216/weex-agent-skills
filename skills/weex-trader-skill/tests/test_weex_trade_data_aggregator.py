@@ -1027,6 +1027,36 @@ class ReplayCollectionTests(unittest.TestCase):
         self.assertEqual(rows[-1]["orderId"], 200)
         self.assertEqual([call.kwargs["query"]["page"] for call in send_mock.call_args_list], [0, 1])
 
+    def test_fetch_futures_bills_consumes_next_key_cursor(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        responses = [
+            {
+                "hasNextPage": True,
+                "nextKey": {"nextKeyId": 101, "nextKeyTime": 1001},
+                "items": [{"billId": 1, "time": 1000, "symbol": "BTCUSDT", "incomeType": "position_funding"}],
+            },
+            {
+                "hasNextPage": False,
+                "items": [{"billId": 2, "time": 999, "symbol": "BTCUSDT", "incomeType": "position_funding"}],
+            },
+        ]
+
+        with mock.patch.object(fetcher, "_send_contract_request", side_effect=responses) as send_mock:
+            result = fetcher.fetch_futures_bills(
+                profile_name="demo",
+                start_ms=0,
+                end_ms=aggregator.MIN_SPLIT_WINDOW_MS,
+                symbol="BTCUSDT",
+            )
+
+        items = result["items"] if isinstance(result, dict) else result
+        self.assertEqual([item["billId"] for item in items], [1, 2])
+        self.assertFalse(aggregator._extract_meta(result).get("partial", False))
+        self.assertEqual(send_mock.call_count, 2)
+        second_body = send_mock.call_args_list[1].kwargs["body"]
+        self.assertEqual(second_body["nextKeyId"], 101)
+        self.assertEqual(second_body["nextKeyTime"], 1001)
+
     def test_collect_order_risk_payload_keeps_partial_live_tp_sl_as_partial_coverage(self) -> None:
         fetcher = mock.Mock()
         fetcher.fetch_futures_balance.return_value = {

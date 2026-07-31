@@ -577,6 +577,7 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
             "reject_internal_transfer": "`partner_write_unsupported`",
             "reject_uid_contact_match": "`account_identity_check_unsupported`",
             "reject_cross_partner": "`cross_partner_query_unsupported`",
+            "reject_invalid_commission_coin": "`invalid_coin`",
         }
         for fixture_id, outcome in expected_rows.items():
             with self.subTest(fixture_id=fixture_id):
@@ -586,6 +587,25 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
                 )
         self.assertIn("Reuse a profile selected in an earlier turn", text)
         self.assertIn("An all-referrals scope does not imply a complete list", text)
+
+    def test_commission_coin_allowlist_is_explicit_in_skill_policy_and_fixture(self) -> None:
+        for path in (SKILL, QUERY_POLICY):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("`get-commission`", text)
+                self.assertIn("`coin`", text)
+                self.assertIn("`USDT` or `BTC`", text)
+                self.assertIn("reject", text.lower())
+
+        payload = json.loads(NATURAL_LANGUAGE_REGRESSION.read_text(encoding="utf-8"))
+        scenario = next(
+            item for item in payload["scenarios"]
+            if item["id"] == "reject_invalid_commission_coin"
+        )
+        self.assertEqual(scenario["expected"]["disposition"], "reject")
+        self.assertEqual(scenario["expected"]["reason"], "invalid_coin")
+        self.assertEqual(scenario["context"]["filters"]["coin"], "ETH")
+        self.assertFalse(scenario["expected"]["partner_rest_request_sent"])
 
     def test_partner_markdown_instructions_are_english_only(self) -> None:
         for path in (SKILL, QUERY_POLICY, OUTPUT_SCHEMA):

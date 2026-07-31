@@ -45,6 +45,7 @@ Notes:
 - `constraints`: explicit limits such as `spot_symbol_required`
 - `partial`: whether the aggregation layer could not prove the dataset is complete for the requested window
 - `degraded_reasons`: machine-readable reasons such as `spot_kline_window_unbounded`, `futures_fills_limit_hit`, `spot_tp_sl_state_unavailable`, `spot_history_skipped_without_symbol`, or `demo_futures_fills_unavailable`
+- Futures bill pagination reads the next request cursor from `nextKey.nextKeyId` and `nextKey.nextKeyTime`. A repeated cursor produces `futures_bills_cursor_stalled`; an unusable cursor that cannot be recovered by splitting the time window produces `futures_bills_window_truncated`. Either condition sets `partial=true` so callers do not present incomplete bills as complete coverage.
 - `balances[*].account_scope`, `positions[*].account_scope`, `orders[*].account_scope`, `fills[*].account_scope`, and `bills[*].account_scope` default to `personal_futures` or `personal_spot`; simulated futures rows use `sim_futures`
 - `positions[*].margin_type` is normalized from upstream `marginType` when available
 - `positions[*].position_mode` is normalized from `positionMode` / `separatedMode`; `ONE_WAY` maps to `COMBINED`, `HEDGE` maps to `SEPARATED`

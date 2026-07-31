@@ -697,6 +697,119 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertIn("pending_close_requires_tp_sl", str(exc_info.exception))
         client.prepare_request.assert_not_called()
 
+    def test_contract_place_order_parser_accepts_post_only(self) -> None:
+        import weex_contract_api as contract
+
+        try:
+            args = contract.build_parser().parse_args(
+                [
+                    "place-order",
+                    "--symbol",
+                    "BTCUSDT",
+                    "--side",
+                    "BUY",
+                    "--position-side",
+                    "LONG",
+                    "--type",
+                    "LIMIT",
+                    "--quantity",
+                    "0.01",
+                    "--price",
+                    "69000",
+                    "--time-in-force",
+                    "POST_ONLY",
+                    "--dry-run",
+                ]
+            )
+        except SystemExit as exc:
+            self.fail(f"POST_ONLY should be accepted by the official contract order wrapper: {exc}")
+
+        self.assertEqual(args.time_in_force, "POST_ONLY")
+
+    def test_contract_raw_batch_rejects_more_than_five_orders_before_prepare(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        client.prepare_request.return_value = {
+            "method": "POST",
+            "url": "https://api-contract.weex.com/capi/v3/batchOrders",
+            "headers": {},
+            "query": {},
+            "body": {},
+        }
+        with self.assertRaises(SystemExit) as exc_info:
+            contract.execute_endpoint(
+                client=client,
+                endpoint_key="transaction.place_orders_batch",
+                query={},
+                body={"batchOrders": [{"newClientOrderId": str(index)} for index in range(6)]},
+                dry_run=True,
+                confirm_live=False,
+                confirm_demo=False,
+                trading_mode="live",
+                pretty=False,
+            )
+
+        self.assertIn("at most 5", str(exc_info.exception))
+        client.prepare_request.assert_not_called()
+
+    def test_contract_raw_leverage_requires_at_least_one_leverage_field(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        client.prepare_request.return_value = {
+            "method": "POST",
+            "url": "https://api-contract.weex.com/capi/v3/account/leverage",
+            "headers": {},
+            "query": {},
+            "body": {},
+        }
+        with self.assertRaises(SystemExit) as exc_info:
+            contract.execute_endpoint(
+                client=client,
+                endpoint_key="account.update_leverage_trade",
+                query={},
+                body={"symbol": "BTCUSDT"},
+                dry_run=True,
+                confirm_live=False,
+                confirm_demo=False,
+                trading_mode="live",
+                pretty=False,
+            )
+
+        self.assertIn("at least one leverage", str(exc_info.exception).lower())
+        client.prepare_request.assert_not_called()
+
+    def test_contract_raw_time_windows_reject_ranges_beyond_official_limits(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        client.prepare_request.return_value = {
+            "method": "GET",
+            "url": "https://api-contract.weex.com/test",
+            "headers": {},
+            "query": {},
+            "body": {},
+        }
+        eight_days_ms = 8 * 24 * 60 * 60 * 1000
+        for endpoint_key in ("market.get_funding_rate_history", "transaction.get_trade_details"):
+            with self.subTest(endpoint_key=endpoint_key):
+                with self.assertRaises(SystemExit) as exc_info:
+                    contract.execute_endpoint(
+                        client=client,
+                        endpoint_key=endpoint_key,
+                        query={"startTime": 0, "endTime": eight_days_ms},
+                        body={},
+                        dry_run=True,
+                        confirm_live=False,
+                        confirm_demo=False,
+                        trading_mode="live",
+                        pretty=False,
+                    )
+                self.assertIn("7 days", str(exc_info.exception))
+
+        client.prepare_request.assert_not_called()
+
     def test_contract_demo_place_order_routes_to_sim_endpoint_maps_symbol_and_preserves_official_fields(self) -> None:
         import weex_contract_api as contract
 

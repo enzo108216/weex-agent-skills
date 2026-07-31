@@ -1030,6 +1030,46 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIn("risk_signature", payload)
         self.assertEqual(payload["user_confirmation"]["reply_text"], "确认")
 
+    def test_tp_sl_normalization_accepts_omitted_and_zero_quantity_as_full_position(self) -> None:
+        base = {
+            "symbol": "ETHUSDT",
+            "clientAlgoId": "full-position-tp",
+            "planType": "TAKE_PROFIT",
+            "triggerPrice": "2500",
+            "executePrice": "0",
+            "positionSide": "SHORT",
+            "triggerPriceType": "CONTRACT_PRICE",
+        }
+
+        try:
+            omitted = trade_guard._normalize_tp_sl_order(dict(base))
+            zero = trade_guard._normalize_tp_sl_order({**base, "quantity": "0"})
+        except trade_guard.AggregationInputError as exc:
+            self.fail(f"official full-position TP/SL quantity should be accepted: {exc}")
+
+        self.assertNotIn("quantity", omitted)
+        self.assertEqual(zero["quantity"], "0")
+
+    def test_tp_sl_confirmation_explicitly_warns_when_quantity_targets_full_position(self) -> None:
+        confirmation = trade_guard._build_user_confirmation(
+            "zh",
+            environment={
+                "trading_mode": "live",
+                "uses_real_funds": True,
+            },
+            preview_context={
+                "order_preview": {
+                    "symbol": "ETHUSDT",
+                    "planType": "TAKE_PROFIT",
+                    "positionSide": "SHORT",
+                    "quantity": "0",
+                },
+                "alerts": [],
+            },
+        )
+
+        self.assertIn("全部仓位", confirmation["reply_instruction"])
+
     def test_confirm_tp_sl_executes_live_tp_sl_when_intent_is_valid(self) -> None:
         args = mock.Mock(intent_id="intent-tpsl", risk_signature="sig-tpsl", confirm_live=True, pretty=True)
         tp_sl_order = {

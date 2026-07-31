@@ -170,11 +170,11 @@ class RepoConsistencyTests(unittest.TestCase):
         removed_key = "spot.rebate.get_internal_withdrawal_status"
         removed_path = "/api/v3/rebate/affiliate/getInternalWithdrawalStatus"
         removed_doc = (
-            "https://www.weex.com/api-doc/spot/rebate-endpoints/"
+            "https://www.weex.com/api-doc/partner/rebate-endpoints/"
             "GetInternalWithdrawalStatus"
         )
         kept_doc = (
-            "https://www.weex.com/api-doc/spot/rebate-endpoints/"
+            "https://www.weex.com/api-doc/partner/rebate-endpoints/"
             "GetAffiliateCommission"
         )
         partner = json.loads(PARTNER_API_DEFINITIONS.read_text(encoding="utf-8"))
@@ -186,7 +186,7 @@ class RepoConsistencyTests(unittest.TestCase):
             "partner.get-internal-withdrawal-status",
             {item["key"] for item in partner["definitions"]},
         )
-        self.assertEqual(len(spot_by_key), 32)
+        self.assertEqual(len(spot_by_key), 33)
         self.assertNotIn(removed_key, spot_by_key)
         self.assertNotIn(removed_path, spot_md)
         kept_write = spot_by_key["spot.rebate.internal_withdrawal"]
@@ -418,6 +418,44 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("Some official query endpoints use POST", text)
         self.assertIn("protected as mutating by the local guard", text)
 
+    def test_tp_sl_full_position_quantity_semantics_are_documented(self) -> None:
+        for path in (SKILL, README):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("transaction.place_tp_sl_order", text)
+                self.assertIn("`quantity`", text)
+                self.assertIn("`0` or omitted", text)
+                self.assertIn("full position", text)
+                self.assertIn("must not ask for quantity", text)
+                self.assertIn("confirmation", text)
+
+    def test_script_operations_documents_current_contract_constraints(self) -> None:
+        text = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+
+        self.assertIn("`POST_ONLY`", text)
+        self.assertIn("`transaction.place_orders_batch`", text)
+        self.assertIn("at most 5 orders", text)
+        self.assertIn("`account.update_leverage_trade`", text)
+        self.assertIn("`crossLeverage`", text)
+        self.assertIn("`isolatedLongLeverage`", text)
+        self.assertIn("`isolatedShortLeverage`", text)
+        self.assertIn("at least one", text)
+        self.assertIn("`market.get_funding_rate_history`", text)
+        self.assertIn("`transaction.get_trade_details`", text)
+        self.assertIn("7 days", text)
+        self.assertIn("past 365 days", text)
+        self.assertIn("`transaction.place_tp_sl_order`", text)
+        self.assertIn("full position", text)
+
+    def test_trade_data_schema_documents_futures_bill_cursor_degradation(self) -> None:
+        text = TRADE_DATA_SCHEMA_REFERENCE.read_text(encoding="utf-8")
+
+        self.assertIn("`nextKey.nextKeyId`", text)
+        self.assertIn("`nextKey.nextKeyTime`", text)
+        self.assertIn("`futures_bills_cursor_stalled`", text)
+        self.assertIn("`futures_bills_window_truncated`", text)
+        self.assertIn("`partial=true`", text)
+
     def test_setup_docs_avoid_shell_specific_line_continuations(self) -> None:
         offenders: list[str] = []
         for path in (SCRIPT_OPERATIONS_REFERENCE, PROFILE_ONBOARDING_REFERENCE, LINUX_VAULT_REFERENCE):
@@ -590,18 +628,63 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertEqual(invalid, [])
         self.assertIn("spot.market.get_ticker_info", spot_reference_text)
 
+    def test_compact_endpoint_references_use_current_docs_and_catalog_groups(self) -> None:
+        contract_text = (ROOT / "references" / "contract-endpoints.md").read_text(encoding="utf-8")
+        spot_text = (ROOT / "references" / "spot-endpoints.md").read_text(encoding="utf-8")
+
+        self.assertIn("https://www.weex.com/api-doc/contract/changelog", contract_text)
+        self.assertIn("`market.*`", contract_text)
+        self.assertIn("`account.*`", contract_text)
+        self.assertIn("`transaction.*`", contract_text)
+        self.assertIn("`sim.*`", contract_text)
+        self.assertIn("`POST /capi/v3/sim/order`", contract_text)
+        self.assertNotIn("/contract/log/changelog", contract_text)
+        self.assertNotIn("Market: `/capi/v3/market/*`", contract_text)
+        self.assertNotIn("Account: `/capi/v3/account/*`", contract_text)
+
+        self.assertIn("https://www.weex.com/api-doc/spot/changelog", spot_text)
+        self.assertIn("`spot.tax.*`", spot_text)
+        self.assertIn("`spot.rebate.*`", spot_text)
+        self.assertIn("Partner rebate", spot_text)
+        self.assertNotIn("/spot/log/changelog", spot_text)
+
+    def test_definition_regeneration_scope_includes_current_raw_doc_families(self) -> None:
+        text = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+
+        self.assertIn("spot tax", text)
+        self.assertIn("current Partner rebate", text)
+        self.assertIn("contract demo", text)
+
+    def test_manifest_routes_tp_sl_preview_and_confirmation(self) -> None:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        task_map = manifest["routing"]["task_map"]
+
+        preview_files = [
+            "scripts/weex_trade_guard.py",
+            "scripts/weex_order_intent_state.py",
+            "references/contract-api-definitions.json",
+        ]
+        confirm_files = [
+            "scripts/weex_trade_guard.py",
+            "scripts/weex_contract_api.py",
+            "scripts/weex_order_intent_state.py",
+            "references/contract-api-definitions.json",
+        ]
+        self.assertEqual(task_map["preview TP/SL conditional-order risk"], preview_files)
+        self.assertEqual(task_map["confirm a TP/SL conditional order"], confirm_files)
+
     def test_contract_definitions_include_futures_demo_endpoints(self) -> None:
         definitions = json.loads((ROOT / "references" / "contract-api-definitions.json").read_text(encoding="utf-8"))
         by_key = {definition["key"]: definition for definition in definitions["definitions"]}
 
         expected = {
-            "sim.account.get_account_balance": ("GET", "/capi/v3/sim/balance", "USER_DATA", 5, 10),
-            "sim.transaction.place_order": ("POST", "/capi/v3/sim/order", "TRADE", 2, 5),
-            "sim.account.get_all_positions": ("GET", "/capi/v3/sim/position/allPosition", "USER_DATA", 10, 15),
-            "sim.transaction.get_order_history": ("GET", "/capi/v3/sim/order/history", "USER_DATA", 10, 10),
+            "sim.account.get_account_balance": ("GET", "/capi/v3/sim/balance", "USER_DATA", 5),
+            "sim.transaction.place_order": ("POST", "/capi/v3/sim/order", "TRADE", None),
+            "sim.account.get_all_positions": ("GET", "/capi/v3/sim/position/allPosition", "USER_DATA", 10),
+            "sim.transaction.get_order_history": ("GET", "/capi/v3/sim/order/history", "USER_DATA", 10),
         }
 
-        for key, (method, path, permission, weight_ip, weight_uid) in expected.items():
+        for key, (method, path, permission, weight_ip) in expected.items():
             with self.subTest(key=key):
                 definition = by_key[key]
                 self.assertEqual(definition["category"], "sim")
@@ -609,8 +692,17 @@ class RepoConsistencyTests(unittest.TestCase):
                 self.assertEqual(definition["path"], path)
                 self.assertTrue(definition["requires_auth"])
                 self.assertEqual(definition["permission"], permission)
-                self.assertEqual(definition["weight_ip"], weight_ip)
-                self.assertEqual(definition["weight_uid"], weight_uid)
+                self.assertEqual(definition.get("weight_ip"), weight_ip)
+                self.assertNotIn("weight_uid", definition)
+
+        demo_limits = {
+            item["header"]: item["limit"]
+            for item in by_key["sim.transaction.place_order"]["rate_limits"]
+        }
+        self.assertEqual(
+            demo_limits,
+            {"X-ORDER-COUNT-10S": 1, "X-ORDER-COUNT-1M": 1, "X-USED-WEIGHT-1M": 0},
+        )
 
         order_params = {
             row["name"]: row
