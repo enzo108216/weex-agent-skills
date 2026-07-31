@@ -60,6 +60,14 @@ class MonitorDocsConsistencyTests(unittest.TestCase):
         self.assertIn("Close the BTCUSDT long position automatically", skill_text)
         self.assertIn("unrealized PnL is above 50", skill_text)
 
+    def test_skill_uses_trader_numbered_profile_choice_when_account_is_ambiguous(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+
+        self.assertIn("trader's numbered profile-choice rule", skill_text)
+        self.assertIn("number or exact profile name", skill_text)
+        self.assertIn("standalone account-selection question", skill_text)
+        self.assertIn("Do not infer a profile", skill_text)
+
     def test_skill_documents_combined_monitor_and_live_run_flow(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
