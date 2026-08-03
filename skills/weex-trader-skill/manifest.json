@@ -53,7 +53,8 @@
           "ticker",
           "poll-ticker"
         ],
-        "needs_profile_for_private": true,
+        "needs_profile_for_private": false,
+        "private_credential_sources": ["WEEX_API_KEY/WEEX_API_SECRET/WEEX_API_PASSPHRASE", "saved_profile"],
         "trading_mode": "live by default; demo is supported only for official simulated futures sim.* endpoints"
       },
       "spot": {
@@ -68,7 +69,8 @@
           "ticker",
           "place-order"
         ],
-        "needs_profile_for_private": true
+        "needs_profile_for_private": false,
+        "private_credential_sources": ["WEEX_API_KEY/WEEX_API_SECRET/WEEX_API_PASSPHRASE", "saved_profile"]
       },
       "partner": {
         "entrypoint": "scripts/weex_partner_api.py",
@@ -151,6 +153,7 @@
     "task_map": {
       "check contract balance or positions": [
         "scripts/weex_contract_api.py",
+        "scripts/weex_api_credentials.py",
         "scripts/weex_profile_store.py"
       ],
       "check simulated futures balance or positions": [
@@ -159,6 +162,7 @@
       ],
       "check spot balance": [
         "scripts/weex_spot_api.py",
+        "scripts/weex_api_credentials.py",
         "scripts/weex_profile_store.py"
       ],
       "execute an allowlisted Partner query": [
@@ -231,8 +235,15 @@
       "Application Vault"
     ],
     "env_vars": {
+      "WEEX_API_KEY": "Runtime WEEX API key for direct private contract and spot REST calls without --profile.",
+      "WEEX_API_SECRET": "Runtime WEEX API secret for signing direct private contract and spot REST calls without --profile.",
+      "WEEX_API_PASSPHRASE": "Runtime WEEX API passphrase for direct private contract and spot REST calls without --profile.",
       "WEEX_TRADER_SKILL_HOME": "Override the runtime state directory for profiles, vault data, and agent cache.",
       "WEEX_API_TIMEOUT": "Override HTTP timeout in seconds; Partner REST defaults to 30 seconds.",
+      "WEEX_API_BASE": "Optional shared contract/spot API base URL fallback; product-specific overrides take precedence.",
+      "WEEX_CONTRACT_API_BASE": "Optional contract API base URL override for direct contract REST calls.",
+      "WEEX_SPOT_API_BASE": "Optional spot API base URL override for direct spot REST calls.",
+      "WEEX_LOCALE": "Optional locale header override for direct contract and spot REST calls.",
       "WEEX_ORDER_INTENT_TTL_SECONDS": "Override the pending order confirmation TTL in seconds for trade guard flows.",
       "WEEX_GUI_FORCE_FOREGROUND": "Disable GUI auto-detach and keep the GUI entrypoint attached to the current shell, which can reintroduce a Terminal/cmd window."
     }

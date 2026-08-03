@@ -36,6 +36,9 @@ AGENT_INIT_FILENAME = "agent-init.json"
 AGENT_RUNTIME_FILENAME = "agent-runtime.json"
 REQUIRED_MODULES = ("cryptography", "requests")
 RUNTIME_ENV_VARS = (
+    "WEEX_API_KEY",
+    "WEEX_API_SECRET",
+    "WEEX_API_PASSPHRASE",
     "WEEX_TRADER_SKILL_HOME",
     "WEEX_LOCALE",
     "WEEX_API_TIMEOUT",
@@ -566,7 +569,11 @@ def build_agent_init_state(preferred_language: str | None = None) -> dict[str, A
             "profile_management": _route_profile_management(os_family, resolved_language, gui_available, interaction_mode),
             "vault_management": _route_vault_management(os_family, resolved_language, gui_available, interaction_mode),
             "public_api_launcher": _launcher_for_os(os_family),
-            "private_api_requires": ["saved_profile", "vault_ready"],
+            "private_api_requires": [
+                "direct_contract_spot:complete_environment_credentials_or_saved_profile",
+                "partner_aggregation_trade_guard:saved_profile",
+                "vault_ready_for_saved_profile_paths",
+            ],
         },
         "vault": vault_summary,
         "profiles": metadata_summary,
@@ -618,7 +625,7 @@ def build_agent_runtime_state(
             "missing_modules": missing_modules,
         },
         "env": {
-            env_name: bool(os.getenv(env_name))
+            env_name: bool(_clean_text(os.getenv(env_name)))
             for env_name in RUNTIME_ENV_VARS
         },
         "env_validation": env_validation,

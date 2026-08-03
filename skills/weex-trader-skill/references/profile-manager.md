@@ -98,7 +98,7 @@ Collect or review the full profile parameter set, not only the minimum credentia
 - description / note: optional metadata for account purpose or permissions
 - `contract_base_url`: optional; leave empty to use `https://api-contract.weex.com`; custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
 - `spot_base_url`: optional; leave empty to use `https://api-spot.weex.com`; custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`
-- whether to set it as default: optional workflow choice; if enabled, later private commands can omit `--profile`
+- whether to set it as default: optional workflow choice; if enabled, direct contract/spot commands use it when `--profile` is omitted and the fixed `WEEX_API_KEY` / `WEEX_API_SECRET` / `WEEX_API_PASSPHRASE` set is absent. Pass `--profile` explicitly when a command must use this saved profile.
 
 ## Typical GUI Tasks
 
@@ -146,7 +146,7 @@ The GUI keeps the existing `profile_id`, so rename is safer here than in ad hoc 
 
 ## Notes
 
-- private REST commands require a saved profile
+- direct `weex_contract_api.py` and `weex_spot_api.py` private REST commands may instead use the complete fixed environment credential set; this profile manager remains required for saved-profile workflows
 - public commands such as `ticker` and `list-endpoints` do not require a valid default profile
 - on Windows and macOS, the GUI entrypoints must use an explicitly prepared managed CPython 3.12.13 runtime even when the current interpreter can launch Tk; AI should explain the pinned setup and ask for confirmation before running `scripts/weex_gui_bootstrap.py ensure --accept-managed-runtime --pretty`
 - on Windows and macOS, the GUI entrypoints can also auto-detach from non-interactive/tool-managed shells so the UI keeps running after the launcher shell exits without needing an extra Terminal/cmd window in the normal detached-launch path; the detached launcher points the child process at the managed runtime

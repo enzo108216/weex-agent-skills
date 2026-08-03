@@ -521,6 +521,384 @@ runpy.run_path(script_path, run_name="__main__")
         preflight_mock.assert_called_once_with(command="spot.place-order", auto_setup=True, language=None)
         resolve_mock.assert_not_called()
 
+    def test_contract_private_command_uses_standard_environment_credentials_without_profile(self) -> None:
+        import weex_contract_api as contract
+
+        args = types.SimpleNamespace(
+            command="call",
+            endpoint="account.get_account_balance",
+            profile=None,
+            base_url=None,
+            timeout=None,
+        )
+        parser = mock.Mock()
+        parser.parse_args.return_value = args
+        credentials = {
+            "WEEX_API_KEY": "env-api-key",
+            "WEEX_API_SECRET": "env-api-secret",
+            "WEEX_API_PASSPHRASE": "env-api-passphrase",
+        }
+
+        with mock.patch.dict(os.environ, credentials, clear=True):
+            with mock.patch.object(contract, "build_parser", return_value=parser):
+                with mock.patch.object(contract, "refresh_agent_records"):
+                    with mock.patch.object(contract, "ensure_private_runtime_ready") as preflight_mock:
+                        with mock.patch.object(contract, "resolve_runtime_profile") as resolve_mock:
+                            with mock.patch.object(contract, "WeexContractClient", return_value=object()) as client_mock:
+                                with mock.patch.object(contract, "cmd_call", return_value=0):
+                                    exit_code = contract.main()
+
+        self.assertEqual(exit_code, 0)
+        preflight_mock.assert_not_called()
+        resolve_mock.assert_not_called()
+        client_mock.assert_called_once_with(
+            base_url=contract.DEFAULT_BASE_URL,
+            timeout=contract.DEFAULT_TIMEOUT,
+            locale=contract.DEFAULT_LOCALE,
+            api_key="env-api-key",
+            api_secret="env-api-secret",
+            api_passphrase="env-api-passphrase",
+            profile_name=None,
+        )
+
+    def test_spot_private_command_uses_standard_environment_credentials_without_profile(self) -> None:
+        import weex_spot_api as spot
+
+        args = types.SimpleNamespace(
+            command="call",
+            endpoint="spot.account.get_account_balance",
+            profile=None,
+            base_url=None,
+            timeout=None,
+        )
+        parser = mock.Mock()
+        parser.parse_args.return_value = args
+        credentials = {
+            "WEEX_API_KEY": "env-api-key",
+            "WEEX_API_SECRET": "env-api-secret",
+            "WEEX_API_PASSPHRASE": "env-api-passphrase",
+        }
+
+        with mock.patch.dict(os.environ, credentials, clear=True):
+            with mock.patch.object(spot, "build_parser", return_value=parser):
+                with mock.patch.object(spot, "refresh_agent_records"):
+                    with mock.patch.object(spot, "ensure_private_runtime_ready") as preflight_mock:
+                        with mock.patch.object(spot, "resolve_runtime_profile") as resolve_mock:
+                            with mock.patch.object(spot, "WeexSpotClient", return_value=object()) as client_mock:
+                                with mock.patch.object(spot, "cmd_call", return_value=0):
+                                    exit_code = spot.main()
+
+        self.assertEqual(exit_code, 0)
+        preflight_mock.assert_not_called()
+        resolve_mock.assert_not_called()
+        client_mock.assert_called_once_with(
+            base_url=spot.DEFAULT_BASE_URL,
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key="env-api-key",
+            api_secret="env-api-secret",
+            api_passphrase="env-api-passphrase",
+            profile_name=None,
+        )
+
+    def test_explicit_profile_takes_precedence_over_standard_environment_credentials(self) -> None:
+        import weex_contract_api as contract
+
+        args = types.SimpleNamespace(
+            command="call",
+            endpoint="account.get_account_balance",
+            profile="saved-main",
+            base_url=None,
+            timeout=None,
+        )
+        parser = mock.Mock()
+        parser.parse_args.return_value = args
+        profile = types.SimpleNamespace(
+            name="saved-main",
+            contract_base_url="https://contract.weex.tech",
+        )
+        credentials = {
+            "WEEX_API_KEY": "env-api-key",
+            "WEEX_API_SECRET": "env-api-secret",
+            "WEEX_API_PASSPHRASE": "env-api-passphrase",
+        }
+
+        with mock.patch.dict(os.environ, credentials, clear=True):
+            with mock.patch.object(contract, "build_parser", return_value=parser):
+                with mock.patch.object(contract, "refresh_agent_records"):
+                    with mock.patch.object(contract, "ensure_private_runtime_ready") as preflight_mock:
+                        with mock.patch.object(contract, "resolve_runtime_profile", return_value=profile) as resolve_mock:
+                            with mock.patch.object(contract, "WeexContractClient", return_value=object()) as client_mock:
+                                with mock.patch.object(contract, "cmd_call", return_value=0):
+                                    exit_code = contract.main()
+
+        self.assertEqual(exit_code, 0)
+        preflight_mock.assert_called_once_with(command="contract.call", auto_setup=True, language=None)
+        resolve_mock.assert_called_once_with(
+            requested_profile="saved-main",
+            allow_invalid_default=False,
+        )
+        client_mock.assert_called_once_with(
+            base_url="https://contract.weex.tech",
+            timeout=contract.DEFAULT_TIMEOUT,
+            locale=contract.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name="saved-main",
+        )
+
+    def test_private_command_rejects_partial_standard_environment_credentials(self) -> None:
+        import weex_contract_api as contract
+        import weex_spot_api as spot
+
+        cases = (
+            (contract, "account.get_account_balance"),
+            (spot, "spot.account.get_account_balance"),
+        )
+
+        for module, endpoint in cases:
+            with self.subTest(module=module.__name__):
+                args = types.SimpleNamespace(
+                    command="call",
+                    endpoint=endpoint,
+                    profile=None,
+                    base_url=None,
+                    timeout=None,
+                )
+                parser = mock.Mock()
+                parser.parse_args.return_value = args
+
+                with mock.patch.dict(os.environ, {"WEEX_API_KEY": "env-api-key"}, clear=True):
+                    with mock.patch.object(module, "build_parser", return_value=parser):
+                        with mock.patch.object(module, "refresh_agent_records"):
+                            with self.assertRaisesRegex(
+                                SystemExit,
+                                "WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE",
+                            ):
+                                module.main()
+
+    def test_environment_credential_loader_rejects_blank_values_and_trims_secret_files(self) -> None:
+        from weex_api_credentials import load_environment_credentials
+
+        blank_credentials = {
+            "WEEX_API_KEY": "   ",
+            "WEEX_API_SECRET": "\n",
+            "WEEX_API_PASSPHRASE": "\t",
+        }
+        with self.assertRaisesRegex(SystemExit, "must set WEEX_API_KEY"):
+            load_environment_credentials(blank_credentials)
+
+        credentials = load_environment_credentials(
+            {
+                "WEEX_API_KEY": " env-api-key\n",
+                "WEEX_API_SECRET": "env-api-secret ",
+                "WEEX_API_PASSPHRASE": " env-api-passphrase ",
+            }
+        )
+        self.assertIsNotNone(credentials)
+        self.assertEqual(credentials.api_key, "env-api-key")
+        self.assertEqual(credentials.api_secret, "env-api-secret")
+        self.assertEqual(credentials.api_passphrase, "env-api-passphrase")
+
+    def test_spot_explicit_profile_takes_precedence_over_standard_environment_credentials(self) -> None:
+        import weex_spot_api as spot
+
+        args = types.SimpleNamespace(
+            command="call",
+            endpoint="spot.account.get_account_balance",
+            profile="saved-main",
+            base_url=None,
+            timeout=None,
+        )
+        parser = mock.Mock()
+        parser.parse_args.return_value = args
+        profile = types.SimpleNamespace(
+            name="saved-main",
+            spot_base_url="https://spot.weex.tech",
+        )
+        credentials = {
+            "WEEX_API_KEY": "env-api-key",
+            "WEEX_API_SECRET": "env-api-secret",
+            "WEEX_API_PASSPHRASE": "env-api-passphrase",
+        }
+
+        with mock.patch.dict(os.environ, credentials, clear=True):
+            with mock.patch.object(spot, "build_parser", return_value=parser):
+                with mock.patch.object(spot, "refresh_agent_records"):
+                    with mock.patch.object(spot, "ensure_private_runtime_ready") as preflight_mock:
+                        with mock.patch.object(spot, "resolve_runtime_profile", return_value=profile) as resolve_mock:
+                            with mock.patch.object(spot, "WeexSpotClient", return_value=object()) as client_mock:
+                                with mock.patch.object(spot, "cmd_call", return_value=0):
+                                    exit_code = spot.main()
+
+        self.assertEqual(exit_code, 0)
+        preflight_mock.assert_called_once_with(command="spot.call", auto_setup=True, language=None)
+        resolve_mock.assert_called_once_with(
+            requested_profile="saved-main",
+            allow_invalid_default=False,
+        )
+        client_mock.assert_called_once_with(
+            base_url="https://spot.weex.tech",
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name="saved-main",
+        )
+
+    def test_explicit_profile_ignores_partial_direct_environment_credentials(self) -> None:
+        import weex_contract_api as contract
+        import weex_spot_api as spot
+
+        cases = (
+            (contract, "account.get_account_balance", "contract_base_url"),
+            (spot, "spot.account.get_account_balance", "spot_base_url"),
+        )
+        profile = types.SimpleNamespace(
+            name="saved-main",
+            contract_base_url="https://contract.weex.tech",
+            spot_base_url="https://spot.weex.tech",
+        )
+
+        for module, endpoint, _base_attr in cases:
+            with self.subTest(module=module.__name__):
+                args = types.SimpleNamespace(
+                    command="call",
+                    endpoint=endpoint,
+                    profile="saved-main",
+                    base_url=None,
+                    timeout=None,
+                )
+                parser = mock.Mock()
+                parser.parse_args.return_value = args
+                with mock.patch.dict(os.environ, {"WEEX_API_KEY": "partial-key"}, clear=True):
+                    with mock.patch.object(module, "build_parser", return_value=parser):
+                        with mock.patch.object(module, "refresh_agent_records"):
+                            with mock.patch.object(module, "ensure_private_runtime_ready"):
+                                with mock.patch.object(module, "resolve_runtime_profile", return_value=profile):
+                                    client_class = (
+                                        module.WeexContractClient
+                                        if module is contract
+                                        else module.WeexSpotClient
+                                    )
+                                    with mock.patch.object(module, client_class.__name__, return_value=object()):
+                                        with mock.patch.object(module, "cmd_call", return_value=0):
+                                            exit_code = module.main()
+
+                self.assertEqual(exit_code, 0)
+
+    def test_environment_credentials_report_invalid_timeout_without_traceback(self) -> None:
+        env = os.environ.copy()
+        env.update(
+            {
+                "WEEX_API_KEY": "env-api-key",
+                "WEEX_API_SECRET": "env-api-secret",
+                "WEEX_API_PASSPHRASE": "env-api-passphrase",
+                "WEEX_API_TIMEOUT": "abc",
+            }
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "weex_contract_api.py"),
+                "call",
+                "--endpoint",
+                "account.get_account_balance",
+                "--dry-run",
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        combined = f"{completed.stdout}\n{completed.stderr}"
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("WEEX_API_TIMEOUT", combined)
+        self.assertNotIn("Traceback", combined)
+
+    def test_environment_credentials_sign_private_dry_runs_without_profile_dependencies(self) -> None:
+        credentials = {
+            "WEEX_API_KEY": "env-api-key",
+            "WEEX_API_SECRET": "env-api-secret",
+            "WEEX_API_PASSPHRASE": "env-api-passphrase",
+        }
+        commands = (
+            ("weex_contract_api.py", "account.get_account_balance"),
+            ("weex_spot_api.py", "spot.account.get_account_balance"),
+        )
+
+        with mock.patch.dict(os.environ, credentials, clear=False):
+            for script_name, endpoint in commands:
+                with self.subTest(script_name=script_name):
+                    completed = self.run_script_without_cryptography(
+                        script_name,
+                        "call",
+                        "--endpoint",
+                        endpoint,
+                        "--dry-run",
+                    )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    payload = json.loads(completed.stdout)
+                    self.assertTrue(payload["dry_run"])
+                    self.assertEqual(payload["headers"]["ACCESS-KEY"], "***")
+                    self.assertEqual(payload["headers"]["ACCESS-PASSPHRASE"], "***")
+                    self.assertEqual(payload["headers"]["ACCESS-SIGN"], "***")
+
+    def test_environment_credentials_do_not_load_profile_runtime_dependencies(self) -> None:
+        import weex_contract_api as contract
+        import weex_spot_api as spot
+
+        clients = (
+            (
+                contract,
+                contract.WeexContractClient(
+                    base_url=contract.DEFAULT_BASE_URL,
+                    timeout=contract.DEFAULT_TIMEOUT,
+                    locale=contract.DEFAULT_LOCALE,
+                    api_key="env-api-key",
+                    api_secret="env-api-secret",
+                    api_passphrase="env-api-passphrase",
+                ),
+            ),
+            (
+                spot,
+                spot.WeexSpotClient(
+                    base_url=spot.DEFAULT_BASE_URL,
+                    timeout=spot.DEFAULT_TIMEOUT,
+                    locale=spot.DEFAULT_LOCALE,
+                    api_key="env-api-key",
+                    api_secret="env-api-secret",
+                    api_passphrase="env-api-passphrase",
+                ),
+            ),
+        )
+
+        for module, client in clients:
+            with self.subTest(module=module.__name__):
+                with mock.patch.object(module, "_load_profile_runtime_dependencies") as dependency_loader:
+                    client._require_auth()
+
+                dependency_loader.assert_not_called()
+
+    def test_direct_api_help_describes_environment_credentials_and_base_overrides(self) -> None:
+        import weex_contract_api as contract
+        import weex_spot_api as spot
+
+        expected_base_env = (
+            (contract.build_parser(), "WEEX_CONTRACT_API_BASE"),
+            (spot.build_parser(), "WEEX_SPOT_API_BASE"),
+        )
+
+        for parser, base_env_name in expected_base_env:
+            with self.subTest(base_env_name=base_env_name):
+                help_text = parser.format_help()
+                self.assertIn("WEEX_API_KEY", help_text)
+                self.assertIn(base_env_name, help_text)
+
     def test_contract_prepare_request_rejects_body_for_get(self) -> None:
         import weex_contract_api as contract
 

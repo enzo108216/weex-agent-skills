@@ -23,6 +23,7 @@ It supports:
 - Module quick-reference
 - Companion skill boundary
 - Recommended order flow
+- Container environment setup
 - Saved profile setup
 - Security notes
 - Troubleshooting
@@ -70,7 +71,7 @@ When a GUI must be launched from an AI/tool-managed shell, the detached launcher
 If `agent-init.json` is missing and the AI is about to use an auto-language wrapper such as `scripts/weex_vault.py`, the AI should refresh the cache first instead of guessing.
 
 For repo-local dependency setup, one-command runtime installation, direct script invocation, or maintenance commands, use [Script operations](references/script-operations.md) instead of this overview page.
-Private contract and spot CLIs can now auto-attempt that runtime setup helper when the current interpreter is missing required Python dependencies.
+Private contract and spot CLIs auto-attempt that runtime setup helper only for the saved-profile path. A container using the complete fixed environment credential set does not need the profile/Vault dependency path.
 
 Example prompts:
 
@@ -124,7 +125,7 @@ Keep the detailed analysis workflow, analysis commands, and result semantics in 
 Use this safety order for trading tasks:
 
 - run `skill.preflight` first so profile, runtime, env, and GUI-routing facts are fresh before private actions
-- use a saved profile for private REST access instead of pasting credentials into ad hoc commands
+- use runtime-injected `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` for containerized direct contract/spot REST, or use a saved profile for interactive workflows
 - choose the trading mode explicitly for account queries and direct non-preview actions: `live` maps to `真实盘` in Chinese and `real trading` in English; `demo` maps to `模拟盘` in Chinese and `demo trading` in English
 - keep `live` and `demo` as internal command values only; when speaking to the user, use localized trading-mode labels such as `模拟盘` and `真实盘` in Chinese or `demo trading` and `real trading` in English, not environment labels, not account labels, and not raw `live` or `demo`
 - for natural-language private account queries and direct non-preview actions, if the user did not clearly choose `模拟盘` or `真实盘` in Chinese, or `demo trading` or `real trading` in English, ask them to choose before calling private commands
@@ -144,9 +145,21 @@ Convenience order and guard flows accept normal contract symbols such as `BTCUSD
 
 Partner queries use the exact production default unless the selected saved profile contains a strictly validated `https://*.weex.tech` test subdomain. Partner output reports only `partner_production` or `partner_test`; it does not expose the concrete test origin. API base environment overrides and authenticated redirects remain forbidden.
 
+## Container Environment Setup
+
+For direct private contract/spot REST, these are the only required environment variables, and all three must be configured together:
+
+```bash
+export WEEX_API_KEY="your-api-key"
+export WEEX_API_SECRET="your-secret-key"
+export WEEX_API_PASSPHRASE="your-passphrase"
+```
+
+All other supported environment variables are optional. `WEEX_CONTRACT_API_BASE` and `WEEX_SPOT_API_BASE` select product-specific hosts, `WEEX_API_BASE` is their shared fallback, `WEEX_API_TIMEOUT` changes the request timeout, and `WEEX_LOCALE` changes the locale header. If the base URL variables are omitted, the official production hosts are used. For staging, set the product-specific base URLs because contract and spot use different hosts. Inject secrets through the container/orchestrator secret mechanism and omit `--profile`.
+
 ## Saved Profile Setup
 
-Private account and trading operations require a saved profile.
+Direct private contract/spot REST can use `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together without a saved profile. With no explicit `--profile`, that complete set takes precedence over the default saved profile; a partial set is rejected. Partner, aggregation, trade-guard, and profile-management flows continue to require saved profiles.
 
 Choose the setup guide that matches how you want to work:
 
@@ -164,8 +177,8 @@ If an AI or automation host launches the GUI, prefer `scripts/weex_gui_launcher.
 - Never share or commit API credentials.
 - Use least-privilege API keys for this workflow.
 - If credentials are exposed, revoke or rotate them immediately.
-- Prefer saved profiles over ad hoc secret-passing shell commands.
-- For server automation, avoid `--api-key`, `--api-secret`, and `--api-passphrase` on argv; prefer environment variables or `--secrets-stdin-json`.
+- Prefer saved profiles for interactive use and the container/orchestrator secret-injection mechanism for direct contract/spot REST automation.
+- For server automation, avoid `--api-key`, `--api-secret`, and `--api-passphrase` on argv. Use the fixed direct-runtime variables or use `--secrets-stdin-json` when creating a saved profile.
 - Raw argv secrets and literal vault passwords can leak through shell history, the process list, terminal scrollback, audit logs, and crash reports.
 - temporary password files and secret JSON files can leak through backups, sync folders, editors' recent-file lists, and filesystem forensics. Delete them immediately and keep them outside the repo.
 - `profiles.meta.json` is not the encrypted vault. It can still reveal account names, descriptions, default-profile choices, and custom base URLs.

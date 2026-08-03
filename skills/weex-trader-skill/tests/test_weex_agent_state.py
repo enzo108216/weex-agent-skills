@@ -20,6 +20,62 @@ from weex_gui_bootstrap import RuntimeProbe  # noqa: E402
 
 
 class AgentStateGuiRuntimeTests(unittest.TestCase):
+    def test_preflight_routes_distinguish_direct_environment_and_saved_profile_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(agent_state.platform, "system", return_value="Linux"):
+                    payload = agent_state.build_agent_init_state(preferred_language="en")
+
+        self.assertEqual(
+            payload["routes"]["private_api_requires"],
+            [
+                "direct_contract_spot:complete_environment_credentials_or_saved_profile",
+                "partner_aggregation_trade_guard:saved_profile",
+                "vault_ready_for_saved_profile_paths",
+            ],
+        )
+
+    def test_runtime_state_reports_environment_credential_presence_without_values(self) -> None:
+        credentials = {
+            "WEEX_API_KEY": "env-api-key",
+            "WEEX_API_SECRET": "env-api-secret",
+            "WEEX_API_PASSPHRASE": "env-api-passphrase",
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = {"WEEX_TRADER_SKILL_HOME": tempdir, **credentials}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(agent_state, "_probe_required_modules", return_value=(True, [])):
+                    with mock.patch.object(agent_state, "_load_store_module", return_value=None):
+                        payload = agent_state.build_agent_runtime_state(
+                            preferred_language="en",
+                            command="contract.call",
+                        )
+
+        for env_name in credentials:
+            self.assertIs(payload["env"][env_name], True)
+            self.assertNotEqual(payload["env"][env_name], credentials[env_name])
+
+    def test_runtime_state_does_not_report_blank_environment_credentials_as_configured(self) -> None:
+        blank_credentials = {
+            "WEEX_API_KEY": "   ",
+            "WEEX_API_SECRET": "\n",
+            "WEEX_API_PASSPHRASE": "\t",
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            env = {"WEEX_TRADER_SKILL_HOME": tempdir, **blank_credentials}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(agent_state, "_probe_required_modules", return_value=(True, [])):
+                    with mock.patch.object(agent_state, "_load_store_module", return_value=None):
+                        payload = agent_state.build_agent_runtime_state(
+                            preferred_language="en",
+                            command="contract.call",
+                        )
+
+        for env_name in blank_credentials:
+            self.assertIs(payload["env"][env_name], False)
+
     def test_runtime_state_can_skip_default_profile_credential_probe(self) -> None:
         self.assertIn(
             "probe_default_profile_usable",

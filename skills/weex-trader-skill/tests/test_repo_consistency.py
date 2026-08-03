@@ -621,6 +621,89 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertNotIn("WEEX_PROFILE_LANG", combined)
         self.assertNotIn("WEEX_PROFILE_LANG", manifest["state"]["env_vars"])
 
+    def test_standard_environment_credentials_are_documented_for_private_api_calls(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        readme_text = README.read_text(encoding="utf-8")
+        auth_text = AUTH_REFERENCE.read_text(encoding="utf-8")
+        operations_text = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+        profile_manager_text = PROFILE_MANAGER_REFERENCE.read_text(encoding="utf-8")
+        troubleshooting_text = TROUBLESHOOTING_REFERENCE.read_text(encoding="utf-8")
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        env_names = ("WEEX_API_KEY", "WEEX_API_SECRET", "WEEX_API_PASSPHRASE")
+        optional_direct_env_names = (
+            "WEEX_API_BASE",
+            "WEEX_CONTRACT_API_BASE",
+            "WEEX_SPOT_API_BASE",
+            "WEEX_API_TIMEOUT",
+            "WEEX_LOCALE",
+        )
+
+        for env_name in env_names:
+            self.assertIn(env_name, skill_text)
+            self.assertIn(env_name, readme_text)
+            self.assertIn(env_name, auth_text)
+            self.assertIn(env_name, operations_text)
+            self.assertIn(env_name, troubleshooting_text)
+            self.assertIn(env_name, manifest["state"]["env_vars"])
+        for env_name in optional_direct_env_names:
+            self.assertIn(env_name, readme_text)
+            self.assertIn(env_name, operations_text)
+            self.assertIn(env_name, manifest["state"]["env_vars"])
+        self.assertIn("scripts/weex_api_credentials.py", file_index["file_guide"])
+        self.assertIn("without a saved profile", auth_text)
+        self.assertNotIn("private REST commands require a saved profile", profile_manager_text)
+
+    def test_environment_credentials_are_scoped_and_routed_consistently(self) -> None:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        script_importers = {
+            path.name
+            for path in (ROOT / "scripts").glob("*.py")
+            if "from weex_api_credentials import load_environment_credentials"
+            in path.read_text(encoding="utf-8")
+        }
+
+        self.assertEqual(script_importers, {"weex_contract_api.py", "weex_spot_api.py"})
+        for task_name in ("check contract balance or positions", "check spot balance"):
+            self.assertIn(
+                "scripts/weex_api_credentials.py",
+                manifest["routing"]["task_map"][task_name],
+            )
+        for domain in ("partner", "trade_analysis", "trade_guard", "profile_management"):
+            self.assertNotIn(
+                "WEEX_API_KEY/WEEX_API_SECRET/WEEX_API_PASSPHRASE",
+                manifest["routing"]["domains"][domain].get("private_credential_sources", []),
+            )
+
+    def test_default_profile_guidance_accounts_for_environment_precedence(self) -> None:
+        manager_source = (ROOT / "scripts" / "weex_profile_manager_app.py").read_text(encoding="utf-8")
+        profiles_source = (ROOT / "scripts" / "weex_profiles_cli.py").read_text(encoding="utf-8")
+        profile_manager_text = PROFILE_MANAGER_REFERENCE.read_text(encoding="utf-8")
+        onboarding_text = PROFILE_ONBOARDING_REFERENCE.read_text(encoding="utf-8")
+
+        for text in (manager_source, profiles_source, profile_manager_text, onboarding_text):
+            self.assertIn("WEEX_API_KEY", text)
+        self.assertIn("fixed environment credential set is absent", manager_source)
+        self.assertIn("未配置固定三项环境变量", manager_source)
+        self.assertIn("fixed environment credential set is absent", profiles_source)
+        self.assertIn("未配置固定三项环境变量", profiles_source)
+
+    def test_dependency_docs_preserve_lightweight_environment_path(self) -> None:
+        operations_text = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+        troubleshooting_text = TROUBLESHOOTING_REFERENCE.read_text(encoding="utf-8")
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+
+        self.assertIn("does not require `requirements.lock`", operations_text)
+        self.assertIn("complete fixed environment credential set", troubleshooting_text)
+        self.assertIn(
+            "saved-profile private contract or spot CLI prerequisites",
+            file_index["file_guide"]["scripts/weex_runtime_setup.py"]["when"],
+        )
+        self.assertNotIn(
+            "private trading flows",
+            file_index["file_guide"]["requirements.txt"]["role"],
+        )
+
     def test_file_index_covers_vault_ui_and_session_agent(self) -> None:
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
 

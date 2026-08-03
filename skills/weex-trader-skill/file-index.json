@@ -43,6 +43,7 @@
       ],
       "depends_on": [
         "references/contract-api-definitions.json",
+        "scripts/weex_api_credentials.py",
         "scripts/weex_profile_store.py"
       ],
       "surface": [
@@ -64,6 +65,7 @@
       ],
       "depends_on": [
         "references/spot-api-definitions.json",
+        "scripts/weex_api_credentials.py",
         "scripts/weex_profile_store.py"
       ],
       "surface": [
@@ -71,6 +73,17 @@
         "call",
         "ticker",
         "place-order"
+      ]
+    },
+    "scripts/weex_api_credentials.py": {
+      "role": "Lightweight fixed-name environment credential loader for direct private contract and spot REST calls in containers.",
+      "when": [
+        "loading WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE without a saved profile",
+        "rejecting a partial runtime credential set before API signing"
+      ],
+      "surface": [
+        "ApiCredentials",
+        "load_environment_credentials"
       ]
     },
     "scripts/weex_partner_api.py": {
@@ -211,7 +224,7 @@
       "when": [
         "installing requirements.lock into the active interpreter with hash verification",
         "repairing a missing pip via ensurepip before installation",
-        "preparing private contract or spot CLI prerequisites"
+        "saved-profile private contract or spot CLI prerequisites"
       ],
       "depends_on": [
         "scripts/weex_agent_state.py",
@@ -551,7 +564,7 @@
       ]
     },
     "requirements.txt": {
-      "role": "Human-edited Python dependency input constraints required by profile, vault, and private trading flows.",
+      "role": "Human-edited Python dependency input constraints required by profile, vault, Partner, aggregation, trade-guard, and API-definition flows.",
       "when": [
         "dependency constraints need to change",
         "regenerating requirements.lock",
@@ -563,7 +576,7 @@
       "when": [
         "a Python dependency such as cryptography is missing",
         "setting up a fresh interpreter on Windows, macOS, or Linux",
-        "verifying prerequisites for private-account commands",
+        "verifying prerequisites for saved-profile private-account commands",
         "installing the managed GUI runtime"
       ]
     },

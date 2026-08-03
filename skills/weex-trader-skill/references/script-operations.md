@@ -4,7 +4,7 @@ Use this reference only when direct local script execution, dependency setup, or
 
 ## Python Prerequisites
 
-Profile, vault, private-trading, and API-definition regeneration commands require the hashed dependencies in [requirements.lock](../requirements.lock).
+Profile, vault, Partner, aggregation, trade-guard, and API-definition regeneration commands require the hashed dependencies in [requirements.lock](../requirements.lock). Direct contract/spot REST with the complete fixed environment credential set does not require `requirements.lock`.
 
 ```bash
 # Windows
@@ -14,7 +14,7 @@ py -3 -m pip install --require-hashes -r requirements.lock
 python3 -m pip install --require-hashes -r requirements.lock
 ```
 
-Before private contract or spot commands, run `scripts/weex_agent_state.py --command skill.preflight ...` and inspect `runtime.host.requirements_ready`, `runtime.host.missing_modules`, and `runtime.env_validation`. The private REST CLIs now stop immediately when those checks fail instead of waiting until profile or order execution.
+Before private contract or spot commands, run `scripts/weex_agent_state.py --command skill.preflight ...`. For the complete fixed environment credential path, inspect `runtime.env_validation`; `runtime.host.requirements_ready` and `runtime.host.missing_modules` are gates only for saved-profile, Vault, Partner, aggregation, and trade-guard paths.
 
 One-command runtime setup:
 
@@ -26,9 +26,9 @@ py -3 scripts/weex_runtime_setup.py --pretty
 python3 scripts/weex_runtime_setup.py --pretty
 ```
 
-This helper installs `requirements.lock` with hash verification into the current interpreter, attempts `ensurepip` first if `pip` is missing, refreshes `agent-init.json` / `agent-runtime.json`, and reports whether the interpreter is actually ready for private WEEX CLI flows.
+This helper installs `requirements.lock` with hash verification into the current interpreter, attempts `ensurepip` first if `pip` is missing, refreshes `agent-init.json` / `agent-runtime.json`, and reports whether the interpreter is ready for saved-profile and other dependency-backed WEEX CLI flows.
 
-Private contract and spot CLIs also auto-attempt this helper when the current interpreter is missing required Python dependencies. Invalid runtime overrides such as a bad `WEEX_API_TIMEOUT` value still stop immediately because the helper does not modify environment variables for you.
+Private contract and spot CLIs auto-attempt this helper only when they need the saved-profile path and the current interpreter is missing required Python dependencies. The complete fixed environment credential path does not auto-install dependencies. Invalid runtime overrides such as a bad `WEEX_API_TIMEOUT` value still stop immediately because the helper does not modify environment variables for you.
 
 Command launcher policy:
 
@@ -56,7 +56,7 @@ Notes:
 - explicit `ensure --accept-managed-runtime` downloads a pinned uv installer, verifies its SHA256, provisions a managed CPython 3.12.13 virtual environment, and installs `requirements.lock` with hash verification
 - user-facing AI flows should offer to perform this command after confirmation instead of requiring non-technical users to copy and run it themselves
 - the profile and vault GUI entrypoints will automatically re-launch themselves inside that managed runtime when they are started directly from a non-managed interpreter
-- this managed bootstrap is for the Windows/macOS GUI flows; terminal/private REST commands still run on the interpreter you launched and therefore still need their own preflight/runtime checks
+- this managed bootstrap is for the Windows/macOS GUI flows; terminal commands still run on the interpreter you launched. Saved-profile private REST needs the dependency checks, while complete fixed environment credentials need only runtime environment validation
 - the profile and vault GUI entrypoints also auto-detach when they are started from a non-interactive/tool-managed shell on macOS or Windows
 - explicit detached launch uses a transient `.app` wrapper on macOS and prefers `pythonw.exe` or another hidden background process on Windows
 - detached-launch records and logs are stored under `~/.weex-trader-skill/gui-launchers`; the launcher keeps only recent records and trims each `.log` file to 256 KiB
@@ -116,6 +116,20 @@ List bundled endpoints:
 python3 scripts/weex_contract_api.py list-endpoints --pretty
 python3 scripts/weex_spot_api.py list-endpoints --pretty
 ```
+
+Containerized private contract/spot calls can read the same fixed credential names used by the standalone environment-based skill:
+
+```bash
+export WEEX_API_KEY="your-api-key"
+export WEEX_API_SECRET="your-secret-key"
+export WEEX_API_PASSPHRASE="your-passphrase"
+python3 scripts/weex_contract_api.py call --endpoint account.get_account_balance --pretty
+python3 scripts/weex_spot_api.py call --endpoint spot.account.get_account_balance --pretty
+```
+
+Set all three variables together and omit `--profile`. They are the only required environment variables for this direct path. With no explicit profile, the complete environment set takes precedence over a configured default profile and works without a saved profile or unlocked Vault. A partial set is rejected. Passing `--profile <name>` explicitly keeps using that saved profile. Use the container/orchestrator secret-injection facility rather than committing these values or placing them on argv. This direct environment path applies to `weex_contract_api.py` and `weex_spot_api.py`; Partner, aggregation, trade-guard, and profile-management commands retain their saved-profile requirements.
+
+Optional direct contract/spot overrides are `WEEX_CONTRACT_API_BASE`, `WEEX_SPOT_API_BASE`, their shared fallback `WEEX_API_BASE`, `WEEX_API_TIMEOUT`, and `WEEX_LOCALE`. None is required. If the base variables are absent, the official production hosts are used. For staging, configure the product-specific base variables because contract and spot use different hosts.
 
 List only the official simulated futures endpoints:
 

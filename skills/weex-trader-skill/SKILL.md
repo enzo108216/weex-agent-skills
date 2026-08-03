@@ -1,5 +1,5 @@
 ---
-compatibility: Requires Python with requirements.lock installed, network access for WEEX REST calls, and Tk through an explicitly prepared managed GUI runtime for Windows/macOS GUI profile and vault flows.
+compatibility: Requires Python and network access for WEEX REST calls; saved-profile/Vault flows require requirements.lock, and Windows/macOS GUI flows require Tk through an explicitly prepared managed GUI runtime.
 description: Use when the user wants WEEX REST automation for contract or spot trading, market or account queries, or secure saved-profile setup and management.
 name: weex-trader-skill
 ---
@@ -7,13 +7,14 @@ name: weex-trader-skill
 
 Read `manifest.json` for routing rules. Open `file-index.json` only for file-level guidance.
 For every turn that uses this skill, before routing or UI launch, AI must refresh preflight state. For Partner-only turns with a selected saved profile, run `scripts/weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`; it refreshes `agent-init.json` and `agent-runtime.json` while projecting only Partner-safe fields to the tool transcript. For other turns, run `scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty`.
-Before any private profile, vault, or trading action, inspect the preflight output and stop if `runtime.host.requirements_ready` is `false`, `runtime.host.missing_modules` is non-empty, or `runtime.env_validation.ok` is `false`.
+Before any saved-profile, vault, Partner, aggregation, or trade-guard action, inspect the preflight output and stop if `runtime.host.requirements_ready` is `false`, `runtime.host.missing_modules` is non-empty, or `runtime.env_validation.ok` is `false`. Direct private contract/spot REST calls may instead use the complete `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` environment set without `--profile`; that lightweight path requires `runtime.env_validation.ok` but does not require the profile/Vault Python dependencies.
 On Windows and macOS, GUI profile and vault flows must use the managed GUI runtime. AI must not launch GUI entrypoints with the system, miniforge, pyenv, Homebrew, or OS Python even if that interpreter passes Tk or dependency probes. System interpreters may run preflight and the managed-runtime bootstrap only; they are not valid GUI runtimes. Preflight reports whether the managed GUI runtime is ready but must not download or install it implicitly. If `init.host.gui_runtime.action` is `explicit_setup_required`, explain the pinned uv/Python/dependency setup and checksum/hash verification, ask whether AI should install it, and only after clear user approval run `init.host.gui_runtime.setup_command` / `scripts/weex_gui_bootstrap.py ensure --accept-managed-runtime --pretty`. Use `scripts/weex_gui_launcher.py` for detached launch after runtime setup is ready.
 
 ## Core Entry Points
 
 - `scripts/weex_contract_api.py`: contract/futures REST
 - `scripts/weex_spot_api.py`: spot REST
+- `scripts/weex_api_credentials.py`: lightweight fixed-name environment credential loader for direct contract/spot REST
 - `scripts/weex_partner_api.py`: strict read-only Partner REST executor for the seven allowlisted Partner endpoints
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
 - `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
@@ -48,19 +49,21 @@ These auto-detect language from `agent-init.json`.
 
 ## Runtime Prerequisites
 
-- Profile, vault, other private-account flows, and API-definition regeneration require the hashed dependencies in `requirements.lock`
+- Profile, vault, Partner, aggregation, trade-guard, and API-definition regeneration flows require the hashed dependencies in `requirements.lock`; direct contract/spot REST with the complete fixed environment credential set does not
 - Windows uses `py -3`; macOS/Linux uses `python3`
-- For one-command local runtime setup, run `scripts/weex_runtime_setup.py --pretty` with the OS-appropriate launcher before private CLI usage
+- For one-command local runtime setup, run `scripts/weex_runtime_setup.py --pretty` with the OS-appropriate launcher before saved-profile, Vault, aggregation, or trade-guard CLI usage
 - If `cryptography` or another dependency is missing, install `requirements.lock` with `--require-hashes` using the same interpreter and retry
-- Private contract and spot CLIs now auto-attempt `scripts/weex_runtime_setup.py` with the current interpreter when required Python dependencies are missing
+- Private contract and spot CLIs auto-attempt `scripts/weex_runtime_setup.py` only when they need the saved-profile path and required Python dependencies are missing
 - `skill.preflight` also validates `WEEX_API_TIMEOUT` plus any `WEEX_*_API_BASE` overrides; private contract/spot commands now fail fast until those issues are fixed
+- For direct environment-authenticated contract/spot REST, only `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` are required. `WEEX_API_BASE`, `WEEX_CONTRACT_API_BASE`, `WEEX_SPOT_API_BASE`, `WEEX_API_TIMEOUT`, and `WEEX_LOCALE` are optional overrides.
 - Partner REST requests default to a 30-second timeout because Partner queries can legitimately exceed the 15-second contract/spot default; a valid positive `WEEX_API_TIMEOUT` still overrides it. Timeout failures remain fail-closed and are never retried automatically.
 - Windows/macOS GUI flows ignore system `tkinter` availability and require the managed GUI runtime; if the user declines managed-runtime setup, use the terminal profile manager instead of launching a GUI
 - If `agent-init.json` is missing and AI is about to use an auto-language wrapper, refresh `skill.preflight` first instead of guessing
 
 ## Profile Policy
 
-- Before private account/trading setup or any task that requires a saved account, check whether any profile already exists
+- Before private account/trading setup or any task that explicitly requires a saved account, check whether any profile already exists
+- For direct private contract/spot REST in containers, use `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together and omit `--profile`. If all three are present they take precedence over a configured default profile; a partial set fails closed. An explicit `--profile` always selects the saved profile instead. This environment path does not apply to Partner, aggregation, trade-guard, or profile-management commands.
 - Resolve the saved profile from an explicit current-turn choice, an unambiguous choice already made in the current conversation, or the configured default profile. If these sources cannot resolve one unique saved profile and multiple usable profiles exist, inspect them with the localized profile `list --pretty` command and ask the user to choose. Do not guess from list order, notes, IDs, or name similarity.
 - Present ambiguous profile choices as a numbered list containing profile display names only; do not expose profile IDs, credential hints, base URLs, or raw profile records. Ask this as a standalone question so the user can reply with either the number or the exact profile name. Do not combine it with trading-mode or other missing-field questions.
 - Use this localized response shape:
@@ -87,7 +90,7 @@ These auto-detect language from `agent-init.json`.
 - Before edit/delete/default changes, inspect current accounts with `list --pretty`, unless the user explicitly asked to open the GUI first
 - Use `show --profile <name-or-id>` when you need to inspect one account before mutating it
 - Determine OS first, then language, then choose the matching script variant
-- Private REST commands require a saved profile; profile-based storage is the only supported credential path
+- Direct contract/spot REST supports either the fixed runtime environment credential set or a saved profile. Saved-profile rules in this section apply whenever `--profile` is explicit or the fixed environment set is absent.
 
 ## OS Guidance
 
@@ -153,4 +156,4 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 - Confirmation must bind to the latest preview via `intent_id` and `risk_signature`; do not reuse old confirmation tokens
 - Default flow is direct live execution; there is no mandatory dry-run phase
 - If the instruction is ambiguous or missing fields, ask only for the missing fields
-- For server automation, avoid `--api-key`, `--api-secret`, and `--api-passphrase` on argv; prefer `--secrets-stdin-json` or `--api-key-env` / `--api-secret-env` / `--api-passphrase-env`
+- For container/server direct contract or spot REST, inject `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` through the runtime secret mechanism and omit `--profile`. For saved-profile creation or rotation, prefer `--secrets-stdin-json` or `--api-key-env` / `--api-secret-env` / `--api-passphrase-env`; never put secrets on argv.

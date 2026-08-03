@@ -41,7 +41,7 @@ Complete profile parameter list
 - description / note: optional metadata for the account purpose, such as main, test, read-only, or bot account.
 - `contract_base_url`: optional. Leaving it empty uses the official contract REST host `https://api-contract.weex.com`. Custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`.
 - `spot_base_url`: optional. Leaving it empty uses the official spot REST host `https://api-spot.weex.com`. Custom values must be full `https://` URLs on `weex.com`, `*.weex.com`, `weex.tech`, or `*.weex.tech`.
-- whether to set it as default: optional workflow choice. If enabled, future private commands can omit `--profile` when they should use this account automatically.
+- whether to set it as default: optional workflow choice. If enabled, direct contract/spot commands use it when `--profile` is omitted and the fixed `WEEX_API_KEY` / `WEEX_API_SECRET` / `WEEX_API_PASSPHRASE` set is absent. Pass `--profile` explicitly when a command must use this saved profile.
 
 Do not frame this as only the minimum fields needed to make private endpoints work. Explain what each field means, whether it is required, what happens if it is omitted, and when metadata or host overrides are intentionally useful.
 
@@ -132,8 +132,8 @@ Important:
 
 - `PROFILE_API_KEY`, `PROFILE_API_SECRET`, and `PROFILE_API_PASSPHRASE` here are example variable names only.
 - Use any variable names you want, as long as `--api-key-env`, `--api-secret-env`, and `--api-passphrase-env` point to the same names.
-- Private trading commands do not read those env vars directly at runtime.
-- Save credentials into a profile first, then run private commands with the default or explicit `--profile`.
+- The variable names in this profile-save example are read once and stored in the Vault; they are separate from the fixed direct-runtime names.
+- For containerized direct contract/spot REST without a saved profile, set `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together and omit `--profile`.
 
 ## Profile Management Routes
 
@@ -151,6 +151,6 @@ Before edit/delete/default changes, inspect the current accounts first with `lis
 
 ## Notes
 
-- Private REST commands require a saved profile.
+- Direct `weex_contract_api.py` and `weex_spot_api.py` private REST commands may use the complete fixed runtime environment set; Partner, aggregation, trade-guard, and profile-management flows require a saved profile.
 - If a command fails with a missing dependency such as `ModuleNotFoundError: cryptography`, install `requirements.lock` with `--require-hashes` using the same interpreter before retrying.
 - Public commands such as `ticker` and `list-endpoints` do not require a valid default profile.

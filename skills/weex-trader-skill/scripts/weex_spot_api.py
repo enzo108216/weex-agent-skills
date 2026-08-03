@@ -2,7 +2,7 @@
 """WEEX Spot REST API helper.
 
 - Endpoint definitions loaded from references/spot-api-definitions.json
-- Private auth from a secure saved profile
+- Private auth from standard environment variables or a secure saved profile
 - Supports generic endpoint calls and deterministic order placement
 """
 
@@ -21,7 +21,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
-from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
+from weex_agent_state import (
+    RuntimePreflightError,
+    ensure_private_runtime_ready,
+    refresh_agent_records,
+    validate_runtime_environment,
+)
+from weex_api_credentials import load_environment_credentials
 from weex_profile_language import resolve_language
 from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
@@ -36,8 +42,9 @@ GET_BODY_UNSUPPORTED_MESSAGE = (
     "GET requests do not accept --body. Pass request fields with --query instead."
 )
 PRIVATE_PROFILE_REQUIRED_MESSAGE = (
-    "Private commands require a saved profile. Configure a default profile with "
-    "scripts/weex_profile_manager.py or scripts/weex_profiles.py, or pass --profile <name>."
+    "Private commands require WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE "
+    "or a saved profile. Configure the environment variables, configure a default profile "
+    "with scripts/weex_profile_manager.py or scripts/weex_profiles.py, or pass --profile <name>."
 )
 PROFILE_RUNTIME_DEPENDENCY_MISSING = (
     "Unable to enable saved-profile support for the WEEX Spot REST API helper "
@@ -174,8 +181,8 @@ class WeexSpotClient:
         self.user_agent = user_agent
 
     def _require_auth(self) -> None:
-        _load_profile_runtime_dependencies()
         if self.profile_name and (not self.api_key or not self.api_secret or not self.api_passphrase):
+            _load_profile_runtime_dependencies()
             try:
                 creds = load_profile_credentials(self.profile_name)
             except ProfileError as exc:
@@ -523,12 +530,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         default=None,
-        help="Saved profile name; omit it to use the configured default profile",
+        help=(
+            "Saved profile name; omit it to use a complete WEEX_API_KEY/WEEX_API_SECRET/"
+            "WEEX_API_PASSPHRASE environment set when present, otherwise the configured default profile"
+        ),
     )
     parser.add_argument(
         "--base-url",
         default=None,
-        help="Optional spot API base URL override; leave empty to use the saved profile value or the built-in official default",
+        help=(
+            "Optional spot API base URL override; leave empty to use the saved profile value, "
+            "WEEX_SPOT_API_BASE/WEEX_API_BASE, or the built-in official default"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -599,16 +612,28 @@ def main() -> int:
     except Exception:
         pass
     requires_auth = command_requires_auth(args)
-    if requires_auth:
+    environment_credentials = None
+    if requires_auth and args.profile is None:
+        environment_credentials = load_environment_credentials()
+    if environment_credentials is not None:
+        environment_validation = validate_runtime_environment()
+        if not environment_validation["ok"]:
+            raise SystemExit(
+                "Invalid runtime environment:\n"
+                + "\n".join(f"- {issue}" for issue in environment_validation["issues"])
+            )
+    if requires_auth and environment_credentials is None:
         try:
             ensure_private_runtime_ready(command=command_name, auto_setup=True, language=None)
         except RuntimePreflightError as exc:
             raise SystemExit(str(exc)) from exc
-    profile = resolve_runtime_profile(
-        requested_profile=args.profile,
-        allow_invalid_default=not requires_auth,
-    )
-    if requires_auth:
+    profile = None
+    if environment_credentials is None:
+        profile = resolve_runtime_profile(
+            requested_profile=args.profile,
+            allow_invalid_default=not requires_auth,
+        )
+    if requires_auth and environment_credentials is None:
         require_private_profile(profile)
 
     env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
@@ -624,9 +649,9 @@ def main() -> int:
         base_url=base_url,
         timeout=timeout,
         locale=locale,
-        api_key=None,
-        api_secret=None,
-        api_passphrase=None,
+        api_key=environment_credentials.api_key if environment_credentials else None,
+        api_secret=environment_credentials.api_secret if environment_credentials else None,
+        api_passphrase=environment_credentials.api_passphrase if environment_credentials else None,
         profile_name=profile.name if profile else None,
     )
 
