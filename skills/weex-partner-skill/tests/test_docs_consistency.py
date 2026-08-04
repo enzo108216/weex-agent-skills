@@ -767,13 +767,22 @@ class PartnerDocsConsistencyTests(unittest.TestCase):
 
     def test_five_host_and_openclaw_installation_docs_are_explicit(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        zh_readme = (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
         cursor_rule = (REPO_ROOT / ".cursor" / "rules" / "weex-safety.mdc").read_text(encoding="utf-8")
         installer = (REPO_ROOT / "tools" / "install_local_skills.py").read_text(encoding="utf-8")
 
         for host in ("Codex", "Claude Code", "Cursor", "GitHub Copilot", "OpenClaw"):
             with self.subTest(host=host):
                 self.assertIn(host, readme)
-        self.assertIn("openclaw skills install", readme)
+        for text in (readme, zh_readme):
+            self.assertNotIn("openclaw skills install", text)
+            self.assertNotIn("--as", text)
+            self.assertIn("~/.openclaw/skill-repos/weex-agent-skills", text)
+            self.assertIn("update-weex-openclaw-skills.sh", text)
+            for skill in ("weex-trader-skill", "weex-analysis-skill", "weex-monitor-skill", "weex-partner-skill"):
+                self.assertIn(f"~/.openclaw/skills/{skill}", text)
+        self.assertIn("update_openclaw_skills.sh", installer)
+        self.assertNotIn("native 'openclaw skills install'", installer)
         self.assertIn("weex-partner-skill", cursor_rule)
         self.assertNotIn("use --dir for an Openclaw", installer)
 

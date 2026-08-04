@@ -2,7 +2,7 @@
 
 [中文版本](README.zh-CN.md)
 
-This repository provides WEEX skill installation paths for Codex, Claude Code, Cursor, GitHub Copilot, and OpenClaw. Local installer dry-runs cover the first four hosts; OpenClaw requires its native installer and has not yet completed an on-machine smoke test in this workspace.
+This repository provides WEEX skill installation paths for Codex, Claude Code, Cursor, GitHub Copilot, and OpenClaw. The local installer covers the first four hosts. OpenClaw uses a fixed local Git checkout with skill-directory symlinks, managed by the repository's update script.
 
 After installing the skills, you can ask your AI tool to check WEEX market data, review account state, collect trading history, preview order risk, create an automated monitor, or analyze WEEX trading records. For normal use, you do not need to run the Python scripts directly. Start from the skill name in chat.
 
@@ -21,6 +21,8 @@ If you prefer to install manually, run:
 ```bash
 npx skills add https://github.com/weex-labs/weex-trader-skill --all
 ```
+
+OpenClaw users should use the dedicated [Git and symlink workflow](#install-or-update-openclaw) below instead of this `npx` command.
 
 2. After installation, mention the skill you want to use in chat:
 
@@ -137,16 +139,55 @@ Use `--agent claude-code`, `--agent cursor`, or `--agent github-copilot` for tho
 
 `weex-monitor-skill` and `weex-partner-skill` depend on `weex-trader-skill`. Installing either one from the local installer automatically includes trader; installing all skills is still recommended.
 
-OpenClaw uses its native installer. From the repository root, install trader first and partner second:
+### Install Or Update OpenClaw
+
+OpenClaw should keep one fixed Git checkout and expose each skill through a symbolic link. The default layout is:
+
+- repository: `~/.openclaw/skill-repos/weex-agent-skills`
+- `~/.openclaw/skills/weex-trader-skill`
+- `~/.openclaw/skills/weex-analysis-skill`
+- `~/.openclaw/skills/weex-monitor-skill`
+- `~/.openclaw/skills/weex-partner-skill`
+
+From a checkout containing this repository version, run:
 
 ```bash
-openclaw skills install ./skills/weex-trader-skill --as weex-trader-skill
-openclaw skills install ./skills/weex-partner-skill --as weex-partner-skill
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
 ```
 
-Append `--global` to both commands for the shared `~/.openclaw/skills` directory, or append `--agent <id>` to both for one Agent workspace. Then run `openclaw skills list --eligible`, `openclaw skills info weex-partner-skill`, and `openclaw skills check`. Do not use `gh skill install --agent openclaw`.
+The script clones the repository when the fixed checkout is absent. Otherwise it fetches `origin`, checks out `feature/Trading-Competition`, and runs `git pull --ff-only`. It then creates or refreshes all four skill links, installs the stable updater link at `~/bin/update-weex-openclaw-skills.sh`, and runs:
 
-Most users only need the GitHub install command in [Start Here](#start-here).
+```bash
+openclaw skills list --eligible
+openclaw skills info weex-trader-skill
+openclaw skills check
+```
+
+Future updates only need:
+
+```bash
+~/bin/update-weex-openclaw-skills.sh
+```
+
+The script never replaces a real file or directory at a link destination. Resolve that conflict manually and rerun it. To use another repository, branch, or local directory, set `WEEX_OPENCLAW_REPO_URL`, `WEEX_OPENCLAW_BRANCH`, or `WEEX_OPENCLAW_REPO_DIR` for that invocation.
+
+To roll back, check out a known-good commit in the fixed repository; the links do not need to be recreated:
+
+```bash
+cd ~/.openclaw/skill-repos/weex-agent-skills
+git checkout <old-commit>
+openclaw skills check
+```
+
+Finally, start a new OpenClaw task and run this read-only smoke test:
+
+```text
+Use $weex-trader-skill to check the latest BTCUSDT spot price.
+```
+
+Do not use `gh skill install --agent openclaw`; the root Python installer remains for the other supported hosts.
+
+Users of Codex, Claude Code, Cursor, or GitHub Copilot usually only need the GitHub install command in [Start Here](#start-here); OpenClaw users should keep using the workflow above.
 
 ## User Safety Notes
 

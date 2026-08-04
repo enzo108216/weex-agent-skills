@@ -27,6 +27,7 @@ CLAUDE_GUIDE = REPO_ROOT / "CLAUDE.md"
 COPILOT_GUIDE = REPO_ROOT / ".github" / "copilot-instructions.md"
 CLEAN_CHECKOUT_TOOL = REPO_ROOT / "tools" / "clean_local_skill_checkout.py"
 INSTALL_LOCAL_SKILLS_TOOL = REPO_ROOT / "tools" / "install_local_skills.py"
+OPENCLAW_UPDATE_SCRIPT = ROOT / "scripts" / "update_openclaw_skills.sh"
 SYNC_RISK_REVIEW_TOOL = REPO_ROOT / "tools" / "sync_weex_risk_review_core.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "skills-ci.yml"
 SHARED_RISK_REVIEW_SOURCE = REPO_ROOT / "skills" / "_shared" / "weex_risk_review_core.py"
@@ -566,6 +567,17 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("weex-monitor-skill", zh_readme_text)
         self.assertIn("weex-partner-skill", zh_readme_text)
         self.assertIn("自动化监控", zh_readme_text)
+
+    def test_openclaw_update_script_is_part_of_the_trader_skill_source_of_truth(self) -> None:
+        self.assertTrue(
+            OPENCLAW_UPDATE_SCRIPT.exists(),
+            "OpenClaw update script is not implemented yet; expected RED.",
+        )
+        skill_text = SKILL.read_text(encoding="utf-8")
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+
+        self.assertIn("scripts/update_openclaw_skills.sh", skill_text)
+        self.assertIn("scripts/update_openclaw_skills.sh", file_index["file_guide"])
 
     def test_machine_readable_metadata_describes_application_vault_consistently(self) -> None:
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
