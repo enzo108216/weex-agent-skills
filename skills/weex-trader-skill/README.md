@@ -19,6 +19,7 @@ It supports:
 - Get API credentials
 - Critical secret warning
 - Install in Codex
+- Install or update in OpenClaw
 - How to use this skill in Codex / Openclaw / Claude Code
 - Module quick-reference
 - Companion skill boundary
@@ -81,6 +82,16 @@ Help me install this skill from https://github.com/weex-labs/weex-trader-skill
 ```text
 Check whether $weex-trader-skill is installed.
 ```
+
+## Install Or Update In OpenClaw
+
+OpenClaw uses a fixed Git checkout plus skill-directory symlinks. From a checkout containing this version, run:
+
+```bash
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
+```
+
+The script maintains `~/.openclaw/skill-repos/weex-agent-skills`, links all four WEEX skills into `~/.openclaw/skills`, runs the native eligibility checks, and creates the future update command `~/bin/update-weex-openclaw-skills.sh`. See the repository root README for the complete directory layout, environment overrides, validation commands, rollback, and smoke test.
 
 ## How to Use This Skill in Codex / Openclaw / Claude Code
 

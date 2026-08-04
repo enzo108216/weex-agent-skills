@@ -24,6 +24,7 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 - `scripts/weex_profiles_zh.py` / `scripts/weex_profiles_en.py`: terminal profile manager
 - `scripts/weex_linux_profile_wizard_zh.sh` / `scripts/weex_linux_profile_wizard_en.sh`: guided Linux onboarding
 - `scripts/weex_vault_zh.py` / `scripts/weex_vault_en.py`: cross-platform application vault setup, status, unlock, lock, and mode
+- `scripts/update_openclaw_skills.sh`: maintain the fixed OpenClaw Git checkout, expose all four WEEX skills through `~/.openclaw/skills` symlinks, and run OpenClaw eligibility checks
 
 Compatibility wrappers:
 
@@ -43,6 +44,7 @@ These auto-detect language from `agent-init.json`.
 - Order preview, TP/SL preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
 - Windows/macOS setup or editing: prefer the visual profile manager
 - Linux interactive setup: prefer the Linux wizard
+- OpenClaw installation or update: use `scripts/update_openclaw_skills.sh`; do not use the obsolete native installer flags
 - Open `README.md` for the broad usage/install summary
 - Open `references/profile-manager.md`, `references/profile-onboarding.md`, `references/linux-vault.md`, `references/auth-and-signing.md`, `references/script-operations.md`, `references/trade-data-schema.md`, `references/contract-api-definitions.md`, and `references/troubleshooting.md` as needed
 
