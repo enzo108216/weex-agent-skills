@@ -133,6 +133,24 @@ Representative futures order:
 python3 scripts/weex_contract_api.py --profile main place-order --symbol ETHUSDT --side SELL --position-side SHORT --type LIMIT --quantity 0.001 --price 10000 --time-in-force GTC --confirm-live --pretty
 ```
 
+Current contract constraints from the official endpoint pages:
+
+- LIMIT orders support `GTC`, `IOC`, `FOK`, and `POST_ONLY` as `timeInForce` values.
+- `transaction.place_orders_batch` accepts at most 5 orders in one request.
+- `account.update_leverage_trade` requires at least one of `crossLeverage`, `isolatedLongLeverage`, or `isolatedShortLeverage`.
+- `market.get_funding_rate_history` accepts a maximum start/end span of 7 days.
+- `transaction.get_trade_details` defaults to the latest 7 days when both timestamps are omitted, accepts at most 7 days per request, and supports only trades from the past 365 days.
+- For `transaction.place_tp_sl_order`, `quantity` set to `0` or omitted means TP/SL for the full position. Do not treat an omitted quantity as missing input for an explicit full-position request, and state the full-position effect in the confirmation.
+
+Full-position TP/SL preview using the explicit `0` form:
+
+```bash
+# Windows users: replace python3 with py -3
+python3 scripts/weex_trade_guard.py preview-tp-sl --profile main --trading-mode live --tp-sl-json '{"symbol":"BTCUSDT","clientAlgoId":"tp-full-1","planType":"TAKE_PROFIT","triggerPrice":"70500","executePrice":"0","quantity":"0","positionSide":"LONG","triggerPriceType":"MARK_PRICE"}' --language en --pretty
+```
+
+Only after the user gives the exact confirmation returned by that preview, submit the bound intent with `confirm-tp-sl --trading-mode live --intent-id <intent_id> --risk-signature <risk_signature> --confirm-live`.
+
 Representative simulated futures order:
 
 ```bash
@@ -151,7 +169,7 @@ python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"limit":50}' --pretty
 ```
 
-For raw contract calls, `--profile is a global argument`; place it before `call`, then use `--endpoint <key>` for the official endpoint key. Some official query endpoints use POST and are therefore protected as mutating by the local guard even when the business action is a query; preview the request with `--dry-run` first, then pass the matching confirmation flag only when you intentionally want to send that POST request.
+For raw contract calls, `--profile is a global argument`; place it before `call`, then use `--endpoint <key>` for the official endpoint key. The client uses each endpoint's generated `request_transport` and rejects query fields sent in a documented JSON body or body fields sent in a documented query. `USER_DATA` POST endpoints are read-only queries and do not require a trade confirmation flag; `TRADE` endpoints still require the matching live or demo confirmation flag.
 
 For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 
@@ -200,7 +218,7 @@ For live order confirmation, use `--trading-mode live --confirm-live`. A live in
 
 ## Regenerate Definitions
 
-To rebuild local spot and futures REST definitions from the current WEEX V3 docs:
+To rebuild local spot and futures REST definitions from the current WEEX V3 docs, including spot tax pages, current Partner rebate raw pages, and contract demo pages:
 
 ```bash
 # Windows users: replace python3 with py -3

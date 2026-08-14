@@ -1,8 +1,6 @@
 ---
 compatibility: Requires Python with requirements.lock installed, network access for WEEX REST calls, and Tk through an explicitly prepared managed GUI runtime for Windows/macOS GUI profile and vault flows.
 description: Use when the user wants WEEX REST automation for contract or spot trading, market or account queries, or secure saved-profile setup and management.
-metadata:
-    local-path: /var/folders/25/vzbzcnfx6jx58c7c00nckb8r0000gn/T/weex-local-skills-qhr5kqcc/repo/skills/weex-trader-skill
 name: weex-trader-skill
 ---
 # WEEX Trader Skill
@@ -26,6 +24,7 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 - `scripts/weex_profiles_zh.py` / `scripts/weex_profiles_en.py`: terminal profile manager
 - `scripts/weex_linux_profile_wizard_zh.sh` / `scripts/weex_linux_profile_wizard_en.sh`: guided Linux onboarding
 - `scripts/weex_vault_zh.py` / `scripts/weex_vault_en.py`: cross-platform application vault setup, status, unlock, lock, and mode
+- `scripts/update_openclaw_skills.sh`: maintain the fixed OpenClaw Git checkout, expose all four WEEX skills through `~/.openclaw/skills` symlinks, and run OpenClaw eligibility checks
 
 Compatibility wrappers:
 
@@ -45,6 +44,7 @@ These auto-detect language from `agent-init.json`.
 - Order preview, TP/SL preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
 - Windows/macOS setup or editing: prefer the visual profile manager
 - Linux interactive setup: prefer the Linux wizard
+- OpenClaw installation or update: use `scripts/update_openclaw_skills.sh`; do not use the obsolete native installer flags
 - Open `README.md` for the broad usage/install summary
 - Open `references/profile-manager.md`, `references/profile-onboarding.md`, `references/linux-vault.md`, `references/auth-and-signing.md`, `references/script-operations.md`, `references/trade-data-schema.md`, `references/contract-api-definitions.md`, and `references/troubleshooting.md` as needed
 
@@ -148,6 +148,7 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 - For every natural-language summary that uses private WEEX data or mentions a private order action, start with `user_environment_prefix` when it is returned. This includes account balances, positions, account risk, order previews, submitted order results, order cancel results, TP/SL order results, open-order queries, order status queries, and order-history queries. If a private command returns `environment` but not `user_environment_prefix`, derive the first line from that environment before summarizing anything else.
 - The environment prefix must be the first user-visible line, using localized labels such as `模拟盘` or `Current trading mode: real trading`. Keep this prefix informational; it is not an order confirmation gate.
 - Every natural-language order preview flow must return structured risk output before the order can be confirmed
+- For `transaction.place_tp_sl_order`, `quantity` is optional: `0` or omitted means TP/SL for the full position. When the user requests full-position TP/SL, AI must not ask for quantity merely because it is absent. The preview and confirmation must explicitly state that the TP/SL order applies to the full position; a non-zero quantity remains a partial-position request.
 - For natural-language order preview confirmations, show the returned `user_confirmation.reply_instruction` as the user-facing confirmation block. The confirmation block must put the mode and funds warning first, then include the risk preview status, order summary, highest-priority warning plus any additional risk alerts, the exact confirmation reply, and include the switch prompt from `user_confirmation.switch_reply_text` when present.
 - For natural-language confirmations, the only text the user should reply with to execute is `user_confirmation.reply_text`; keep `intent_id` plus `risk_signature` internal to the execution step. The reply text is intentionally simple and localized — a single word such as `confirm` for English.
 - Pending order intents expire after a short TTL and must be regenerated when they are stale

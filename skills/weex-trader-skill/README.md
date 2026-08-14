@@ -19,6 +19,7 @@ It supports:
 - Get API credentials
 - Critical secret warning
 - Install in Codex
+- Install or update in OpenClaw
 - How to use this skill in Codex / Openclaw / Claude Code
 - Module quick-reference
 - Companion skill boundary
@@ -82,6 +83,16 @@ Help me install this skill from https://github.com/weex-labs/weex-trader-skill
 Check whether $weex-trader-skill is installed.
 ```
 
+## Install Or Update In OpenClaw
+
+OpenClaw uses a fixed Git checkout plus skill-directory symlinks. From a checkout containing this version, run:
+
+```bash
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
+```
+
+The script maintains `~/.openclaw/skill-repos/weex-agent-skills`, links all four WEEX skills into `~/.openclaw/skills`, runs the native eligibility checks, and creates the future update command `~/bin/update-weex-openclaw-skills.sh`. See the repository root README for the complete directory layout, environment overrides, validation commands, rollback, and smoke test.
+
 ## How to Use This Skill in Codex / Openclaw / Claude Code
 
 Mention `$weex-trader-skill`, then describe the task in plain language.
@@ -132,6 +143,7 @@ Use this safety order for trading tasks:
 - for every natural-language summary that uses private WEEX data or mentions a private order action, start with `user_environment_prefix` when it is returned. This includes account balances, positions, account risk, order previews, submitted order results, order cancel results, TP/SL order results, open-order queries, order status queries, and order-history queries. If a private command returns `environment` but not `user_environment_prefix`, derive the first line from that environment before summarizing anything else
 - keep the environment prefix as the first user-visible line, using localized labels such as `模拟盘` or `Current trading mode: real trading`. This prefix is informational and does not ask for order confirmation
 - preview the order risk first and review the returned alerts plus `user_confirmation`
+- for `transaction.place_tp_sl_order`, `quantity` is optional: `0` or omitted means TP/SL for the full position. For an explicit full-position request, absent quantity is not missing input, so AI must not ask for quantity; make the preview and confirmation explicitly say that the TP/SL order applies to the full position
 - in natural-language order preview flows, show `user_confirmation.reply_instruction` as the confirmation block. The confirmation block must put the mode and funds warning first, then the risk preview status, order summary, highest-priority warning plus any additional risk alerts, exact confirmation reply, and include the switch prompt from `user_confirmation.switch_reply_text` when present
 - ask the user to reply with exactly `user_confirmation.reply_text` when they want to execute; this value is intentionally simple and localized — a single word in the user's language, such as `confirm` for English. Do not ask them to copy `intent_id`, `risk_signature`, or longer phrases such as "confirm order"
 - keep `intent_id` and `risk_signature` internal for the execution step

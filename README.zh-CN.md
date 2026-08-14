@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本仓库为 Codex、Claude Code、Cursor、GitHub Copilot 和 OpenClaw 提供 WEEX Skills 安装入口。前四个宿主已完成本地安装 dry-run；OpenClaw 需使用原生安装器，本工作区尚未完成实机 smoke，不能据此宣称五宿主均已验收。
+本仓库为 Codex、Claude Code、Cursor、GitHub Copilot 和 OpenClaw 提供 WEEX Skills 安装入口。前四个宿主使用本地安装器；OpenClaw 使用固定的本地 Git 仓库和 skill 目录软链接，并由仓库内更新脚本统一维护。
 
 安装这些 skill 以后，你可以让 AI 工具查询 WEEX 市场数据、查看账户状态、采集交易历史、预览订单风险、创建自动化监控，或分析 WEEX 交易记录。普通使用不需要你直接运行 Python 脚本，从聊天里点名 skill 开始即可。
 
@@ -21,6 +21,8 @@
 ```bash
 npx skills add https://github.com/weex-labs/weex-trader-skill --all
 ```
+
+OpenClaw 用户不要使用上面的 `npx` 命令，请改用下方的 [Git 仓库与软链接流程](#安装或更新-openclaw)。
 
 2. 安装完成后，在 AI 工具里点名你要用的 skill：
 
@@ -137,16 +139,55 @@ Claude Code、Cursor、GitHub Copilot 分别使用 `--agent claude-code`、`--ag
 
 `weex-monitor-skill` 和 `weex-partner-skill` 都依赖 `weex-trader-skill`。从本地安装器单独安装任意一个时会自动带上 trader；普通使用仍建议安装全部 skills。
 
-OpenClaw 使用原生 Skill 安装器。在仓库根目录先安装 trader，再安装 partner：
+### 安装或更新 OpenClaw
+
+OpenClaw 统一保留一个固定 Git 仓库，并通过软链接暴露每个 skill。默认目录结构如下：
+
+- 仓库：`~/.openclaw/skill-repos/weex-agent-skills`
+- `~/.openclaw/skills/weex-trader-skill`
+- `~/.openclaw/skills/weex-analysis-skill`
+- `~/.openclaw/skills/weex-monitor-skill`
+- `~/.openclaw/skills/weex-partner-skill`
+
+在包含本版本代码的仓库目录中运行：
 
 ```bash
-openclaw skills install ./skills/weex-trader-skill --as weex-trader-skill
-openclaw skills install ./skills/weex-partner-skill --as weex-partner-skill
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
 ```
 
-全局共享安装时两条命令都追加 `--global`；只安装到某个 Agent workspace 时两条命令都追加 `--agent <id>`。随后运行 `openclaw skills list --eligible`、`openclaw skills info weex-partner-skill` 和 `openclaw skills check`。不要使用 `gh skill install --agent openclaw`。
+固定仓库不存在时，脚本会先 clone；已存在时会依次 fetch `origin`、切换到 `feature/Trading-Competition`，再执行 `git pull --ff-only`。随后脚本会创建或刷新四个 skill 软链接，把稳定更新入口安装为 `~/bin/update-weex-openclaw-skills.sh`，并运行：
 
-大多数用户只需要使用 [从这里开始](#从这里开始) 中的 GitHub 安装命令。
+```bash
+openclaw skills list --eligible
+openclaw skills info weex-trader-skill
+openclaw skills check
+```
+
+以后更新只需要运行：
+
+```bash
+~/bin/update-weex-openclaw-skills.sh
+```
+
+如果链接目标位置已经存在真实文件或目录，脚本会停止，不会覆盖用户数据；请人工处理冲突后重试。如需使用其他仓库、分支或本地目录，可在本次调用中设置 `WEEX_OPENCLAW_REPO_URL`、`WEEX_OPENCLAW_BRANCH` 或 `WEEX_OPENCLAW_REPO_DIR`。
+
+需要回滚时，直接在固定仓库切换到已知可用的旧 commit，软链接无需重建：
+
+```bash
+cd ~/.openclaw/skill-repos/weex-agent-skills
+git checkout <旧commit>
+openclaw skills check
+```
+
+最后新建一个 OpenClaw 任务，执行只读 smoke test：
+
+```text
+使用 $weex-trader-skill 查询 BTCUSDT 最新现货价格。
+```
+
+不要使用 `gh skill install --agent openclaw`；根目录 Python 安装器继续只服务其他受支持宿主。
+
+Codex、Claude Code、Cursor 或 GitHub Copilot 用户通常只需要使用 [从这里开始](#从这里开始) 中的 GitHub 安装命令；OpenClaw 用户继续使用上面的专用流程。
 
 ## 使用前请注意
 

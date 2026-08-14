@@ -339,6 +339,7 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(saved_intent["environment"]["trading_mode"], "demo")
         self.assertEqual(payload["environment"]["trading_mode"], "demo")
         self.assertFalse(payload["environment"]["uses_real_funds"])
+        self.assertEqual(payload["user_environment_prefix"], "Current trading mode: demo trading")
         self.assertIn("Trading mode: demo trading", payload["user_confirmation"]["reply_instruction"])
         self.assertNotIn("simulated futures environment", payload["user_confirmation"]["reply_instruction"].lower())
         self.assertNotIn("simulated account", payload["user_confirmation"]["reply_instruction"].lower())
@@ -737,8 +738,7 @@ class TradeGuardTests(unittest.TestCase):
     def test_submit_live_order_passes_new_client_order_id_for_futures(self) -> None:
         prepared_bodies: list[dict[str, object]] = []
         fake_contract_api = mock.Mock()
-        fake_contract_api.ENDPOINTS = {"place": {"path": "/capi/v3/order"}}
-        fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "place"
+        fake_contract_api.ENDPOINTS = {"transaction.place_order": {"path": "/capi/v3/order"}}
         fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
         fake_client = mock.Mock()
 
@@ -769,8 +769,7 @@ class TradeGuardTests(unittest.TestCase):
     def test_submit_live_order_accepts_camelcase_field_names_for_futures(self) -> None:
         prepared_bodies: list[dict[str, object]] = []
         fake_contract_api = mock.Mock()
-        fake_contract_api.ENDPOINTS = {"place": {"path": "/capi/v3/order"}}
-        fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "place"
+        fake_contract_api.ENDPOINTS = {"transaction.place_order": {"path": "/capi/v3/order"}}
         fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
         fake_client = mock.Mock()
 
@@ -801,6 +800,36 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(prepared_bodies[0]["type"], "MARKET")
         self.assertEqual(prepared_bodies[0]["timeInForce"], "GTC")
         self.assertEqual(prepared_bodies[0]["newClientOrderId"], "monitor-camel-close")
+
+    def test_submit_live_order_uses_live_contract_endpoint_when_demo_endpoint_is_present(self) -> None:
+        live_endpoint = {"path": "/capi/v3/order"}
+        demo_endpoint = {"path": "/capi/v3/sim/order"}
+        fake_contract_api = mock.Mock()
+        fake_contract_api.ENDPOINTS = {
+            "sim.transaction.place_order": demo_endpoint,
+            "transaction.place_order": live_endpoint,
+        }
+        fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "sim.transaction.place_order"
+        fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
+        fake_client = mock.Mock()
+        fake_client.prepare_request.return_value = {"request": "prepared"}
+        fake_client.send.return_value = {"ok": True, "data": {"orderId": "live-2002"}}
+
+        with mock.patch.object(trade_guard, "_build_contract_client", return_value=(fake_contract_api, fake_client)):
+            result = trade_guard._submit_live_order(
+                market="futures",
+                profile_name="demo",
+                raw_order={
+                    "symbol": "btcusdt",
+                    "side": "BUY",
+                    "position_side": "LONG",
+                    "order_type": "MARKET",
+                    "quantity": "0.01",
+                },
+            )
+
+        self.assertEqual(result["orderId"], "live-2002")
+        self.assertIs(fake_client.prepare_request.call_args.args[0], live_endpoint)
 
     def test_submit_demo_order_maps_standard_symbol_to_official_sim_symbol(self) -> None:
         prepared_bodies: list[dict[str, object]] = []
@@ -1028,7 +1057,48 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(saved_intent["intent_type"], "tp_sl_order")
         self.assertEqual(saved_intent["tp_sl_order"]["clientAlgoId"], "mon_price_demo")
         self.assertIn("risk_signature", payload)
+        self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
         self.assertEqual(payload["user_confirmation"]["reply_text"], "确认")
+
+    def test_tp_sl_normalization_accepts_omitted_and_zero_quantity_as_full_position(self) -> None:
+        base = {
+            "symbol": "ETHUSDT",
+            "clientAlgoId": "full-position-tp",
+            "planType": "TAKE_PROFIT",
+            "triggerPrice": "2500",
+            "executePrice": "0",
+            "positionSide": "SHORT",
+            "triggerPriceType": "CONTRACT_PRICE",
+        }
+
+        try:
+            omitted = trade_guard._normalize_tp_sl_order(dict(base))
+            zero = trade_guard._normalize_tp_sl_order({**base, "quantity": "0"})
+        except trade_guard.AggregationInputError as exc:
+            self.fail(f"official full-position TP/SL quantity should be accepted: {exc}")
+
+        self.assertNotIn("quantity", omitted)
+        self.assertEqual(zero["quantity"], "0")
+
+    def test_tp_sl_confirmation_explicitly_warns_when_quantity_targets_full_position(self) -> None:
+        confirmation = trade_guard._build_user_confirmation(
+            "zh",
+            environment={
+                "trading_mode": "live",
+                "uses_real_funds": True,
+            },
+            preview_context={
+                "order_preview": {
+                    "symbol": "ETHUSDT",
+                    "planType": "TAKE_PROFIT",
+                    "positionSide": "SHORT",
+                    "quantity": "0",
+                },
+                "alerts": [],
+            },
+        )
+
+        self.assertIn("全部仓位", confirmation["reply_instruction"])
 
     def test_confirm_tp_sl_executes_live_tp_sl_when_intent_is_valid(self) -> None:
         args = mock.Mock(intent_id="intent-tpsl", risk_signature="sig-tpsl", confirm_live=True, pretty=True)

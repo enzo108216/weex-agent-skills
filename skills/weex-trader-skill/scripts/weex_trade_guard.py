@@ -235,6 +235,18 @@ def _en_order_action(order_preview: dict[str, Any]) -> str:
     return "place order"
 
 
+def _is_full_position_tp_sl(order_preview: dict[str, Any]) -> bool:
+    if not order_preview.get("planType"):
+        return False
+    quantity = order_preview.get("quantity")
+    if quantity is None or str(quantity).strip() == "":
+        return True
+    try:
+        return Decimal(str(quantity)) == 0
+    except (InvalidOperation, ValueError):
+        return False
+
+
 def _format_zh_order_summary(preview_context: dict[str, Any] | None) -> str:
     order_preview = (preview_context or {}).get("order_preview")
     if not isinstance(order_preview, dict) or not order_preview:
@@ -243,7 +255,10 @@ def _format_zh_order_summary(preview_context: dict[str, Any] | None) -> str:
     market = _zh_market_label(order_preview.get("market"))
     order_type = _zh_order_type_label(order_preview.get("order_type") or order_preview.get("orderType"))
     action = _zh_order_action(order_preview)
-    quantity = _format_value(order_preview.get("quantity") or order_preview.get("size"))
+    if _is_full_position_tp_sl(order_preview):
+        quantity = "全部仓位（quantity 为 0 或省略）"
+    else:
+        quantity = _format_value(order_preview.get("quantity") or order_preview.get("size"))
     price = order_preview.get("price")
     price_text = "" if price in (None, "") else f"，价格 {_format_value(price)}"
     return f"订单：{symbol} {market}，{order_type}{action}，数量 {quantity}{price_text}。"
@@ -257,7 +272,10 @@ def _format_en_order_summary(preview_context: dict[str, Any] | None) -> str:
     market = _en_market_label(order_preview.get("market"))
     order_type = _en_order_type_label(order_preview.get("order_type") or order_preview.get("orderType"))
     action = _en_order_action(order_preview)
-    quantity = _format_value(order_preview.get("quantity") or order_preview.get("size"), missing="not returned")
+    if _is_full_position_tp_sl(order_preview):
+        quantity = "the full position (quantity is 0 or omitted)"
+    else:
+        quantity = _format_value(order_preview.get("quantity") or order_preview.get("size"), missing="not returned")
     price = order_preview.get("price")
     price_text = "" if price in (None, "") else f", price {_format_value(price, missing='not returned')}"
     return f"Order: {symbol} {market}, {order_type} {action}, quantity {quantity}{price_text}."
@@ -497,10 +515,19 @@ def _normalize_tp_sl_order(raw_order: dict[str, Any]) -> dict[str, str]:
         "planType": plan_type,
         "triggerPrice": _positive_decimal_text(raw_order, "triggerPrice"),
         "executePrice": str(raw_order.get("executePrice", "0")).strip() or "0",
-        "quantity": _positive_decimal_text(raw_order, "quantity"),
         "positionSide": position_side,
         "triggerPriceType": trigger_price_type,
     }
+    quantity = raw_order.get("quantity")
+    if quantity is not None and str(quantity).strip() != "":
+        quantity_text = str(quantity).strip()
+        try:
+            decimal_quantity = Decimal(quantity_text)
+        except (InvalidOperation, ValueError) as exc:
+            raise AggregationInputError("quantity must be numeric") from exc
+        if not decimal_quantity.is_finite() or decimal_quantity < 0:
+            raise AggregationInputError("quantity must be >= 0")
+        normalized["quantity"] = quantity_text
     return normalized
 
 
@@ -580,7 +607,7 @@ def _submit_order(
         endpoint_key = (
             "sim.transaction.place_order"
             if mode == "demo"
-            else contract_api.find_endpoint_key_by_doc_suffix("PlaceOrder")
+            else "transaction.place_order"
         )
         endpoint = contract_api.ENDPOINTS[endpoint_key]
         normalized_symbol = (
@@ -676,6 +703,10 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         trading_mode=trading_mode,
         environment=environment,
     )
+    analysis_output["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
+    )
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     intent = build_intent(
         profile_name=args.profile,
@@ -724,6 +755,10 @@ def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         analysis_output,
         trading_mode=trading_mode,
         environment=environment,
+    )
+    analysis_output["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
     )
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     intent = build_intent(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import subprocess
 import sys
@@ -1014,6 +1015,74 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["live_position_confirmation"]["current_price"], "78123.4")
         self.assertEqual(events[0]["payload"]["live_position_confirmation"]["quantity"], "0.01")
 
+    def test_position_snapshot_accepts_official_liquidate_price_wire_name(self) -> None:
+        task = {
+            "task_type": "position_pnl_monitor",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {"metric": "unrealized_pnl", "operator": ">", "threshold": "50"},
+        }
+
+        snapshot = monitor._position_snapshot_for_task(
+            task,
+            {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "quantity": "0.02",
+                "unrealized_pnl": "-85.569",
+                "liquidatePrice": "12345",
+            },
+            snapshot_at_ms=1000,
+        )
+
+        self.assertEqual(snapshot["liquidation_price"], "12345")
+
+    def test_position_snapshot_entry_fallback_uses_open_value_not_current_notional(self) -> None:
+        task = {
+            "task_type": "position_pnl_monitor",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {"metric": "unrealized_pnl", "operator": ">", "threshold": "50"},
+        }
+
+        snapshot = monitor._position_snapshot_for_task(
+            task,
+            {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "quantity": "0.02",
+                "open_value": "1801.067",
+                "notional": "1715.498",
+                "unrealized_pnl": "-85.569",
+            },
+            snapshot_at_ms=1000,
+        )
+
+        self.assertEqual(snapshot["entry_price"], "90053.35")
+
+    def test_position_snapshot_compacts_binary_float_artifacts(self) -> None:
+        task = {
+            "task_type": "position_pnl_monitor",
+            "symbol": "BTCUSDT",
+            "position_side": "LONG",
+            "condition": {"metric": "unrealized_pnl", "operator": ">", "threshold": "50"},
+        }
+
+        snapshot = monitor._position_snapshot_for_task(
+            task,
+            {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "quantity": 0.02,
+                "entry_price": 90053.34999999999,
+                "mark_price": 85774.9,
+                "unrealized_pnl": -85.569,
+            },
+            snapshot_at_ms=1000,
+        )
+
+        self.assertEqual(snapshot["entry_price"], "90053.35")
+
     def test_live_confirmation_text_warns_when_fixed_close_quantity_differs_from_aggregate_position(self) -> None:
         task_json = {
             "task_id": "mon_live_aggregate_warning",
@@ -1534,8 +1603,11 @@ class MonitorTaskTests(unittest.TestCase):
         self.assertIn("required", help_result.stdout.lower())
 
         parser = monitor.build_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["confirm-text-live", "--task-json", "{}"])
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["confirm-text-live", "--task-json", "{}"])
+        self.assertIn("--duration-seconds", stderr.getvalue())
 
     def test_run_loop_missing_mode_error_mentions_confirm_demo(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

@@ -184,6 +184,17 @@
         "scripts/weex_trade_guard.py",
         "scripts/weex_order_intent_state.py"
       ],
+      "preview TP/SL conditional-order risk": [
+        "scripts/weex_trade_guard.py",
+        "scripts/weex_order_intent_state.py",
+        "references/contract-api-definitions.json"
+      ],
+      "confirm a TP/SL conditional order": [
+        "scripts/weex_trade_guard.py",
+        "scripts/weex_contract_api.py",
+        "scripts/weex_order_intent_state.py",
+        "references/contract-api-definitions.json"
+      ],
       "inspect or edit saved accounts": [
         "scripts/weex_gui_launcher.py",
         "scripts/weex_profiles_cli.py",
