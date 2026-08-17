@@ -375,6 +375,35 @@ class RepoConsistencyTests(unittest.TestCase):
         for text in (skill_text, readme_text):
             self.assertNotIn("real account versus simulated account", text)
 
+    def test_natural_language_orders_require_preview_and_a_subsequent_exact_confirmation(self) -> None:
+        required_contract = (
+            "Every natural-language order must use `preview-order`",
+            "subsequent, independent user message",
+            "exactly matches `user_confirmation.reply_text`",
+            "Trading-mode selection or missing-field completion is not confirmation",
+            "If the safe preview path is unavailable, fail closed",
+            "never fall back to the direct contract or spot order CLI",
+        )
+        forbidden_contract = (
+            "direct non-preview trading actions",
+            "direct non-preview actions",
+            "default flow is direct live execution",
+        )
+
+        for path in (SKILL, README):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                for phrase in required_contract:
+                    self.assertTrue(
+                        phrase in text,
+                        f"{path.name} is missing natural-language order safety contract: {phrase}",
+                    )
+                for phrase in forbidden_contract:
+                    self.assertTrue(
+                        phrase not in text.casefold(),
+                        f"{path.name} still permits unsafe natural-language order behavior: {phrase}",
+                    )
+
     def test_environment_language_does_not_call_trading_environment_an_account(self) -> None:
         scanned_paths = (
             SKILL,

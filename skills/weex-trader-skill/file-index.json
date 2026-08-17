@@ -275,7 +275,7 @@
       ]
     },
     "scripts/weex_order_intent_state.py": {
-      "role": "Pending-order confirmation state store for preview-before-submit trading flows, including trading_mode and environment in the risk signature.",
+      "role": "Pending-order confirmation state store for preview-before-submit trading flows, including intent identity, trading mode, environment, expiry, complete submission payload, and TP/SL payload in the risk signature with confirmation-time recomputation.",
       "when": [
         "saving the latest pending order intent",
         "loading the latest pending order intent",
@@ -287,6 +287,7 @@
       "surface": [
         "intent_path",
         "build_intent",
+        "intent_signature_is_valid",
         "save_intent",
         "load_intent",
         "clear_intent",

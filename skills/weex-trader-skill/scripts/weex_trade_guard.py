@@ -15,6 +15,7 @@ import weex_trade_risk_review as analysis
 from weex_order_intent_state import (
     build_intent,
     clear_intent,
+    intent_signature_is_valid,
     intent_is_expired,
     load_intent,
     save_intent,
@@ -70,6 +71,22 @@ def _normalize_trading_mode(raw: Any) -> str:
     if mode not in TRADING_MODES:
         raise AggregationInputError(f"invalid_trading_mode: expected one of {', '.join(TRADING_MODES)}")
     return mode
+
+
+def _ensure_client_order_id(market: str, raw_order: dict[str, Any]) -> dict[str, Any]:
+    """Materialize the client order ID during preview so confirmation reuses it."""
+    normalized = dict(raw_order)
+    if normalized.get("new_client_order_id") or normalized.get("newClientOrderId"):
+        return normalized
+    if str(market).strip().lower() == "spot":
+        import weex_spot_api as spot_api
+
+        normalized["new_client_order_id"] = spot_api.generate_client_order_id()
+    else:
+        import weex_contract_api as contract_api
+
+        normalized["new_client_order_id"] = contract_api.generate_client_oid()
+    return normalized
 
 
 def _arg_value(args: argparse.Namespace, name: str, default: Any = None) -> Any:
@@ -696,6 +713,7 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         trading_mode=trading_mode,
         raw_order=raw_order,
     )
+    raw_order = _ensure_client_order_id(args.market, raw_order)
     environment = _environment_from_payload_or_mode(risk_payload, trading_mode, args.market)
     analysis_output = analysis.analyze_order_risk(risk_payload)
     analysis_output = _merge_environment_context(
@@ -848,8 +866,14 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
             args.pretty,
         )
         return 1
-    if args.risk_signature and args.risk_signature != intent.get("risk_signature"):
-        _output_json({"ok": False, "error": "Risk signature does not match the saved pending order."}, args.pretty)
+    if not intent_signature_is_valid(intent, provided_signature=args.risk_signature):
+        _output_json(
+            {
+                "ok": False,
+                "error": "Risk signature does not match the current saved pending order. Generate a new preview first.",
+            },
+            args.pretty,
+        )
         return 1
 
     if intent_mode == "live":
@@ -911,8 +935,14 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
             args.pretty,
         )
         return 1
-    if args.risk_signature and args.risk_signature != intent.get("risk_signature"):
-        _output_json({"ok": False, "error": "Risk signature does not match the saved pending TP/SL order."}, args.pretty)
+    if not intent_signature_is_valid(intent, provided_signature=args.risk_signature):
+        _output_json(
+            {
+                "ok": False,
+                "error": "Risk signature does not match the current saved pending TP/SL order. Generate a new preview first.",
+            },
+            args.pretty,
+        )
         return 1
 
     tp_sl_order = intent.get("tp_sl_order")
