@@ -14,7 +14,7 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 
 - `scripts/weex_contract_api.py`: contract/futures REST
 - `scripts/weex_spot_api.py`: spot REST
-- `scripts/weex_api_credentials.py`: lightweight fixed-name environment credential loader for direct contract/spot REST
+- `scripts/weex_api_credentials.py`: lightweight fixed-name environment credential loader for direct contract/spot REST and Trader preview/confirmation flows
 - `scripts/weex_partner_api.py`: strict read-only Partner REST executor for the seven allowlisted Partner endpoints
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
 - `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
@@ -57,7 +57,7 @@ These auto-detect language from `agent-init.json`.
 - If `cryptography` or another dependency is missing, install `requirements.lock` with `--require-hashes` using the same interpreter and retry
 - Private contract and spot CLIs auto-attempt `scripts/weex_runtime_setup.py` only when they need the saved-profile path and required Python dependencies are missing
 - `skill.preflight` also validates `WEEX_API_TIMEOUT` plus any `WEEX_*_API_BASE` overrides; private contract/spot commands now fail fast until those issues are fixed
-- For direct environment-authenticated contract/spot REST, only `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` are required. `WEEX_API_BASE`, `WEEX_CONTRACT_API_BASE`, `WEEX_SPOT_API_BASE`, `WEEX_API_TIMEOUT`, and `WEEX_LOCALE` are optional overrides.
+- For environment-authenticated contract/spot REST and Trader preview/confirmation flows, only `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` are required. `WEEX_API_BASE`, `WEEX_CONTRACT_API_BASE`, `WEEX_SPOT_API_BASE`, `WEEX_API_TIMEOUT`, and `WEEX_LOCALE` are optional overrides.
 - Partner REST requests default to a 30-second timeout because Partner queries can legitimately exceed the 15-second contract/spot default; a valid positive `WEEX_API_TIMEOUT` still overrides it. Timeout failures remain fail-closed and are never retried automatically.
 - Windows/macOS GUI flows ignore system `tkinter` availability and require the managed GUI runtime; if the user declines managed-runtime setup, use the terminal profile manager instead of launching a GUI
 - If `agent-init.json` is missing and AI is about to use an auto-language wrapper, refresh `skill.preflight` first instead of guessing
@@ -65,7 +65,7 @@ These auto-detect language from `agent-init.json`.
 ## Profile Policy
 
 - Before private account/trading setup or any task that explicitly requires a saved account, check whether any profile already exists
-- For direct private contract/spot REST in containers, use `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together and omit `--profile`. If all three are present they take precedence over a configured default profile; a partial set fails closed. An explicit `--profile` always selects the saved profile instead. This environment path does not apply to Partner, aggregation, trade-guard, or profile-management commands.
+- For direct private contract/spot REST and Trader preview/confirmation flows, use `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together and omit `--profile`. Direct REST uses the complete set ahead of a configured default profile. Trader previews do not fall back to a default profile: omitting `--profile` requires all three variables throughout preview and confirmation. A partial set fails closed, and an explicit `--profile` always selects the saved profile instead. This environment path does not apply to Partner, standalone aggregation, or profile-management commands.
 - Resolve the saved profile from an explicit current-turn choice, an unambiguous choice already made in the current conversation, or the configured default profile. If these sources cannot resolve one unique saved profile and multiple usable profiles exist, inspect them with the localized profile `list --pretty` command and ask the user to choose. Do not guess from list order, notes, IDs, or name similarity.
 - Present ambiguous profile choices as a numbered list containing profile display names only; do not expose profile IDs, credential hints, base URLs, or raw profile records. Ask this as a standalone question so the user can reply with either the number or the exact profile name. Do not combine it with trading-mode or other missing-field questions.
 - Use this localized response shape:
@@ -148,6 +148,7 @@ For exact setup, lock/unlock, and password-change commands, open `references/lin
 - Keep `live` and `demo` as internal CLI/API values only. In user-facing dialogue, risk previews, order confirmations, and account queries, use localized trading-mode labels, not environment labels and not account labels. For Chinese, use `模拟盘` and `真实盘`; for English, use `demo trading` and `real trading`. Never present raw `live` or `demo` as the trading-mode label for the user.
 - In natural-language private account queries, if the user did not clearly choose `模拟盘` or `真实盘` in Chinese, or `demo trading` or `real trading` in English, ask them to choose before calling private account commands.
 - In natural-language order preview flows where a saved profile and order details are present but trading mode is missing, do not ask a standalone trading-mode question. Generate the preview with the most likely initial preview mode: explicit user wording wins first; profile names or notes can only be weak preview-default signals; if no useful signal exists, use `live` as a preview-only default. The same saved profile can target either trading mode.
+- In natural-language order preview flows, a complete environment credential set may be used without a saved profile; an explicit saved profile still takes precedence. A partial environment credential set fails closed.
 - For every natural-language summary that uses private WEEX data or mentions a private order action, start with `user_environment_prefix` when it is returned. This includes account balances, positions, account risk, order previews, submitted order results, order cancel results, TP/SL order results, open-order queries, order status queries, and order-history queries. If a private command returns `environment` but not `user_environment_prefix`, derive the first line from that environment before summarizing anything else.
 - The environment prefix must be the first user-visible line, using localized labels such as `模拟盘` or `Current trading mode: real trading`. Keep this prefix informational; it is not an order confirmation gate.
 - Every natural-language order must use `preview-order` and return structured risk output before the order can be confirmed.

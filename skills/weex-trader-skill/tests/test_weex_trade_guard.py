@@ -81,8 +81,174 @@ class OrderIntentStateTests(unittest.TestCase):
         self.assertEqual(demo_intent["trading_mode"], "demo")
         self.assertNotEqual(live_intent["risk_signature"], demo_intent["risk_signature"])
 
+    def test_environment_backed_intent_signature_round_trip(self) -> None:
+        intent = intent_state.build_intent(
+            profile_name=None,
+            market="futures",
+            trading_mode="live",
+            order_preview={"symbol": "BTCUSDT"},
+            raw_order={"symbol": "BTCUSDT"},
+            analysis_output={"alerts": []},
+            now_ms=1000,
+            ttl_seconds=300,
+        )
+
+        self.assertIsNone(intent["profile_name"])
+        self.assertTrue(intent_state.intent_signature_is_valid(intent))
+
 
 class TradeGuardTests(unittest.TestCase):
+    def test_preview_order_parser_allows_environment_credentials_without_profile(self) -> None:
+        args = trade_guard.build_parser().parse_args(
+            [
+                "preview-order",
+                "--market",
+                "futures",
+                "--order-json",
+                '{"symbol":"BTCUSDT","side":"BUY","position_side":"LONG","order_type":"MARKET","quantity":"0.01"}',
+            ]
+        )
+
+        self.assertIsNone(args.profile)
+
+    def test_preview_tp_sl_parser_allows_environment_credentials_without_profile(self) -> None:
+        args = trade_guard.build_parser().parse_args(
+            [
+                "preview-tp-sl",
+                "--tp-sl-json",
+                '{"symbol":"ETHUSDT","clientAlgoId":"env-preview","planType":"TAKE_PROFIT","triggerPrice":"2500","positionSide":"SHORT"}',
+            ]
+        )
+
+        self.assertIsNone(args.profile)
+
+    def test_build_contract_client_uses_environment_credentials_without_profile(self) -> None:
+        environment_credentials = mock.Mock(
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+        )
+        fake_contract_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-contract.weex.com",
+            DEFAULT_LOCALE="en-US",
+            load_environment_credentials=mock.Mock(return_value=environment_credentials),
+            validate_runtime_environment=mock.Mock(return_value={"ok": True, "issues": []}),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"WEEX_CONTRACT_API_BASE": "", "WEEX_API_BASE": "", "WEEX_API_TIMEOUT": "7"},
+            clear=False,
+        ):
+            with mock.patch.dict(sys.modules, {"weex_contract_api": fake_contract_api}):
+                trade_guard._build_contract_client(None)
+
+        fake_contract_api.load_environment_credentials.assert_called_once_with()
+        fake_contract_api.validate_runtime_environment.assert_called_once_with()
+        fake_contract_api.ensure_private_runtime_ready.assert_not_called()
+        fake_contract_api.resolve_runtime_profile.assert_not_called()
+        fake_contract_api.require_private_profile.assert_not_called()
+        fake_contract_api.WeexContractClient.assert_called_once_with(
+            base_url="https://api-contract.weex.com",
+            timeout=7.0,
+            locale="en-US",
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+            profile_name=None,
+        )
+
+    def test_build_spot_client_uses_environment_credentials_without_profile(self) -> None:
+        environment_credentials = mock.Mock(
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+        )
+        fake_spot_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-spot.weex.com",
+            DEFAULT_LOCALE="en-US",
+            load_environment_credentials=mock.Mock(return_value=environment_credentials),
+            validate_runtime_environment=mock.Mock(return_value={"ok": True, "issues": []}),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"WEEX_SPOT_API_BASE": "", "WEEX_API_BASE": "", "WEEX_API_TIMEOUT": "7"},
+            clear=False,
+        ):
+            with mock.patch.dict(sys.modules, {"weex_spot_api": fake_spot_api}):
+                trade_guard._build_spot_client(None)
+
+        fake_spot_api.load_environment_credentials.assert_called_once_with()
+        fake_spot_api.validate_runtime_environment.assert_called_once_with()
+        fake_spot_api.ensure_private_runtime_ready.assert_not_called()
+        fake_spot_api.resolve_runtime_profile.assert_not_called()
+        fake_spot_api.require_private_profile.assert_not_called()
+        fake_spot_api.WeexSpotClient.assert_called_once_with(
+            base_url="https://api-spot.weex.com",
+            timeout=7.0,
+            locale="en-US",
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+            profile_name=None,
+        )
+
+    def test_build_contract_client_prefers_explicit_saved_profile(self) -> None:
+        saved_profile = mock.Mock(
+            contract_base_url="https://saved-contract.weex.com",
+        )
+        saved_profile.name = "saved"
+        fake_contract_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-contract.weex.com",
+            DEFAULT_LOCALE="en-US",
+            load_environment_credentials=mock.Mock(
+                side_effect=AssertionError("environment credentials must be ignored")
+            ),
+            resolve_runtime_profile=mock.Mock(return_value=saved_profile),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"WEEX_CONTRACT_API_BASE": "", "WEEX_API_BASE": "", "WEEX_API_TIMEOUT": "7"},
+            clear=False,
+        ):
+            with mock.patch.dict(sys.modules, {"weex_contract_api": fake_contract_api}):
+                trade_guard._build_contract_client("saved")
+
+        fake_contract_api.ensure_private_runtime_ready.assert_called_once()
+        fake_contract_api.resolve_runtime_profile.assert_called_once_with(
+            requested_profile="saved",
+            allow_invalid_default=False,
+        )
+        fake_contract_api.WeexContractClient.assert_called_once_with(
+            base_url="https://saved-contract.weex.com",
+            timeout=7.0,
+            locale="en-US",
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name="saved",
+        )
+
+    def test_build_contract_client_without_profile_requires_environment_credentials(self) -> None:
+        default_profile = mock.Mock(contract_base_url="")
+        default_profile.name = "default"
+        fake_contract_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-contract.weex.com",
+            DEFAULT_LOCALE="en-US",
+            DEFAULT_TIMEOUT=15,
+            load_environment_credentials=mock.Mock(return_value=None),
+            resolve_runtime_profile=mock.Mock(return_value=default_profile),
+        )
+
+        with mock.patch.dict(sys.modules, {"weex_contract_api": fake_contract_api}):
+            with self.assertRaisesRegex(SystemExit, "WEEX_API_KEY"):
+                trade_guard._build_contract_client(None)
+
+        fake_contract_api.resolve_runtime_profile.assert_not_called()
+        fake_contract_api.WeexContractClient.assert_not_called()
+
     def test_trader_local_risk_review_adds_standard_disclaimer(self) -> None:
         order_payload = {
             "order_preview": {
@@ -692,6 +858,57 @@ class TradeGuardTests(unittest.TestCase):
         submit_mock.assert_called_once()
         self.assertIsNone(remaining_intent)
         self.assertIn('"order_id": "9001"', stream.getvalue())
+
+    def test_confirm_order_preserves_environment_credential_source(self) -> None:
+        args = mock.Mock(
+            intent_id=None,
+            risk_signature=None,
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            pretty=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name=None,
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "position_side": "LONG",
+                        "order_type": "MARKET",
+                        "quantity": "0.01",
+                    },
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                )
+                args.intent_id = intent["intent_id"]
+                args.risk_signature = intent["risk_signature"]
+                intent_state.save_intent(intent)
+                with mock.patch.object(
+                    trade_guard,
+                    "_submit_live_order",
+                    return_value={"ok": True, "order_id": "env-order"},
+                ) as submit_mock:
+                    with mock.patch.object(sys, "stdout", io.StringIO()):
+                        exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+
+        self.assertEqual(exit_code, 0)
+        submit_mock.assert_called_once_with(
+            market="futures",
+            profile_name=None,
+            raw_order={
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "position_side": "LONG",
+                "order_type": "MARKET",
+                "quantity": "0.01",
+            },
+        )
 
     def test_confirm_order_rejects_saved_raw_order_modified_after_preview(self) -> None:
         raw_order = {

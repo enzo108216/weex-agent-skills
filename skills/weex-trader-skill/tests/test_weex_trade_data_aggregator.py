@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -2100,6 +2101,133 @@ class AggregatorCliTests(unittest.TestCase):
 
 
 class ApiFetcherTests(unittest.TestCase):
+    def test_contract_client_uses_environment_credentials_without_profile(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        environment_credentials = mock.Mock(
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+        )
+        fake_contract_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-contract.weex.com",
+            DEFAULT_LOCALE="en-US",
+            load_environment_credentials=mock.Mock(return_value=environment_credentials),
+            validate_runtime_environment=mock.Mock(return_value={"ok": True, "issues": []}),
+        )
+
+        with mock.patch.object(fetcher, "_contract_module", return_value=fake_contract_api):
+            with mock.patch.dict(
+                os.environ,
+                {"WEEX_CONTRACT_API_BASE": "", "WEEX_API_BASE": "", "WEEX_API_TIMEOUT": "7"},
+                clear=False,
+            ):
+                fetcher._build_contract_client(None)
+
+        fake_contract_api.load_environment_credentials.assert_called_once_with()
+        fake_contract_api.ensure_private_runtime_ready.assert_not_called()
+        fake_contract_api.resolve_runtime_profile.assert_not_called()
+        fake_contract_api.WeexContractClient.assert_called_once_with(
+            base_url="https://api-contract.weex.com",
+            timeout=7.0,
+            locale="en-US",
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+            profile_name=None,
+        )
+
+    def test_spot_client_uses_environment_credentials_without_profile(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        environment_credentials = mock.Mock(
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+        )
+        fake_spot_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-spot.weex.com",
+            DEFAULT_LOCALE="en-US",
+            load_environment_credentials=mock.Mock(return_value=environment_credentials),
+            validate_runtime_environment=mock.Mock(return_value={"ok": True, "issues": []}),
+        )
+
+        with mock.patch.object(fetcher, "_spot_module", return_value=fake_spot_api):
+            with mock.patch.dict(
+                os.environ,
+                {"WEEX_SPOT_API_BASE": "", "WEEX_API_BASE": "", "WEEX_API_TIMEOUT": "7"},
+                clear=False,
+            ):
+                fetcher._build_spot_client(None)
+
+        fake_spot_api.load_environment_credentials.assert_called_once_with()
+        fake_spot_api.ensure_private_runtime_ready.assert_not_called()
+        fake_spot_api.resolve_runtime_profile.assert_not_called()
+        fake_spot_api.WeexSpotClient.assert_called_once_with(
+            base_url="https://api-spot.weex.com",
+            timeout=7.0,
+            locale="en-US",
+            api_key="env-key",
+            api_secret="env-secret",
+            api_passphrase="env-passphrase",
+            profile_name=None,
+        )
+
+    def test_spot_client_prefers_explicit_saved_profile(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        saved_profile = mock.Mock(
+            spot_base_url="https://saved-spot.weex.com",
+        )
+        saved_profile.name = "saved"
+        fake_spot_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-spot.weex.com",
+            DEFAULT_LOCALE="en-US",
+            load_environment_credentials=mock.Mock(
+                side_effect=AssertionError("environment credentials must be ignored")
+            ),
+            resolve_runtime_profile=mock.Mock(return_value=saved_profile),
+        )
+
+        with mock.patch.object(fetcher, "_spot_module", return_value=fake_spot_api):
+            with mock.patch.dict(
+                os.environ,
+                {"WEEX_SPOT_API_BASE": "", "WEEX_API_BASE": "", "WEEX_API_TIMEOUT": "7"},
+                clear=False,
+            ):
+                fetcher._build_spot_client("saved")
+
+        fake_spot_api.ensure_private_runtime_ready.assert_called_once()
+        fake_spot_api.resolve_runtime_profile.assert_called_once_with(
+            requested_profile="saved",
+            allow_invalid_default=False,
+        )
+        fake_spot_api.WeexSpotClient.assert_called_once_with(
+            base_url="https://saved-spot.weex.com",
+            timeout=7.0,
+            locale="en-US",
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name="saved",
+        )
+
+    def test_spot_client_without_profile_requires_environment_credentials(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        default_profile = mock.Mock(spot_base_url="")
+        default_profile.name = "default"
+        fake_spot_api = mock.Mock(
+            DEFAULT_BASE_URL="https://api-spot.weex.com",
+            DEFAULT_LOCALE="en-US",
+            DEFAULT_TIMEOUT=15,
+            load_environment_credentials=mock.Mock(return_value=None),
+            resolve_runtime_profile=mock.Mock(return_value=default_profile),
+        )
+
+        with mock.patch.object(fetcher, "_spot_module", return_value=fake_spot_api):
+            with self.assertRaisesRegex(SystemExit, "WEEX_API_KEY"):
+                fetcher._build_spot_client(None)
+
+        fake_spot_api.resolve_runtime_profile.assert_not_called()
+        fake_spot_api.WeexSpotClient.assert_not_called()
+
     def test_fetch_futures_orders_uses_contract_order_history_endpoint(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
 

@@ -109,7 +109,8 @@
           "scripts/weex_risk_review_core.py",
           "scripts/weex_order_intent_state.py",
           "references/trade-data-schema.md"
-        ]
+        ],
+        "private_credential_sources": ["WEEX_API_KEY/WEEX_API_SECRET/WEEX_API_PASSPHRASE", "saved_profile"]
       },
       "profile_management": {
         "entrypoints": [

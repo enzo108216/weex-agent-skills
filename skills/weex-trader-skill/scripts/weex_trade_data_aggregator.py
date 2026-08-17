@@ -2191,19 +2191,36 @@ class WeexApiFetcher:
 
         return spot_api
 
-    def _build_contract_client(self, profile_name: str) -> tuple[Any, Any]:
+    def _build_contract_client(self, profile_name: str | None) -> tuple[Any, Any]:
         contract_api = self._contract_module()
         contract_api.refresh_agent_records(command="trade-aggregator.contract")
-        contract_api.ensure_private_runtime_ready(
-            command="trade-aggregator.contract",
-            auto_setup=True,
-            language=None,
-        )
-        profile = contract_api.resolve_runtime_profile(
-            requested_profile=profile_name,
-            allow_invalid_default=False,
-        )
-        contract_api.require_private_profile(profile)
+        environment_credentials = None
+        profile = None
+        if profile_name is None:
+            environment_credentials = contract_api.load_environment_credentials()
+        if environment_credentials is not None:
+            environment_validation = contract_api.validate_runtime_environment()
+            if not environment_validation["ok"]:
+                raise SystemExit(
+                    "Invalid runtime environment:\n"
+                    + "\n".join(f"- {issue}" for issue in environment_validation["issues"])
+                )
+        elif profile_name is None:
+            raise SystemExit(
+                "Trader preview and confirmation require WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE "
+                "when --profile is omitted. Set all three together or pass --profile <name>."
+            )
+        else:
+            contract_api.ensure_private_runtime_ready(
+                command="trade-aggregator.contract",
+                auto_setup=True,
+                language=None,
+            )
+            profile = contract_api.resolve_runtime_profile(
+                requested_profile=profile_name,
+                allow_invalid_default=False,
+            )
+            contract_api.require_private_profile(profile)
         env_base_url = os.getenv("WEEX_CONTRACT_API_BASE") or os.getenv("WEEX_API_BASE")
         base_url = (
             (profile.contract_base_url if profile else "")
@@ -2216,9 +2233,9 @@ class WeexApiFetcher:
             base_url=base_url,
             timeout=timeout,
             locale=locale,
-            api_key=None,
-            api_secret=None,
-            api_passphrase=None,
+            api_key=environment_credentials.api_key if environment_credentials else None,
+            api_secret=environment_credentials.api_secret if environment_credentials else None,
+            api_passphrase=environment_credentials.api_passphrase if environment_credentials else None,
             profile_name=profile.name if profile else None,
         )
         return contract_api, client
@@ -2241,19 +2258,36 @@ class WeexApiFetcher:
         )
         return contract_api, client
 
-    def _build_spot_client(self, profile_name: str) -> tuple[Any, Any]:
+    def _build_spot_client(self, profile_name: str | None) -> tuple[Any, Any]:
         spot_api = self._spot_module()
         spot_api.refresh_agent_records(command="trade-aggregator.spot")
-        spot_api.ensure_private_runtime_ready(
-            command="trade-aggregator.spot",
-            auto_setup=True,
-            language=None,
-        )
-        profile = spot_api.resolve_runtime_profile(
-            requested_profile=profile_name,
-            allow_invalid_default=False,
-        )
-        spot_api.require_private_profile(profile)
+        environment_credentials = None
+        profile = None
+        if profile_name is None:
+            environment_credentials = spot_api.load_environment_credentials()
+        if environment_credentials is not None:
+            environment_validation = spot_api.validate_runtime_environment()
+            if not environment_validation["ok"]:
+                raise SystemExit(
+                    "Invalid runtime environment:\n"
+                    + "\n".join(f"- {issue}" for issue in environment_validation["issues"])
+                )
+        elif profile_name is None:
+            raise SystemExit(
+                "Trader preview and confirmation require WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE "
+                "when --profile is omitted. Set all three together or pass --profile <name>."
+            )
+        else:
+            spot_api.ensure_private_runtime_ready(
+                command="trade-aggregator.spot",
+                auto_setup=True,
+                language=None,
+            )
+            profile = spot_api.resolve_runtime_profile(
+                requested_profile=profile_name,
+                allow_invalid_default=False,
+            )
+            spot_api.require_private_profile(profile)
         env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
         base_url = (
             (profile.spot_base_url if profile else "")
@@ -2266,9 +2300,9 @@ class WeexApiFetcher:
             base_url=base_url,
             timeout=timeout,
             locale=locale,
-            api_key=None,
-            api_secret=None,
-            api_passphrase=None,
+            api_key=environment_credentials.api_key if environment_credentials else None,
+            api_secret=environment_credentials.api_secret if environment_credentials else None,
+            api_passphrase=environment_credentials.api_passphrase if environment_credentials else None,
             profile_name=profile.name if profile else None,
         )
         return spot_api, client

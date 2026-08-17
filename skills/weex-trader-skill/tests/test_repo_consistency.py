@@ -710,9 +710,14 @@ class RepoConsistencyTests(unittest.TestCase):
                 "scripts/weex_api_credentials.py",
                 manifest["routing"]["task_map"][task_name],
             )
-        for domain in ("partner", "trade_analysis", "trade_guard", "profile_management"):
+        environment_credential_source = "WEEX_API_KEY/WEEX_API_SECRET/WEEX_API_PASSPHRASE"
+        self.assertIn(
+            environment_credential_source,
+            manifest["routing"]["domains"]["trade_guard"].get("private_credential_sources", []),
+        )
+        for domain in ("partner", "trade_analysis", "profile_management"):
             self.assertNotIn(
-                "WEEX_API_KEY/WEEX_API_SECRET/WEEX_API_PASSPHRASE",
+                environment_credential_source,
                 manifest["routing"]["domains"][domain].get("private_credential_sources", []),
             )
 
@@ -986,6 +991,7 @@ class RepoConsistencyTests(unittest.TestCase):
                 "scripts/weex_trade_data_aggregator.py",
                 "scripts/weex_order_intent_state.py",
                 "scripts/weex_trade_risk_review.py",
+                "scripts/weex_api_credentials.py",
             ],
         )
 

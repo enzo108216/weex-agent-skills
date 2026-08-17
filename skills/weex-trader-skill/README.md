@@ -136,11 +136,12 @@ Keep the detailed analysis workflow, analysis commands, and result semantics in 
 Use this safety order for trading tasks:
 
 - run `skill.preflight` first so profile, runtime, env, and GUI-routing facts are fresh before private actions
-- use runtime-injected `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` for containerized direct contract/spot REST, or use a saved profile for interactive workflows
+- use runtime-injected `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` for containerized direct contract/spot REST and Trader preview/confirmation flows, or use a saved profile for interactive workflows
 - choose the trading mode explicitly for private account queries: `live` maps to `真实盘` in Chinese and `real trading` in English; `demo` maps to `模拟盘` in Chinese and `demo trading` in English
 - keep `live` and `demo` as internal command values only; when speaking to the user, use localized trading-mode labels such as `模拟盘` and `真实盘` in Chinese or `demo trading` and `real trading` in English, not environment labels, not account labels, and not raw `live` or `demo`
 - for natural-language private account queries, if the user did not clearly choose `模拟盘` or `真实盘` in Chinese, or `demo trading` or `real trading` in English, ask them to choose before calling private commands
 - for natural-language order previews where a saved profile and order details are present but trading mode is missing, do not ask a standalone trading-mode question. Generate the preview with the most likely initial preview mode: explicit wording wins first; profile names or notes can only be weak preview-default signals; if no useful signal exists, use `live` as a preview-only default. The same saved profile can target either trading mode
+- for natural-language order previews, a complete environment credential set may be used without a saved profile; an explicit saved profile still takes precedence. A partial environment credential set fails closed
 - for every natural-language summary that uses private WEEX data or mentions a private order action, start with `user_environment_prefix` when it is returned. This includes account balances, positions, account risk, order previews, submitted order results, order cancel results, TP/SL order results, open-order queries, order status queries, and order-history queries. If a private command returns `environment` but not `user_environment_prefix`, derive the first line from that environment before summarizing anything else
 - keep the environment prefix as the first user-visible line, using localized labels such as `模拟盘` or `Current trading mode: real trading`. This prefix is informational and does not ask for order confirmation
 - Every natural-language order must use `preview-order`; review the returned alerts plus `user_confirmation` before any submission
@@ -172,7 +173,7 @@ All other supported environment variables are optional. `WEEX_CONTRACT_API_BASE`
 
 ## Saved Profile Setup
 
-Direct private contract/spot REST can use `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together without a saved profile. With no explicit `--profile`, that complete set takes precedence over the default saved profile; a partial set is rejected. Partner, aggregation, trade-guard, and profile-management flows continue to require saved profiles.
+Direct private contract/spot REST and Trader preview/confirmation flows can use `WEEX_API_KEY`, `WEEX_API_SECRET`, and `WEEX_API_PASSPHRASE` together without a saved profile. For direct REST, that complete set takes precedence over the default saved profile when `--profile` is omitted. Trader previews do not fall back to a default profile: omitting `--profile` requires all three variables throughout preview and confirmation. A partial set is rejected. Partner, standalone aggregation, and profile-management flows continue to require saved profiles.
 
 Choose the setup guide that matches how you want to work:
 

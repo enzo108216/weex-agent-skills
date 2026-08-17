@@ -29,7 +29,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def build_risk_signature(
     *,
-    profile_name: str,
+    profile_name: str | None,
     market: str,
     trading_mode: str,
     order_preview: dict[str, Any],
@@ -76,7 +76,7 @@ def intent_signature_is_valid(
     if not isinstance(stored_signature, str) or not stored_signature:
         return False
     recomputed_signature = build_risk_signature(
-        profile_name=str(payload.get("profile_name") or ""),
+        profile_name=payload.get("profile_name"),
         market=str(payload.get("market") or ""),
         trading_mode=str(payload.get("trading_mode") or ""),
         order_preview=payload.get("order_preview"),
@@ -99,7 +99,7 @@ def intent_signature_is_valid(
 
 def build_intent(
     *,
-    profile_name: str,
+    profile_name: str | None,
     market: str,
     trading_mode: str = "live",
     environment: dict[str, Any] | None = None,

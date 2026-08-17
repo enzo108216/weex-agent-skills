@@ -91,10 +91,11 @@
       ]
     },
     "scripts/weex_api_credentials.py": {
-      "role": "Lightweight fixed-name environment credential loader for direct private contract and spot REST calls in containers.",
+      "role": "Lightweight fixed-name environment credential loader for direct private REST and Trader preview/confirmation flows.",
       "when": [
         "loading WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE without a saved profile",
-        "rejecting a partial runtime credential set before API signing"
+        "rejecting a partial runtime credential set before API signing",
+        "keeping environment-backed Trader previews independent from the saved-profile Vault"
       ],
       "surface": [
         "ApiCredentials",
@@ -263,6 +264,7 @@
       "depends_on": [
         "scripts/weex_contract_api.py",
         "scripts/weex_spot_api.py",
+        "scripts/weex_api_credentials.py",
         "references/contract-api-definitions.json",
         "references/spot-api-definitions.json"
       ],
@@ -336,7 +338,8 @@
       "depends_on": [
         "scripts/weex_trade_data_aggregator.py",
         "scripts/weex_order_intent_state.py",
-        "scripts/weex_trade_risk_review.py"
+        "scripts/weex_trade_risk_review.py",
+        "scripts/weex_api_credentials.py"
       ],
       "surface": [
         "preview-order",

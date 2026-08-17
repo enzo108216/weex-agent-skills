@@ -548,13 +548,30 @@ def _normalize_tp_sl_order(raw_order: dict[str, Any]) -> dict[str, str]:
     return normalized
 
 
-def _build_contract_client(profile_name: str) -> tuple[Any, Any]:
+def _build_contract_client(profile_name: str | None) -> tuple[Any, Any]:
     import weex_contract_api as contract_api
 
     contract_api.refresh_agent_records(command="trade-guard.contract")
-    contract_api.ensure_private_runtime_ready(command="trade-guard.contract", auto_setup=True, language=None)
-    profile = contract_api.resolve_runtime_profile(requested_profile=profile_name, allow_invalid_default=False)
-    contract_api.require_private_profile(profile)
+    environment_credentials = None
+    profile = None
+    if profile_name is None:
+        environment_credentials = contract_api.load_environment_credentials()
+    if environment_credentials is not None:
+        environment_validation = contract_api.validate_runtime_environment()
+        if not environment_validation["ok"]:
+            raise SystemExit(
+                "Invalid runtime environment:\n"
+                + "\n".join(f"- {issue}" for issue in environment_validation["issues"])
+            )
+    elif profile_name is None:
+        raise SystemExit(
+            "Trader preview and confirmation require WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE "
+            "when --profile is omitted. Set all three together or pass --profile <name>."
+        )
+    else:
+        contract_api.ensure_private_runtime_ready(command="trade-guard.contract", auto_setup=True, language=None)
+        profile = contract_api.resolve_runtime_profile(requested_profile=profile_name, allow_invalid_default=False)
+        contract_api.require_private_profile(profile)
     env_base_url = os.getenv("WEEX_CONTRACT_API_BASE") or os.getenv("WEEX_API_BASE")
     base_url = (
         (profile.contract_base_url if profile else "")
@@ -567,21 +584,38 @@ def _build_contract_client(profile_name: str) -> tuple[Any, Any]:
         base_url=base_url,
         timeout=timeout,
         locale=locale,
-        api_key=None,
-        api_secret=None,
-        api_passphrase=None,
+        api_key=environment_credentials.api_key if environment_credentials else None,
+        api_secret=environment_credentials.api_secret if environment_credentials else None,
+        api_passphrase=environment_credentials.api_passphrase if environment_credentials else None,
         profile_name=profile.name if profile else None,
     )
     return contract_api, client
 
 
-def _build_spot_client(profile_name: str) -> tuple[Any, Any]:
+def _build_spot_client(profile_name: str | None) -> tuple[Any, Any]:
     import weex_spot_api as spot_api
 
     spot_api.refresh_agent_records(command="trade-guard.spot")
-    spot_api.ensure_private_runtime_ready(command="trade-guard.spot", auto_setup=True, language=None)
-    profile = spot_api.resolve_runtime_profile(requested_profile=profile_name, allow_invalid_default=False)
-    spot_api.require_private_profile(profile)
+    environment_credentials = None
+    profile = None
+    if profile_name is None:
+        environment_credentials = spot_api.load_environment_credentials()
+    if environment_credentials is not None:
+        environment_validation = spot_api.validate_runtime_environment()
+        if not environment_validation["ok"]:
+            raise SystemExit(
+                "Invalid runtime environment:\n"
+                + "\n".join(f"- {issue}" for issue in environment_validation["issues"])
+            )
+    elif profile_name is None:
+        raise SystemExit(
+            "Trader preview and confirmation require WEEX_API_KEY, WEEX_API_SECRET, and WEEX_API_PASSPHRASE "
+            "when --profile is omitted. Set all three together or pass --profile <name>."
+        )
+    else:
+        spot_api.ensure_private_runtime_ready(command="trade-guard.spot", auto_setup=True, language=None)
+        profile = spot_api.resolve_runtime_profile(requested_profile=profile_name, allow_invalid_default=False)
+        spot_api.require_private_profile(profile)
     env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
     base_url = (
         (profile.spot_base_url if profile else "")
@@ -594,9 +628,9 @@ def _build_spot_client(profile_name: str) -> tuple[Any, Any]:
         base_url=base_url,
         timeout=timeout,
         locale=locale,
-        api_key=None,
-        api_secret=None,
-        api_passphrase=None,
+        api_key=environment_credentials.api_key if environment_credentials else None,
+        api_secret=environment_credentials.api_secret if environment_credentials else None,
+        api_passphrase=environment_credentials.api_passphrase if environment_credentials else None,
         profile_name=profile.name if profile else None,
     )
     return spot_api, client
@@ -605,7 +639,7 @@ def _build_spot_client(profile_name: str) -> tuple[Any, Any]:
 def _submit_order(
     *,
     market: str,
-    profile_name: str,
+    profile_name: str | None,
     trading_mode: str,
     raw_order: dict[str, Any],
 ) -> dict[str, Any]:
@@ -682,7 +716,7 @@ def _submit_order(
     return response.get("data") if isinstance(response.get("data"), dict) else {"result": response.get("data")}
 
 
-def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
+def _submit_live_order(*, market: str, profile_name: str | None, raw_order: dict[str, Any]) -> dict[str, Any]:
     return _submit_order(
         market=market,
         profile_name=profile_name,
@@ -691,7 +725,7 @@ def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, A
     )
 
 
-def _submit_live_tp_sl_order(*, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
+def _submit_live_tp_sl_order(*, profile_name: str | None, raw_order: dict[str, Any]) -> dict[str, Any]:
     contract_api, client = _build_contract_client(profile_name)
     endpoint = contract_api.ENDPOINTS[contract_api.find_endpoint_key_by_doc_suffix("PlaceTpSlOrder")]
     normalized = _normalize_tp_sl_order(raw_order)
@@ -879,13 +913,13 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
     if intent_mode == "live":
         execution_payload = _submit_live_order(
             market=str(intent["market"]),
-            profile_name=str(intent["profile_name"]),
+            profile_name=intent.get("profile_name"),
             raw_order=dict(intent["raw_order"]),
         )
     else:
         execution_payload = _submit_order(
             market=str(intent["market"]),
-            profile_name=str(intent["profile_name"]),
+            profile_name=intent.get("profile_name"),
             trading_mode=intent_mode,
             raw_order=dict(intent["raw_order"]),
         )
@@ -951,7 +985,7 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         return 1
 
     execution_payload = _submit_live_tp_sl_order(
-        profile_name=str(intent["profile_name"]),
+        profile_name=intent.get("profile_name"),
         raw_order=dict(tp_sl_order),
     )
     clear_intent()
@@ -996,7 +1030,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     preview = subparsers.add_parser("preview-order", help="Preview risk before placing an order.")
-    preview.add_argument("--profile", required=True, help="Saved profile name.")
+    preview.add_argument("--profile", default=None, help="Saved profile name; omit when using complete WEEX environment credentials.")
     preview.add_argument("--market", required=True, choices=("futures", "spot"))
     preview.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     preview.add_argument("--order-json", required=True, help="JSON order payload.")
@@ -1009,7 +1043,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preview a real trading only futures TP/SL conditional order; demo TP/SL is not supported.",
         description="Preview risk before placing a futures TP/SL conditional order. This flow is real trading only; demo TP/SL is not supported.",
     )
-    preview_tp_sl.add_argument("--profile", required=True, help="Saved profile name.")
+    preview_tp_sl.add_argument("--profile", default=None, help="Saved profile name; omit when using complete WEEX environment credentials.")
     preview_tp_sl.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE, help="TP/SL trading mode; real trading only because demo TP/SL is not supported.")
     preview_tp_sl.add_argument("--tp-sl-json", required=True, help="JSON TP/SL conditional order payload.")
     preview_tp_sl.add_argument("--ttl-seconds", type=int, default=300, help="Intent TTL in seconds.")

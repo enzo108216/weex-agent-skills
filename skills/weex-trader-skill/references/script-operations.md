@@ -219,12 +219,12 @@ python3 scripts/weex_trade_data_aggregator.py collect-account-risk --profile mai
 python3 scripts/weex_trade_data_aggregator.py collect-order-risk --profile main --market futures --trading-mode demo --order-json '{"symbol":"BTCUSDT","side":"BUY","position_side":"LONG","order_type":"MARKET","quantity":"0.001"}' --pretty
 ```
 
-`weex_trade_guard.py` binds `trading_mode`, `environment`, profile, market, order preview, and alerts into the pending intent risk signature. Preview first, then confirm with the matching environment flag from the latest preview output.
+`weex_trade_guard.py` binds `trading_mode`, `environment`, profile or environment-credential source, market, order preview, and alerts into the pending intent risk signature. With all three standard environment variables present, omit `--profile`; an explicit profile still takes precedence. An omitted profile never falls back to a default saved profile, so the complete environment set must remain available for confirmation. Preview first, then confirm with the matching environment flag from the latest preview output.
 Private account, order, cancel, TP/SL, and order-query outputs include `user_environment_prefix` whenever the command has environment context. Natural-language summaries must put that prefix on the first line before describing balances, positions, submitted orders, order status, or order history.
 
 ```bash
 # Windows users: replace python3 with py -3
-python3 scripts/weex_trade_guard.py preview-order --profile main --market futures --trading-mode demo --order-json '{"symbol":"BTCUSDT","side":"BUY","position_side":"LONG","order_type":"MARKET","quantity":"0.001"}' --language en --pretty
+python3 scripts/weex_trade_guard.py preview-order --market futures --trading-mode demo --order-json '{"symbol":"BTCUSDT","side":"BUY","position_side":"LONG","order_type":"MARKET","quantity":"0.001"}' --language en --pretty
 python3 scripts/weex_trade_guard.py confirm-order --trading-mode demo --intent-id <intent_id> --risk-signature <risk_signature> --confirm-demo --pretty
 ```
 
