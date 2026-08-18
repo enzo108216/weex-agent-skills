@@ -10,6 +10,7 @@ It supports:
 - official WEEX futures demo-mode queries and demo futures order placement with explicit `--trading-mode demo`
 - normalized replay, profile, order-risk, and account-risk payload collection for downstream read-only analysis
 - preview-before-submit order risk checks with a pending confirmation intent
+- finite, revocable, quota-limited automated strategy authorization with durable per-order audit records
 - current account-risk scans without order parameters
 - raw endpoint access through local endpoint catalogs
 - secure saved-profile management across Windows, macOS, and Linux
@@ -24,6 +25,7 @@ It supports:
 - Module quick-reference
 - Companion skill boundary
 - Recommended order flow
+- Automated strategy authorization
 - Saved profile setup
 - Security notes
 - Troubleshooting
@@ -109,6 +111,8 @@ Mention `$weex-trader-skill`, then describe the task in plain language.
 | Ask for current account risk | `"What are my main futures account risks right now?"` |
 | Place a spot market order | `"Buy 200 USDT worth of BTC at market."` |
 | Place a futures limit order | `"Open a small ETHUSDT short with a limit order at 2500."` |
+| Authorize an automated strategy | `"Register my BTC strategy and request a 24-hour Spot and Futures authorization with 200 U per order and 2,000 U total."` |
+| Revoke an automated strategy | `"Revoke the active authorization for my BTC strategy."` |
 | Cancel open orders | `"Cancel my open ETHUSDT futures orders."` |
 | Check order status | `"Did my BTCUSDT order fill yet?"` |
 
@@ -120,6 +124,7 @@ Mention `$weex-trader-skill`, then describe the task in plain language.
 | `Futures` | Futures market data, account state, orders, positions, leverage/margin endpoints, and the official `sim.*` simulated futures endpoints. | Public + private |
 | `Aggregation` | Replay, profile, order-risk, and account-risk payload collection for downstream analysis, with `trading_mode` and `environment` in private payloads. | Public + private |
 | `Trade Guard` | Preview-before-submit order risk, account-risk scan, pending confirmation intent handling, environment-bound confirmation, and trader-local risk review for standalone installs. | Private |
+| `Automated Authorization` | Stable per-strategy identity, detailed one-time authorization, deterministic official-fact quota checks, atomic per-leg usage/order ownership, revocation, events, and reconciliation. | Saved profile + real trading only |
 
 If you need the underlying Python/runtime setup, shell command context, or direct CLI examples, open [Script operations](references/script-operations.md).
 
@@ -154,6 +159,28 @@ For demo futures, the skill uses only the official WEEX contract demo endpoints 
 Convenience order and guard flows accept normal contract symbols such as `BTCUSDT` and map them to the official demo-order symbol shape required by WEEX before submission. Normalized payloads map demo futures rows back to the normal symbol shape so analysis and monitor tasks can match `BTCUSDT` consistently.
 
 Partner queries use the exact production default unless the selected saved profile contains a strictly validated `https://*.weex.tech` test subdomain. Partner output reports only `partner_production` or `partner_test`; it does not expose the concrete test origin. API base environment overrides and authenticated redirects remain forbidden.
+
+## Automated Strategy Authorization
+
+Automatic authorization is an explicit integration for user-maintained Python or quantitative strategies. The skill does not discover external scripts. Each strategy registers once, persists its stable `strategy_id`, and calls `ensure-authorization` at startup before its first order. Restarts and renames reuse that ID; a copied strategy registers a new ID. Every strategy has an independent authorization and quota.
+
+The detailed confirmation covers five scope dimensions: Spot/Futures modules (either or both), selected symbols or all symbols, maximum conservative U amount per leg, maximum cumulative U amount, and validity. Validity defaults to 24 hours and cannot exceed 24 hours. Activation binds the exact strategy, request, saved profile, and scope signature and requires `--confirm-live`. A pending request never grants trading authority.
+
+The automatic path uses only the explicit official operation catalog. Authorization follows the official Spot/Futures module, not an endpoint string, so a new endpoint does not silently inherit permission. Before any WEEX write, deterministic code checks fresh official risk and valuation facts, authorization state, module/symbol scope, per-leg quota, cumulative quota, and the complete batch. When the official Futures quantity unit cannot be proven uniquely, the conservative notional uses `quantity * price * max(1, contractVal)` before leverage and fee bounds; this is an upper-bound estimate, not exact exchange margin. AI-generated text does not calculate or mutate quota.
+
+Each batch is reserved atomically and each leg records its strategy, authorization, usage, submission group, opaque client order ID, and WEEX order ID. Accepted legs permanently consume their conservative estimate; explicit rejections release it and preserve sanitized `error_code`/`error_message` in the leg result and `USAGE_RELEASED` event; unknown responses or mappings stay `REVIEW_REQUIRED`. Error codes are limited to 128 characters and messages normalize control whitespace and are limited to 512 characters; they are display evidence, not state-classification input. The guard never splits or retries a submitted group and never maps batch results by array position. Reconciliation stores fills and fees separately without changing accepted quota.
+
+Full-position TP/SL (`quantity` is `0` or omitted), unproven reduce-only semantics, incomplete risk data, stale/degraded official facts, insufficient market depth, missing conversion/leverage/fee data, revoked or expired authorization, scope/quota excess, state conflict, or an unknown operation all return to the existing preview-and-confirm flow without a WEEX write. Normal risk advisories remain visible but do not block an otherwise valid authorized order.
+
+Use `scripts/weex_auto_trade.py` as the stable JSON facade for registration, authorization, `submit-auto`, recovery, event inspection, and official read-only reconciliation. A strategy invokes that CLI as a subprocess; importing the state kernel or injecting custom risk/fact/submit collaborators is not a supported production boundary. Raw API keys, secrets, passphrases, passwords, and direct SQLite access are rejected. The six-table owner-only database, checks, and migrations reduce accidental misuse and corruption but are not identity authentication or tamper-proofing against control of the same OS user, Agent, Vault session, or API key.
+
+The durable event list is the source for per-order display. Ordinary accepted events may be delivered as one owner-scoped UTC 60-second summary; exceptions are immediate. Notification delivery is attempted once, is not retried, and never changes trading or quota state; an adapter timeout is recorded as `UNKNOWN`, because display may already have occurred. Retire the strategy or revoke its active authorization to stop future automatic submissions. See [Script operations](references/script-operations.md) for the exact JSON commands.
+
+Use `snapshot-state` only when the user explicitly requests a local authorization-state backup. Snapshots are SQLite-consistent, validated, owner-only files in the Trader-managed `snapshots/` directory. The default retention count is 10 and the accepted range is 1-100; the new snapshot is published before the oldest registered regular snapshots are rotated. Unknown, temporary, failed, active-database, and preserved pre-restore files are never rotation targets. This is not password encryption and provides no protection from compromise of the same OS user.
+
+`restore-state` accepts a Trader-generated snapshot ID, not a path. Every syntactically valid attempt engages the persistent kill switch before reading the managed index, including unknown IDs and malformed indexes. It keeps a validated copy of the current database, restores through a temporary database, migrates only through a complete registered schema path, disables restored ACTIVE authorizations, preserves unresolved usage for manual reconciliation, and atomically switches only after validation. Automatic trading remains disabled after restore. A fresh ACTIVE authorization reports `RESOLVE_AUTO_USAGE_AND_ENABLE_AUTO_TRADING_AFTER_RESTORE` while unresolved usage remains, then `ENABLE_AUTO_TRADING_AFTER_RESTORE` until the latch is explicitly cleared; only then does it report `SUBMIT_ALLOWED`. A submission-uncertain latch instead reports `INSPECT_AND_RECONCILE_MANUALLY`. Create post-switch authorizations for the strategies that should resume, resolve every restored `RESERVED`/`REVIEW_REQUIRED` usage with verified evidence through `resolve-auto-usage`, then explicitly run `enable-auto-trading-after-restore --confirm-live`; pre-switch and expired ACTIVE rows do not satisfy the gate. Restore never merges quota ledgers or queries, retries, cancels, amends, or recreates WEEX orders.
+
+Automated-authorization state currently fails closed on Windows because V1 does not yet create and verify owner-only DACLs. This limitation does not remove the separate Windows support documented for profile, Vault, GUI, and ordinary REST workflows.
 
 ## Saved Profile Setup
 

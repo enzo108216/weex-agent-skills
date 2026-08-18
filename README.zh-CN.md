@@ -47,6 +47,7 @@ OpenClaw 用户不要使用上面的 `npx` 命令，请改用下方的 [Git 仓�
 - 设置并使用已保存的 API profile
 - 采集标准化交易历史，供后续分析使用
 - 在实时交易前预览订单风险
+- 为保存的策略注册有限期、可撤销、按额度控制且可审计的自动交易授权
 - 在你明确确认后，下现货或合约订单，或撤销订单
 
 示例提示词：
@@ -58,6 +59,17 @@ OpenClaw 用户不要使用上面的 `npx` 命令，请改用下方的 [Git 仓�
 | 采集历史 | `使用 $weex-trader-skill 采集我最近 30 天的 BTCUSDT 合约交易历史复盘数据。` |
 | 预览风险 | `使用 $weex-trader-skill 在开 BTCUSDT 多单前预览风险。` |
 | 准备实时订单 | `使用 $weex-trader-skill 先预览一笔 200 USDT 的 BTC 市价买入，等我确认后再决定是否下单。` |
+| 配置自动交易授权 | `使用 $weex-trader-skill 为我的策略申请 24 小时现货和合约自动交易授权，单笔 200 U、累计 2000 U。` |
+
+### 自动策略授权
+
+正式版 Trader 支持用户自己维护的 Python/量化策略显式接入，不会自动识别或包装任意脚本。策略需要先注册稳定身份，在首次下单前通过 saved profile 请求自己的授权。授权确认现货/合约模块、交易对、单笔保守 U 额度、有效期内累计 U 额度和有效期（默认 24 小时、最大 24 小时）；必须绑定原始申请和 `--confirm-live` 才能生效，复制策略会得到新的身份。
+
+只有官方现货/合约操作且官方数据新鲜、完整时才能进入自动路径。批量 leg 先整组原子校验和预占，再记录策略、授权、usage、提交组、client order ID 与 WEEX order ID。成功成交估算额度不会因后续对账返还；明确拒绝释放预占；结果或映射不确定时转人工且不重试。全仓 TP/SL、无法证明的只减仓语义、陈旧/降级数据、缺少汇率/深度/杠杆/费率、超范围/超额、撤销或过期授权、状态冲突和未知操作都不会自动下单。
+
+授权生命周期、`submit-auto`、恢复、事件和官方只读对账统一使用 `skills/weex-trader-skill/scripts/weex_auto_trade.py` 的 saved-profile JSON facade；策略通过子进程调用该 CLI，不直接 import 状态内核，也不能注入生产 risk/fact/submit 实现。原始凭据和直接写数据库都会被拒绝。本地 owner-only 权限、完整性检查和迁移只用于降低误用/损坏风险，不是身份认证，也不能防御控制同一 OS 用户、Agent 或 Vault 会话的攻击者。普通成功通知可以按 60 秒聚合，异常通知立即发送且只尝试一次。
+
+同一个 facade 支持用户显式触发的 owner-only 本地快照，默认保留 10 份（范围 1-100），并只按 Trader 生成的 snapshot ID 恢复。任何语法有效的恢复尝试都会在读取索引前先开启持久 kill switch，因此未知 ID、损坏索引或无效快照也会保持自动交易关闭。恢复会保留当前数据库证据和未决 usage；必须重新完成晚于 kill switch 的详细授权，用可靠证据通过 `resolve-auto-usage` 处理全部未决记录，再显式执行 `enable-auto-trading-after-restore --confirm-live`。快照不提供额外密码加密，也不会自动上传或跨设备同步。自动授权状态目前在 Windows 上 fail-closed，直到实现并验证 owner-only DACL；Trader 其他 Windows 流程不受影响。
 
 ### `weex-analysis-skill`
 

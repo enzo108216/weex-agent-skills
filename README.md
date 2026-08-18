@@ -48,6 +48,7 @@ Good for:
 - collecting normalized trading history for later analysis
 - previewing order risk before a live trade
 - placing or canceling spot and futures orders after explicit confirmation
+- registering a saved-profile automated strategy with a finite, revocable authorization and durable per-order audit trail
 
 Example prompts:
 
@@ -58,6 +59,17 @@ Example prompts:
 | Collect history | `"Use $weex-trader-skill to collect my last 30 days of BTCUSDT futures replay data."` |
 | Preview risk | `"Use $weex-trader-skill to preview the risk before opening a BTCUSDT long."` |
 | Prepare live order | `"Use $weex-trader-skill to preview a 200 USDT BTC market buy before I decide whether to place it."` |
+| Authorize an automated strategy | `"Use $weex-trader-skill to register my strategy and request a 24-hour Spot and Futures authorization with 200 U per order and 2,000 U total."` |
+
+### Automated strategy authorization
+
+The formal Trader implementation supports explicit integration by user-maintained Python or quantitative strategies. It does not discover or wrap arbitrary scripts. Each strategy registers a stable identity and requests its own saved-profile authorization before its first order. The request confirms Spot/Futures modules, symbols, per-leg conservative U limit, cumulative U limit, and validity (default 24 hours, maximum 24 hours). Granting requires the exact request and `--confirm-live`; copied strategies receive a new identity.
+
+Only official Spot/Futures operations with fresh, complete WEEX facts can enter the automatic path. Batch legs are quota-checked and reserved atomically, then audited with strategy, authorization, usage, group, client order ID, and WEEX order ID. Accepted estimates are not refunded by later reconciliation; explicit rejections release their reservation; uncertain results or mappings return to manual review without retry. Full-position TP/SL, unproven reduce-only behavior, stale/degraded data, missing conversion/depth/leverage/fee facts, scope or quota violations, revoked/expired authorizations, state conflicts, and unknown operations never submit automatically.
+
+Use the saved-profile JSON facade in `skills/weex-trader-skill/scripts/weex_auto_trade.py` for lifecycle, `submit-auto`, recovery, event, and read-only reconciliation operations. Strategies call that CLI as a subprocess; direct state imports, injected production collaborators, raw credentials, and direct database writes are unsupported. Local owner-only permissions and integrity checks are misuse/corruption controls, not identity authentication or tamper-proofing against an attacker controlling the same OS user or Agent. Ordinary accepted notifications may be aggregated for 60 seconds; exception notifications are immediate and attempted once.
+
+The same facade provides explicit owner-only local snapshots with a default retention count of 10 (range 1-100) and restore by Trader-generated snapshot ID. Every syntactically valid restore attempt engages the persistent kill switch before index lookup, so an unknown ID or invalid snapshot also leaves automatic trading disabled. Restore preserves the current database, leaves unresolved usage for manual reconciliation, and requires post-switch authorization plus explicit reconciliation and enablement. Snapshots are not password-encrypted and are never uploaded or synchronized automatically. Automated-authorization state currently fails closed on Windows until owner-only DACL creation and verification are supported; other Trader Windows workflows are unaffected.
 
 ### `weex-analysis-skill`
 

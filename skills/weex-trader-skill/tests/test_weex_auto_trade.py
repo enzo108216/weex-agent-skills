@@ -2215,3 +2215,2815 @@ class AutoTradeAmountTests(unittest.TestCase):
                 facts=facts,
                 now_ms=now_ms,
             )
+
+
+class AutoTradeCliTests(unittest.TestCase):
+    def _profile_home(self, root: Path) -> Path:
+        home = root / "weex-home"
+        home.mkdir(mode=0o700)
+        metadata = home / "profiles.meta.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "default_profile_id": "profile-1",
+                    "profiles": {
+                        "profile-1": {
+                            "id": "profile-1",
+                            "name": "strategy-live",
+                            "description": "fixture without credentials",
+                            "contract_base_url": "",
+                            "spot_base_url": "",
+                            "api_key_hint": "",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        metadata.chmod(0o600)
+        return home
+
+    def _run_cli(
+        self,
+        home: Path,
+        command: str,
+        payload: dict,
+        *,
+        confirm_live: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
+        argv = [sys.executable, str(CLI_PATH), command, "--input", "-"]
+        if confirm_live:
+            argv.append("--confirm-live")
+        process = subprocess.run(
+            argv,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "WEEX_TRADER_SKILL_HOME": str(home),
+                "WEEX_AUTO_TRADE_NOTIFICATION_MODE": "disabled",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            check=False,
+        )
+        try:
+            response = json.loads(process.stdout)
+        except json.JSONDecodeError as exc:
+            self.fail(f"CLI did not return JSON: stdout={process.stdout!r}, stderr={process.stderr!r}, error={exc}")
+        return process, response
+
+    def test_cli_authorization_flow_returns_detailed_confirmation_and_events(self) -> None:
+        if not CLI_PATH.exists():
+            self.fail("weex_auto_trade.py has not been implemented")
+        with tempfile.TemporaryDirectory() as tempdir:
+            home = self._profile_home(Path(tempdir))
+            process, registered = self._run_cli(
+                home,
+                "register-strategy",
+                {"profile": "strategy-live", "strategy_name": "grid-btc"},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(registered["status"], "ACTIVE")
+
+            scope_payload = {
+                "profile": "strategy-live",
+                "strategy_id": registered["strategy_id"],
+                "trade_types": ["SPOT", "FUTURES"],
+                "symbols": ["BTCUSDT"],
+                "all_symbols": False,
+                "max_single_amount": "10",
+                "max_total_amount": "100",
+                "valid_hours": "24",
+            }
+            process, pending = self._run_cli(home, "ensure-authorization", scope_payload)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(pending["status"], "AUTHORIZATION_REQUIRED")
+
+            process, shown = self._run_cli(
+                home,
+                "show-authorization-request",
+                {
+                    "profile": "strategy-live",
+                    "strategy_id": registered["strategy_id"],
+                    "request_id": pending["request_id"],
+                },
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            confirmation = shown["confirmation"]
+            self.assertEqual(confirmation["strategy_name"], "grid-btc")
+            self.assertEqual(confirmation["profile"], "strategy-live")
+            self.assertEqual(confirmation["trading_mode"], "live")
+            self.assertEqual(confirmation["trade_types"], ["SPOT", "FUTURES"])
+            self.assertEqual(confirmation["max_single_amount_u"], "10")
+            self.assertEqual(confirmation["max_total_amount_u"], "100")
+            self.assertTrue(confirmation["orders_skip_per_order_confirmation"])
+            self.assertIn("not identity authentication", confirmation["trust_boundary"])
+            self.assertIn("revoke-authorization", confirmation["revoke_command"])
+
+            process, granted = self._run_cli(
+                home,
+                "grant-authorization",
+                {
+                    "profile": "strategy-live",
+                    "strategy_id": registered["strategy_id"],
+                    "request_id": pending["request_id"],
+                    "scope_signature": pending["scope_signature"],
+                },
+                confirm_live=True,
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(granted["status"], "ACTIVE")
+
+            process, event_list = self._run_cli(
+                home,
+                "event-list",
+                {"profile": "strategy-live", "strategy_id": registered["strategy_id"]},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertGreaterEqual(len(event_list["events"]), 3)
+            self.assertTrue(
+                all(
+                    event["authorization_id"] is None
+                    or event["authorization_id"].startswith("auth_***")
+                    for event in event_list["events"]
+                )
+            )
+
+    def test_cli_rejects_raw_credentials_before_creating_state(self) -> None:
+        if not CLI_PATH.exists():
+            self.fail("weex_auto_trade.py has not been implemented")
+        with tempfile.TemporaryDirectory() as tempdir:
+            home = self._profile_home(Path(tempdir))
+            process, response = self._run_cli(
+                home,
+                "register-strategy",
+                {
+                    "profile": "strategy-live",
+                    "strategy_name": "must-not-exist",
+                    "api_secret": "never-echo-this-value",
+                },
+            )
+            self.assertEqual(process.returncode, 2)
+            self.assertEqual(response["error"]["code"], "RAW_CREDENTIALS_NOT_ALLOWED")
+            self.assertNotIn("never-echo-this-value", process.stdout)
+            self.assertFalse((home / "auto-trade" / "authorization-state.sqlite3").exists())
+
+    def test_cli_snapshot_and_restore_use_managed_snapshot_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            home = self._profile_home(Path(tempdir))
+            process, registered = self._run_cli(
+                home,
+                "register-strategy",
+                {"profile": "strategy-live", "strategy_name": "before-snapshot"},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            process, snapshot = self._run_cli(
+                home,
+                "snapshot-state",
+                {"profile": "strategy-live", "retention_count": 3},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(snapshot["status"], "SNAPSHOT_CREATED")
+            self.assertEqual(snapshot["profile"], "strategy-live")
+
+            process, later = self._run_cli(
+                home,
+                "register-strategy",
+                {"profile": "strategy-live", "strategy_name": "after-snapshot"},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertNotEqual(later["strategy_id"], registered["strategy_id"])
+
+            process, restored = self._run_cli(
+                home,
+                "restore-state",
+                {"profile": "strategy-live", "snapshot_id": snapshot["snapshot_id"]},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(restored["status"], "STATE_RESTORED_DISABLED")
+            self.assertEqual(restored["profile"], "strategy-live")
+            process, listed = self._run_cli(
+                home,
+                "list-strategies",
+                {"profile": "strategy-live"},
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(
+                [item["strategy_name"] for item in listed["strategies"]],
+                ["before-snapshot"],
+            )
+
+    def test_cli_snapshot_rejects_password_key_and_path_fields_before_state_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            for field in ("snapshot_password", "encryption_key", "destination_path"):
+                with self.subTest(field=field):
+                    case_root = Path(tempdir) / field
+                    case_root.mkdir()
+                    home = self._profile_home(case_root)
+                    process, response = self._run_cli(
+                        home,
+                        "snapshot-state",
+                        {
+                            "profile": "strategy-live",
+                            field: "must-not-be-accepted-or-echoed",
+                        },
+                    )
+                    self.assertEqual(process.returncode, 2)
+                    self.assertIn(
+                        response["error"]["code"],
+                        {"RAW_CREDENTIALS_NOT_ALLOWED", "INVALID_REQUEST"},
+                    )
+                    self.assertNotIn("must-not-be-accepted-or-echoed", process.stdout)
+                    self.assertFalse(
+                        (home / "auto-trade" / "authorization-state.sqlite3").exists()
+                    )
+
+    def test_cli_retention_errors_use_stable_public_code_without_snapshot_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            home = self._profile_home(Path(tempdir))
+            for invalid in (0, 101, -1, "10", True):
+                with self.subTest(invalid=invalid):
+                    process, response = self._run_cli(
+                        home,
+                        "snapshot-state",
+                        {"profile": "strategy-live", "retention_count": invalid},
+                    )
+                    self.assertEqual(process.returncode, 2)
+                    self.assertEqual(response["error"]["code"], "INVALID_RETENTION_COUNT")
+                    self.assertFalse((home / "snapshots").exists())
+
+    def test_file_input_limit_is_checked_before_reading_the_file(self) -> None:
+        cli_module = load_cli_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            input_path = Path(tempdir) / "large.json"
+            input_path.write_bytes(b"x" * (cli_module.MAX_INPUT_BYTES + 1))
+            with patch.object(Path, "read_text", side_effect=AssertionError("unbounded read")):
+                with self.assertRaisesRegex(cli_module.FacadeError, "too large"):
+                    cli_module._load_input(str(input_path))
+
+
+class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
+    def _authorized_fixture(self, root: Path):
+        state_module = load_state_module()
+        cli_module = load_cli_module()
+        state = state_module.AutoTradeState(root / "state" / "state.sqlite3")
+        state.initialize()
+        profile = SimpleNamespace(profile_id="profile-1", name="strategy-live")
+        strategy = state.register_strategy(
+            profile_id=profile.profile_id,
+            strategy_name="facade-boundary",
+            distribution="official",
+        )
+        request = state.ensure_authorization(
+            strategy_id=strategy["strategy_id"],
+            scope={
+                "trade_types": ["SPOT"],
+                "symbols": ["BTCUSDT"],
+                "all_symbols": False,
+                "max_single_amount": "100",
+                "max_total_amount": "1000",
+            },
+        )
+        authorization = state.grant_authorization(
+            strategy_id=strategy["strategy_id"],
+            request_id=request["request_id"],
+            scope_signature=request["scope_signature"],
+            confirm_live=True,
+        )
+        return state, cli_module, profile, strategy, authorization
+
+    def test_submit_auto_facade_uses_guard_runtime_and_persists_accepted_leg(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            runtime = SimpleNamespace(
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                    "generated_at": datetime.now(UTC).isoformat(),
+                },
+                risk_evaluator=lambda payload: {"alerts": [], "rule_version": "fixture-v1"},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": now_ms,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {
+                        "clientOrderId": legs[0]["client_order_id"],
+                        "success": True,
+                        "orderId": "weex-facade-1",
+                    }
+                ],
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                auto_trade_runtime_factory=lambda resolved: runtime,
+            )
+
+            result = facade.execute(
+                "submit-auto",
+                {
+                    "profile": profile.name,
+                    "strategy_id": strategy["strategy_id"],
+                    "authorization_id": authorization["authorization_id"],
+                    "idempotency_key": "facade-submit-1",
+                    "operation_key": "spot.order.place_order",
+                    "orders": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "BUY",
+                            "type": "LIMIT",
+                            "timeInForce": "GTC",
+                            "quantity": "1",
+                            "price": "10",
+                        }
+                    ],
+                },
+                confirm_live=True,
+            )
+
+            self.assertEqual(result["status"], "ACCEPTED")
+            self.assertEqual(result["profile"], profile.name)
+            self.assertEqual(result["authorization_id"], "auth_***" + authorization["authorization_id"][-6:])
+            self.assertEqual(result["legs"][0]["weex_order_id"], "weex-facade-1")
+
+    def test_submit_auto_manual_fallback_creates_bound_pending_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            captured: list[dict] = []
+            runtime = SimpleNamespace(
+                risk_payload_provider=Mock(),
+                risk_evaluator=Mock(),
+                facts_provider=Mock(),
+                submitter=Mock(),
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                auto_trade_runtime_factory=lambda resolved: runtime,
+                manual_intent_writer=captured.append,
+            )
+            result = facade.execute(
+                "submit-auto",
+                {
+                    "profile": profile.name,
+                    "strategy_id": strategy["strategy_id"],
+                    "authorization_id": authorization["authorization_id"],
+                    "idempotency_key": "facade-submit-fallback",
+                    "operation_key": "transaction.unknown_order",
+                    "orders": [{"symbol": "BTCUSDT"}],
+                },
+                confirm_live=True,
+            )
+
+            self.assertEqual(result["status"], "MANUAL_CONFIRMATION_REQUIRED")
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["strategy_id"], strategy["strategy_id"])
+            self.assertEqual(captured[0]["authorization_id"], authorization["authorization_id"])
+            self.assertEqual(captured[0]["idempotency_key"], "facade-submit-fallback")
+            self.assertEqual(result["intent_id"], captured[0]["intent_id"])
+            runtime.risk_payload_provider.assert_not_called()
+            runtime.submitter.assert_not_called()
+            fallback_event = next(
+                event
+                for event in state.list_events(strategy_id=strategy["strategy_id"])
+                if event["event_type"] == "AUTO_TRADE_MANUAL_FALLBACK"
+            )
+            self.assertEqual(fallback_event["severity"], "EXCEPTION")
+            self.assertEqual(fallback_event["payload"]["error_code"], "UNSUPPORTED_OPERATION")
+
+    def test_submit_auto_post_submit_state_failure_never_creates_manual_retry_intent(self) -> None:
+        import weex_auto_trade_state as runtime_state_module
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            captured: list[dict] = []
+            runtime = SimpleNamespace(
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                },
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": now_ms,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {
+                        "clientOrderId": legs[0]["client_order_id"],
+                        "success": True,
+                        "orderId": "weex-state-failure",
+                    }
+                ],
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                auto_trade_runtime_factory=lambda resolved: runtime,
+                manual_intent_writer=captured.append,
+            )
+            with patch.object(
+                state,
+                "settle_usage",
+                side_effect=runtime_state_module.StateConflictError("injected"),
+            ):
+                result = facade.execute(
+                    "submit-auto",
+                    {
+                        "profile": profile.name,
+                        "strategy_id": strategy["strategy_id"],
+                        "authorization_id": authorization["authorization_id"],
+                        "idempotency_key": "post-submit-state-failure",
+                        "operation_key": "spot.order.place_order",
+                        "orders": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "side": "BUY",
+                                "type": "LIMIT",
+                                "timeInForce": "GTC",
+                                "quantity": "1",
+                                "price": "10",
+                            }
+                        ],
+                    },
+                    confirm_live=True,
+                )
+
+            self.assertEqual(result["status"], "REVIEW_REQUIRED")
+            self.assertEqual(result["error"]["code"], "SUBMISSION_STATE_UNCERTAIN")
+            self.assertEqual(captured, [])
+            uncertain_events = [
+                event
+                for event in state.list_events(strategy_id=strategy["strategy_id"])
+                if event["event_type"] == "SUBMISSION_STATE_UNCERTAIN"
+            ]
+            self.assertEqual(len(uncertain_events), 1)
+            uncertain_event = uncertain_events[0]
+            self.assertEqual(uncertain_event["severity"], "EXCEPTION")
+            self.assertEqual(
+                uncertain_event["payload"]["next_action"],
+                "INSPECT_AND_RECONCILE_MANUALLY",
+            )
+            self.assertNotIn(
+                "post-submit-state-failure",
+                json.dumps(uncertain_event["payload"], ensure_ascii=True),
+            )
+
+    def test_submit_auto_engages_kill_switch_when_uncertainty_event_cannot_be_written(self) -> None:
+        import weex_auto_trade_state as runtime_state_module
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(root)
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            runtime = SimpleNamespace(
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                },
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": now_ms,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {
+                        "clientOrderId": legs[0]["client_order_id"],
+                        "success": True,
+                        "orderId": "weex-state-failure",
+                    }
+                ],
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                auto_trade_runtime_factory=lambda resolved: runtime,
+                manual_intent_writer=Mock(),
+            )
+            with patch.object(
+                state,
+                "settle_usage",
+                side_effect=runtime_state_module.StateConflictError("injected"),
+            ), patch.object(
+                state,
+                "record_submission_state_uncertain",
+                side_effect=runtime_state_module.StateConflictError("injected audit failure"),
+            ):
+                result = facade.execute(
+                    "submit-auto",
+                    {
+                        "profile": profile.name,
+                        "strategy_id": strategy["strategy_id"],
+                        "authorization_id": authorization["authorization_id"],
+                        "idempotency_key": "unrecorded-uncertainty",
+                        "operation_key": "spot.order.place_order",
+                        "orders": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "side": "BUY",
+                                "type": "LIMIT",
+                                "timeInForce": "GTC",
+                                "quantity": "1",
+                                "price": "10",
+                            }
+                        ],
+                    },
+                    confirm_live=True,
+                )
+
+            self.assertEqual(result["status"], "REVIEW_REQUIRED")
+            kill_switch_path = state._kill_switch_path()
+            self.assertTrue(kill_switch_path.exists())
+            self.assertEqual(
+                json.loads(kill_switch_path.read_text(encoding="utf-8"))["reason"],
+                "SUBMISSION_STATE_UNCERTAIN",
+            )
+
+    def test_reconcile_auto_order_accepts_only_official_provider_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            usage = state.reserve_usage(
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="reconcile-boundary",
+                estimated_amount_u="10",
+                module="SPOT",
+                symbol="BTCUSDT",
+                valuation_source="TEST",
+            )
+            order = state.record_order(
+                usage_id=usage["usage_id"],
+                weex_order_id="weex-reconcile-1",
+                side="BUY",
+                order_type="LIMIT",
+                quantity="1",
+                price="10",
+            )
+            state.settle_usage(usage_id=usage["usage_id"], outcome="ACCEPTED")
+            provider = Mock(
+                return_value={
+                    "reconciliation_status": "COMPLETE",
+                    "exchange_status": "FILLED",
+                    "executed_quantity": "1",
+                    "executed_quote_amount": "10",
+                    "fee_amount": "0.01",
+                    "fee_asset": "USDT",
+                    "reconciliation_source": "WEEX_SPOT_ORDER_AND_TRADES",
+                }
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                reconciliation_provider=provider,
+            )
+
+            result = facade.execute(
+                "reconcile-auto-order",
+                {
+                    "profile": profile.name,
+                    "strategy_id": strategy["strategy_id"],
+                    "auto_trade_order_id": order["auto_trade_order_id"],
+                },
+            )
+
+            self.assertEqual(result["reconciliation_status"], "COMPLETE")
+            provider.assert_called_once()
+            self.assertEqual(provider.call_args.args[0]["weex_order_id"], "weex-reconcile-1")
+
+    def test_post_commit_notification_failure_does_not_change_authorization_request(self) -> None:
+        state_module = load_state_module()
+        cli_module = load_cli_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            state = state_module.AutoTradeState(Path(tempdir) / "state" / "state.sqlite3")
+            state.initialize()
+            profile = SimpleNamespace(profile_id="profile-1", name="strategy-live")
+            adapter = Mock(side_effect=RuntimeError("notification unavailable"))
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                notification_adapter=adapter,
+            )
+            strategy = facade.execute(
+                "register-strategy",
+                {"profile": profile.name, "strategy_name": "notify-failure"},
+            )
+            result = facade.execute(
+                "ensure-authorization",
+                {
+                    "profile": profile.name,
+                    "strategy_id": strategy["strategy_id"],
+                    "trade_types": ["SPOT"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "10",
+                    "max_total_amount": "100",
+                },
+            )
+
+            self.assertEqual(result["status"], "AUTHORIZATION_REQUIRED")
+            self.assertEqual(
+                state.get_authorization_request(
+                    strategy_id=strategy["strategy_id"],
+                    request_id=result["request_id"],
+                )["request_status"],
+                "PENDING",
+            )
+            self.assertGreaterEqual(adapter.call_count, 1)
+            self.assertTrue(
+                any(
+                    event["event_type"] == "NOTIFICATION_FAILED"
+                    for event in state.list_events(strategy_id=strategy["strategy_id"])
+                )
+            )
+
+    def test_recovery_commands_resolve_uncertain_usage_and_expose_enable_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            usage = state.reserve_usage(
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="manual-recovery",
+                estimated_amount_u="10",
+                module="SPOT",
+                symbol="BTCUSDT",
+                valuation_source="TEST",
+            )
+            state.record_order(
+                usage_id=usage["usage_id"],
+                weex_order_id=None,
+                side="BUY",
+                order_type="LIMIT",
+                quantity="1",
+                price="10",
+            )
+            state.settle_usage(usage_id=usage["usage_id"], outcome="REVIEW_REQUIRED")
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+            )
+
+            resolved = facade.execute(
+                "resolve-auto-usage",
+                {
+                    "profile": profile.name,
+                    "strategy_id": strategy["strategy_id"],
+                    "usage_id": usage["usage_id"],
+                    "outcome": "RELEASED",
+                    "evidence_source": "WEEX_READ_ONLY_ORDER_NOT_FOUND",
+                },
+                confirm_live=True,
+            )
+            self.assertEqual(resolved["status"], "RELEASED")
+            enabled = facade.execute(
+                "enable-auto-trading-after-restore",
+                {"profile": profile.name},
+                confirm_live=True,
+            )
+            self.assertEqual(enabled["status"], "AUTOMATIC_TRADING_ALREADY_ENABLED")
+
+
+class AutoTradeOfficialRuntimeTests(unittest.TestCase):
+    class FakeApi:
+        def __init__(self, responses: dict[tuple[str, str], object]) -> None:
+            self.responses = responses
+            self.calls: list[dict] = []
+
+        def call(
+            self,
+            *,
+            module: str,
+            endpoint_key: str,
+            query: dict | None = None,
+            body: dict | None = None,
+            public: bool = False,
+            mutating: bool = False,
+        ):
+            self.calls.append(
+                {
+                    "module": module,
+                    "endpoint_key": endpoint_key,
+                    "query": query or {},
+                    "body": body or {},
+                    "public": public,
+                    "mutating": mutating,
+                }
+            )
+            result = self.responses[(module, endpoint_key)]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    def test_official_boundary_distinguishes_explicit_http_rejection_from_uncertainty(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        endpoint = SimpleNamespace(mutating=True)
+        api_module = SimpleNamespace(
+            ENDPOINTS={
+                "transaction.place_order": endpoint,
+                "transaction.place_orders_batch": endpoint,
+            },
+            validate_endpoint_trading_mode=lambda selected, mode: None,
+        )
+
+        class FakeClient:
+            def __init__(self, response):
+                self.response = response
+
+            def prepare_request(self, selected, *, query, body):
+                return {"query": query, "body": body}
+
+            def send(self, prepared):
+                return self.response
+
+        boundary = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
+        boundary._client = lambda module, private: (
+            api_module,
+            FakeClient(
+                {
+                    "ok": False,
+                    "status": 400,
+                    "error": {"code": "40012", "msg": "batch order rejected"},
+                }
+            ),
+        )
+        with self.assertRaises(RuntimeError) as rejected:
+            boundary.call(
+                module="FUTURES",
+                endpoint_key="transaction.place_order",
+                body={"symbol": "BTCUSDT"},
+                mutating=True,
+            )
+        self.assertEqual(type(rejected.exception).__name__, "OfficialRequestRejected")
+        self.assertEqual(rejected.exception.error_code, "40012")
+        self.assertEqual(rejected.exception.error_message, "batch order rejected")
+
+        runtime = runtime_module.OfficialAutoTradeRuntime(
+            profile_name="strategy-live",
+            api=boundary,
+            risk_aggregator=Mock(),
+        )
+        released = runtime.submitter(
+            "transaction.place_orders_batch",
+            [
+                {
+                    "leg_id": "leg-0",
+                    "client_order_id": "client-0",
+                    "order": {
+                        "symbol": "BTCUSDT",
+                        "newClientOrderId": "client-0",
+                    },
+                },
+                {
+                    "leg_id": "leg-1",
+                    "client_order_id": "client-1",
+                    "order": {
+                        "symbol": "BTCUSDT",
+                        "newClientOrderId": "client-1",
+                    },
+                },
+            ],
+        )
+        self.assertEqual([item["status"] for item in released], ["RELEASED", "RELEASED"])
+        self.assertEqual(
+            [item["client_order_id"] for item in released],
+            ["client-0", "client-1"],
+        )
+        self.assertTrue(all(item["errorCode"] == "40012" for item in released))
+        self.assertTrue(
+            all(item["errorMessage"] == "batch order rejected" for item in released)
+        )
+
+        boundary._client = lambda module, private: (
+            api_module,
+            FakeClient(
+                {
+                    "ok": False,
+                    "status": None,
+                    "error": {"message": "connection reset"},
+                }
+            ),
+        )
+        with self.assertRaises(RuntimeError) as uncertain:
+            boundary.call(
+                module="FUTURES",
+                endpoint_key="transaction.place_order",
+                body={"symbol": "BTCUSDT"},
+                mutating=True,
+            )
+        self.assertEqual(type(uncertain.exception).__name__, "OfficialRequestUncertain")
+
+    def test_runtime_builds_spot_facts_and_canonical_batch_envelope(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        api = self.FakeApi(
+            {
+                ("SPOT", "spot.config.get_product_info"): {
+                    "serverTime": 1_700_000_000_000,
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "status": "TRADING",
+                            "quoteAsset": "USDT",
+                            "makerFeeRate": 0.001,
+                            "takerFeeRate": 0.002,
+                        }
+                    ],
+                },
+                ("SPOT", "spot.order.bulk_order"): {
+                    "orderList": [
+                        {"clientOrderId": "client-a", "orderId": "order-a"},
+                        {"clientOrderId": "client-b", "orderId": "order-b"},
+                    ]
+                },
+            }
+        )
+        runtime = runtime_module.OfficialAutoTradeRuntime(
+            profile_name="strategy-live",
+            api=api,
+            risk_aggregator=Mock(),
+        )
+        facts = runtime.facts_provider(
+            {
+                "module": "SPOT",
+                "order": {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "quantity": "1",
+                    "price": "10",
+                },
+            }
+        )
+        self.assertEqual(facts["symbol"]["quoteAsset"], "USDT")
+        self.assertEqual(facts["symbol"]["makerFeeRate"], "0.001")
+        self.assertEqual(facts["symbol"]["takerFeeRate"], "0.002")
+        self.assertIsInstance(facts["timestamp_ms"], int)
+
+        results = runtime.submitter(
+            "spot.order.bulk_order",
+            [
+                {
+                    "leg_id": "leg-0",
+                    "client_order_id": "client-a",
+                    "order": {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "timeInForce": "GTC",
+                        "quantity": "1",
+                        "price": "10",
+                        "newClientOrderId": "client-a",
+                    },
+                },
+                {
+                    "leg_id": "leg-1",
+                    "client_order_id": "client-b",
+                    "order": {
+                        "symbol": "BTCUSDT",
+                        "side": "SELL",
+                        "type": "LIMIT",
+                        "timeInForce": "GTC",
+                        "quantity": "1",
+                        "price": "11",
+                        "newClientOrderId": "client-b",
+                    },
+                },
+            ],
+        )
+        submit_call = api.calls[-1]
+        self.assertTrue(submit_call["mutating"])
+        self.assertEqual(submit_call["body"]["symbol"], "BTCUSDT")
+        self.assertNotIn("symbol", submit_call["body"]["orderList"][0])
+        self.assertEqual([item["client_order_id"] for item in results], ["client-a", "client-b"])
+
+    def test_runtime_classifies_spot_tp_sl_capability_gap_as_advisory_context(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        aggregator = Mock()
+        aggregator.collect_order_risk_payload.return_value = {
+            "partial": False,
+            "degraded_reasons": ["spot_tp_sl_state_unavailable"],
+            "constraints": [],
+            "tp_sl": {"has_take_profit": False, "has_stop_loss": False},
+        }
+        runtime = runtime_module.OfficialAutoTradeRuntime(
+            profile_name="strategy-live",
+            api=Mock(),
+            risk_aggregator=aggregator,
+        )
+        payload = runtime.risk_payload_provider(
+            {
+                "module": "SPOT",
+                "leg_type": "PRIMARY",
+                "order": {"symbol": "BTCUSDT"},
+            }
+        )
+        self.assertEqual(payload["degraded_reasons"], [])
+        self.assertEqual(payload["capability_notes"], ["spot_tp_sl_state_unavailable"])
+        self.assertFalse(payload["partial"])
+
+    def test_runtime_proves_partial_tp_sl_against_the_matching_position(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        api = self.FakeApi(
+            {
+                ("FUTURES", "market.get_contract_info"): {
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "status": "TRADING",
+                            "quoteAsset": "USDT",
+                            "marginAsset": "USDT",
+                            "contractVal": 0.001,
+                            "makerFeeRate": "0.001",
+                            "takerFeeRate": "0.002",
+                        }
+                    ]
+                },
+                ("FUTURES", "account.get_symbol_config"): {
+                    "symbol": "BTCUSDT",
+                    "marginType": "CROSSED",
+                    "crossLeverage": "10",
+                },
+                ("FUTURES", "account.get_commission_rate"): {
+                    "makerCommissionRate": "0.001",
+                    "takerCommissionRate": "0.002",
+                },
+                ("FUTURES", "account.get_all_positions"): [
+                    {"symbol": "BTCUSDT", "side": "LONG", "size": "2"}
+                ],
+            }
+        )
+        runtime = runtime_module.OfficialAutoTradeRuntime(
+            profile_name="strategy-live",
+            api=api,
+            risk_aggregator=Mock(),
+        )
+
+        facts = runtime.facts_provider(
+            {
+                "module": "FUTURES",
+                "leg_type": "TAKE_PROFIT",
+                "order": {
+                    "symbol": "BTCUSDT",
+                    "planType": "TAKE_PROFIT",
+                    "triggerPrice": "65000",
+                    "executePrice": "60000",
+                    "quantity": "1",
+                    "positionSide": "LONG",
+                },
+            }
+        )
+
+        self.assertTrue(facts["reduce_only_proven"])
+        self.assertEqual(facts["symbol"]["contractVal"], "0.001")
+        self.assertEqual(api.calls[-1]["endpoint_key"], "account.get_all_positions")
+
+    def test_official_reconciliation_uses_read_only_order_and_trade_queries(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        futures_api = self.FakeApi(
+            {
+                ("FUTURES", "transaction.get_single_order_info"): {
+                    "orderId": "f-1",
+                    "status": "FILLED",
+                    "executedQty": "2",
+                    "cumQuote": "20",
+                },
+                ("FUTURES", "transaction.get_trade_details"): [
+                    {
+                        "orderId": "f-1",
+                        "commission": "0.01",
+                        "commissionAsset": "USDT",
+                        "qty": "1",
+                        "quoteQty": "10",
+                    },
+                    {
+                        "orderId": "f-1",
+                        "commission": "0.02",
+                        "commissionAsset": "USDT",
+                        "qty": "1",
+                        "quoteQty": "10",
+                    },
+                ],
+            }
+        )
+        facts = runtime_module.query_official_order_facts(
+            order={
+                "module": "FUTURES",
+                "symbol": "BTCUSDT",
+                "weex_order_id": "f-1",
+                "client_order_id": "client-f-1",
+            },
+            profile_name="strategy-live",
+            api=futures_api,
+        )
+        self.assertEqual(facts["reconciliation_status"], "COMPLETE")
+        self.assertEqual(facts["fee_amount"], "0.03")
+        self.assertEqual(facts["fee_asset"], "USDT")
+        self.assertTrue(all(not call["mutating"] for call in futures_api.calls))
+
+        spot_api = self.FakeApi(
+            {
+                ("SPOT", "spot.order.order_details"): {
+                    "orderId": "s-1",
+                    "status": "FILLED",
+                    "executedQty": "1",
+                    "cummulativeQuoteQty": "10",
+                },
+                ("SPOT", "spot.order.transaction_details"): [
+                    {"orderId": "s-1", "commission": "0.01"}
+                ],
+            }
+        )
+        partial = runtime_module.query_official_order_facts(
+            order={
+                "module": "SPOT",
+                "symbol": "BTCUSDT",
+                "weex_order_id": "s-1",
+                "client_order_id": "client-s-1",
+            },
+            profile_name="strategy-live",
+            api=spot_api,
+        )
+        self.assertEqual(partial["reconciliation_status"], "PARTIAL")
+        self.assertIsNone(partial["fee_amount"])
+        self.assertIsNone(partial["fee_asset"])
+
+    def test_futures_plan_reconciliation_uses_plan_then_actual_order_endpoints(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        api = self.FakeApi(
+            {
+                ("FUTURES", "transaction.get_current_pending_orders"): [
+                    {
+                        "algoId": "plan-1",
+                        "algoStatus": "FILLED",
+                        "actualOrderId": "actual-1",
+                    }
+                ],
+                ("FUTURES", "transaction.get_single_order_info"): {
+                    "orderId": "actual-1",
+                    "status": "FILLED",
+                    "executedQty": "2",
+                    "cumQuote": "20",
+                },
+                ("FUTURES", "transaction.get_trade_details"): [
+                    {
+                        "orderId": "actual-1",
+                        "qty": "2",
+                        "quoteQty": "20",
+                        "commission": "0.03",
+                        "commissionAsset": "USDT",
+                    }
+                ],
+            }
+        )
+
+        facts = runtime_module.query_official_order_facts(
+            order={
+                "module": "FUTURES",
+                "leg_type": "TAKE_PROFIT",
+                "symbol": "BTCUSDT",
+                "weex_order_id": "plan-1",
+                "client_order_id": "client-plan-1",
+            },
+            profile_name="strategy-live",
+            api=api,
+        )
+
+        self.assertEqual(facts["reconciliation_status"], "COMPLETE")
+        self.assertEqual(facts["exchange_status"], "FILLED")
+        self.assertEqual(facts["fee_amount"], "0.03")
+        self.assertEqual(
+            [call["endpoint_key"] for call in api.calls],
+            [
+                "transaction.get_current_pending_orders",
+                "transaction.get_single_order_info",
+                "transaction.get_trade_details",
+            ],
+        )
+        self.assertTrue(all(not call["mutating"] for call in api.calls))
+
+        pending_api = self.FakeApi(
+            {
+                ("FUTURES", "transaction.get_current_pending_orders"): [
+                    {"algoId": "plan-2", "algoStatus": "UNTRIGGERED", "actualOrderId": 0}
+                ]
+            }
+        )
+        pending = runtime_module.query_official_order_facts(
+            order={
+                "module": "FUTURES",
+                "leg_type": "CONDITIONAL",
+                "symbol": "BTCUSDT",
+                "weex_order_id": "plan-2",
+                "client_order_id": "client-plan-2",
+            },
+            profile_name="strategy-live",
+            api=pending_api,
+        )
+        self.assertEqual(pending["reconciliation_status"], "PARTIAL")
+        self.assertEqual(pending["exchange_status"], "UNTRIGGERED")
+        self.assertEqual(len(pending_api.calls), 1)
+
+    def test_truncated_trade_rows_cannot_produce_complete_fee_facts(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        trades = [
+            {
+                "orderId": "f-truncated",
+                "qty": "0.01",
+                "quoteQty": "0.1",
+                "commission": "0.01",
+                "commissionAsset": "USDT",
+            }
+            for _ in range(100)
+        ]
+        api = self.FakeApi(
+            {
+                ("FUTURES", "transaction.get_single_order_info"): {
+                    "orderId": "f-truncated",
+                    "status": "FILLED",
+                    "executedQty": "2",
+                    "cumQuote": "20",
+                },
+                ("FUTURES", "transaction.get_trade_details"): trades,
+            }
+        )
+
+        facts = runtime_module.query_official_order_facts(
+            order={
+                "module": "FUTURES",
+                "leg_type": "PRIMARY",
+                "symbol": "BTCUSDT",
+                "weex_order_id": "f-truncated",
+            },
+            profile_name="strategy-live",
+            api=api,
+        )
+
+        self.assertEqual(facts["reconciliation_status"], "PARTIAL")
+        self.assertIsNone(facts["fee_amount"])
+        self.assertIsNone(facts["fee_asset"])
+
+
+class AutoTradeNotificationAdapterTests(unittest.TestCase):
+    def test_dispatch_attempts_each_claim_once_and_records_adapter_failure(self) -> None:
+        notify_module = load_notify_module()
+        claim = {
+            "kind": "EXCEPTION",
+            "notification_key": "event:evt_fixture",
+            "strategy_name": "grid-btc",
+            "strategy_id": "str_***fixture",
+            "event_type": "USAGE_REVIEW_REQUIRED",
+            "event_id": "evt_fixture",
+            "occurred_at": "2026-08-16T12:00:00Z",
+            "next_action": "INSPECT_EVENT_AND_RECONCILE_MANUALLY",
+        }
+
+        class FakeState:
+            def __init__(self):
+                self.completed = []
+
+            def claim_notifications(self, *, now=None):
+                return [claim]
+
+            def complete_notification(self, *, notification_key, outcome, now=None):
+                self.completed.append((notification_key, outcome))
+                return {"ok": True}
+
+        attempts = []
+
+        def failing_adapter(payload):
+            attempts.append(payload["notification_key"])
+            raise RuntimeError("injected notification failure")
+
+        state = FakeState()
+        results = notify_module.dispatch_notification_claims(state, failing_adapter)
+
+        self.assertEqual(attempts, ["event:evt_fixture"])
+        self.assertEqual(state.completed, [("event:evt_fixture", "FAILED")])
+        self.assertEqual(results[0]["status"], "FAILED")
+        self.assertNotIn("injected notification failure", json.dumps(results))
+
+    def test_windows_notification_timeout_exceeds_the_command_display_duration(self) -> None:
+        notify_module = load_notify_module()
+        adapter = notify_module.SystemNotificationAdapter()
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(notify_module.platform, "system", return_value="Windows"), patch.object(
+            notify_module.shutil, "which", return_value="powershell.exe"
+        ), patch.object(notify_module.subprocess, "run", return_value=completed) as run:
+            adapter({"kind": "EXCEPTION", "strategy_name": "fixture", "event_type": "TEST"})
+        self.assertGreater(run.call_args.kwargs["timeout"], 5.5)
+
+    def test_notification_timeout_is_recorded_as_unknown(self) -> None:
+        notify_module = load_notify_module()
+        adapter = notify_module.SystemNotificationAdapter()
+        claim = {
+            "kind": "EXCEPTION",
+            "notification_key": "event:evt_timeout",
+            "strategy_name": "fixture",
+            "event_type": "TEST",
+        }
+
+        class FakeState:
+            def __init__(self):
+                self.completed = []
+
+            def claim_notifications(self, *, now=None):
+                return [claim]
+
+            def complete_notification(self, *, notification_key, outcome, now=None):
+                self.completed.append((notification_key, outcome))
+
+        with patch.object(notify_module.platform, "system", return_value="Darwin"), patch.object(
+            notify_module.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["osascript"], timeout=7),
+        ):
+            state = FakeState()
+            results = notify_module.dispatch_notification_claims(state, adapter)
+        self.assertEqual(results[0]["status"], "UNKNOWN")
+        self.assertEqual(state.completed, [("event:evt_timeout", "UNKNOWN")])
+
+
+class AutoTradeGuardIntegrationTests(unittest.TestCase):
+    def _authorized_state(
+        self,
+        state_module,
+        root: Path,
+        *,
+        trade_types: list[str] | None = None,
+        all_symbols: bool = False,
+    ):
+        state = state_module.AutoTradeState(root / "state" / "state.sqlite3")
+        state.initialize()
+        strategy = state.register_strategy(
+            profile_id="profile-1", strategy_name="guard-regression", distribution="official"
+        )
+        now = datetime(2026, 8, 16, 21, 0, tzinfo=UTC)
+        request = state.ensure_authorization(
+            strategy_id=strategy["strategy_id"],
+            scope={
+                "trade_types": trade_types or ["SPOT"],
+                "symbols": [] if all_symbols else ["BTCUSDT"],
+                "all_symbols": all_symbols,
+                "max_single_amount": "100",
+                "max_total_amount": "1000",
+            },
+            now=now,
+        )
+        authorization = state.grant_authorization(
+            strategy_id=strategy["strategy_id"],
+            request_id=request["request_id"],
+            scope_signature=request["scope_signature"],
+            confirm_live=True,
+            now=now,
+        )
+        return state, strategy, authorization, now
+
+    def test_advisory_allows_one_submit_while_blocking_and_unknown_operations_fall_back(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state = state_module.AutoTradeState(Path(tempdir) / "state" / "state.sqlite3")
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="guard", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 13, 0, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["SPOT"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "50",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            self.assertTrue(
+                hasattr(trade_guard, "submit_authorized_order"),
+                "automatic authorization guard is not implemented",
+            )
+            submit_calls = []
+
+            def facts_provider(leg):
+                return {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0.001",
+                        "takerFeeRate": "0.002",
+                    },
+                }
+
+            def submitter(operation_key, prepared_legs):
+                submit_calls.append((operation_key, prepared_legs))
+                return [
+                    {
+                        "leg_id": prepared_legs[0]["leg_id"],
+                        "status": "ACCEPTED",
+                        "weex_order_id": "weex-auto-1",
+                        "exchange_status": "NEW",
+                    }
+                ]
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.place_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="guard-order-1",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "timeInForce": "GTC",
+                        "quantity": "1",
+                        "price": "10",
+                    }
+                ],
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                    "generated_at": "2026-08-16T13:00:00Z",
+                },
+                risk_evaluator=lambda payload: {
+                    "alerts": [{"type": "high_leverage_or_concentration", "level": "high"}],
+                    "rule_version": "fixture-v1",
+                },
+                facts_provider=facts_provider,
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+            self.assertEqual(len(submit_calls), 1)
+            self.assertEqual(result["status"], "ACCEPTED")
+            self.assertEqual(result["blocking_reasons"], [])
+            self.assertEqual(len(result["advisory_alerts"]), 1)
+            self.assertEqual(result["legs"][0]["estimated_amount_u"], "10.02")
+            reserved_event = next(
+                event
+                for event in state.list_events(strategy_id=strategy["strategy_id"])
+                if event["event_type"] == "USAGE_RESERVED"
+            )
+            self.assertEqual(reserved_event["payload"]["risk_rule_version"], "fixture-v1")
+            self.assertEqual(
+                reserved_event["payload"]["risk_input_timestamp"],
+                "2026-08-16T13:00:00Z",
+            )
+            self.assertEqual(
+                reserved_event["payload"]["advisory_alerts"],
+                [{"type": "high_leverage_or_concentration", "level": "high"}],
+            )
+
+            blocked = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.place_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="guard-order-blocked",
+                orders=[{"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "quantity": "1", "price": "10"}],
+                risk_payload_provider=lambda leg: {"degraded_reasons": ["depth_unavailable"]},
+                risk_evaluator=lambda payload: {"alerts": [{"type": "missing_tp_sl", "level": "high"}]},
+                facts_provider=facts_provider,
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+            self.assertEqual(blocked["status"], "MANUAL_CONFIRMATION_REQUIRED")
+            self.assertTrue(blocked["blocking_reasons"])
+
+            unknown = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="transaction.future_unknown_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="guard-order-unknown",
+                orders=[{"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "quantity": "1", "price": "10"}],
+                risk_payload_provider=lambda leg: {},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=facts_provider,
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+            self.assertEqual(unknown["status"], "MANUAL_CONFIRMATION_REQUIRED")
+            self.assertEqual(len(submit_calls), 1)
+
+    def test_batch_quota_precheck_is_atomic_before_any_submit(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "state" / "state.sqlite3"
+            state = state_module.AutoTradeState(db_path)
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="batch", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 13, 30, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["SPOT"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "60",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            submitter = Mock()
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.bulk_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="batch-over-limit",
+                orders=[
+                    {"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "quantity": "1", "price": "60"},
+                    {"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "quantity": "1", "price": "60"},
+                ],
+                risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {"quoteAsset": "USDT", "makerFeeRate": "0", "takerFeeRate": "0"},
+                },
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(result["status"], "MANUAL_CONFIRMATION_REQUIRED")
+            self.assertEqual(result["error"]["code"], "TOTAL_LIMIT_EXCEEDED")
+            submitter.assert_not_called()
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM authorization_usage").fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM auto_trade_orders").fetchone()[0],
+                    0,
+                )
+
+    def test_batch_results_map_by_client_order_id_without_retry_or_positional_guessing(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "state" / "state.sqlite3"
+            state = state_module.AutoTradeState(db_path)
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="batch-results", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 13, 45, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["SPOT"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "20",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            submit_calls = []
+
+            def submitter(operation_key, prepared_legs):
+                submit_calls.append((operation_key, prepared_legs))
+                return [
+                    {
+                        "clientOrderId": prepared_legs[0]["order"]["newClientOrderId"],
+                        "status": "ACCEPTED",
+                        "weex_order_id": "weex-batch-accepted",
+                    },
+                    {
+                        "clientOrderId": prepared_legs[1]["order"]["newClientOrderId"],
+                        "status": "RELEASED",
+                        "errorCode": "ORDER_REJECTED",
+                        "errorMessage": "batch leg rejected by staging",
+                    },
+                    {
+                        "status": "ACCEPTED",
+                        "weex_order_id": "unmapped-order-id",
+                    },
+                ]
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.bulk_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="batch-partial-results",
+                orders=[
+                    {"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "quantity": "1", "price": "10"},
+                    {"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "quantity": "1", "price": "11"},
+                    {"symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "timeInForce": "GTC", "quantity": "1", "price": "12"},
+                ],
+                risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {"quoteAsset": "USDT", "makerFeeRate": "0", "takerFeeRate": "0"},
+                },
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(len(submit_calls), 1)
+            self.assertEqual(result["status"], "SUBMISSION_GROUP_PARTIAL")
+            self.assertEqual(
+                [leg["status"] for leg in result["legs"]],
+                ["ACCEPTED", "RELEASED", "REVIEW_REQUIRED"],
+            )
+            self.assertEqual(result["legs"][1]["error_code"], "ORDER_REJECTED")
+            self.assertEqual(
+                result["legs"][1]["error_message"],
+                "batch leg rejected by staging",
+            )
+            released_event = next(
+                event
+                for event in state.list_events(strategy_id=strategy["strategy_id"])
+                if event["event_type"] == "USAGE_RELEASED"
+            )
+            self.assertEqual(released_event["payload"]["error_code"], "ORDER_REJECTED")
+            self.assertEqual(
+                released_event["payload"]["error_message"],
+                "batch leg rejected by staging",
+            )
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT accepted_amount_u, reserved_amount_u FROM authorizations"
+                    ).fetchone(),
+                    ("10", "12"),
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM auto_trade_orders WHERE weex_order_id IS NOT NULL"
+                    ).fetchone()[0],
+                    1,
+                )
+
+    def test_full_position_tp_sl_falls_back_before_valuation_or_reservation(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "state" / "state.sqlite3"
+            state = state_module.AutoTradeState(db_path)
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="full-position", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 14, 0, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["FUTURES"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "20",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            facts_provider = Mock()
+            submitter = Mock()
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="transaction.place_tp_sl_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="full-position-tp-sl",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "clientAlgoId": "caller-value-must-be-replaced",
+                        "planType": "TAKE_PROFIT",
+                        "triggerPrice": "70000",
+                        "executePrice": "0",
+                        "quantity": "0",
+                        "positionSide": "LONG",
+                    }
+                ],
+                risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=facts_provider,
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(result["status"], "MANUAL_CONFIRMATION_REQUIRED")
+            self.assertEqual(result["error"]["code"], "FULL_POSITION_REQUIRES_MANUAL_CONFIRMATION")
+            facts_provider.assert_not_called()
+            submitter.assert_not_called()
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM authorization_usage").fetchone()[0],
+                    0,
+                )
+
+    def test_unproven_futures_reduce_only_semantics_fall_back_before_reservation(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "state" / "state.sqlite3"
+            state = state_module.AutoTradeState(db_path)
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="reduce-only", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 14, 15, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["FUTURES"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "20",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            submitter = Mock()
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="transaction.place_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="unproven-reduce-only",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "SELL",
+                        "positionSide": "LONG",
+                        "type": "LIMIT",
+                        "timeInForce": "GTC",
+                        "quantity": "1",
+                        "price": "60000",
+                    }
+                ],
+                risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "reduce_only_proven": False,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "marginAsset": "USDT",
+                        "contractVal": "0.001",
+                        "makerFeeRate": "0.001",
+                        "takerFeeRate": "0.002",
+                        "marginType": "CROSSED",
+                        "crossLeverage": "10",
+                    },
+                },
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(result["status"], "MANUAL_CONFIRMATION_REQUIRED")
+            self.assertEqual(result["error"]["code"], "REDUCE_ONLY_UNPROVEN")
+            submitter.assert_not_called()
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM authorization_usage").fetchone()[0],
+                    0,
+                )
+
+    def test_conditional_order_uses_official_client_algo_id_and_conservative_valuation(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state = state_module.AutoTradeState(Path(tempdir) / "state" / "state.sqlite3")
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="conditional", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 14, 30, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["FUTURES"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "20",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            submitted = []
+
+            def submitter(operation_key, prepared_legs):
+                submitted.append(prepared_legs)
+                outgoing = prepared_legs[0]["order"]
+                self.assertNotEqual(outgoing["clientAlgoId"], "caller-controlled-id")
+                self.assertTrue(outgoing["clientAlgoId"].startswith("wxa_"))
+                self.assertNotIn("newClientOrderId", outgoing)
+                return [
+                    {
+                        "clientOrderId": outgoing["clientAlgoId"],
+                        "success": True,
+                        "orderId": "conditional-order-1",
+                    }
+                ]
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="transaction.place_pending_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="conditional-order",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "positionSide": "LONG",
+                        "type": "STOP",
+                        "quantity": "0.001",
+                        "price": "60000",
+                        "triggerPrice": "59000",
+                        "clientAlgoId": "caller-controlled-id",
+                    }
+                ],
+                risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "marginAsset": "USDT",
+                        "contractVal": "0.001",
+                        "makerFeeRate": "0.001",
+                        "takerFeeRate": "0.002",
+                        "marginType": "CROSSED",
+                        "crossLeverage": "10",
+                    },
+                },
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(len(submitted), 1)
+            self.assertEqual(result["status"], "ACCEPTED")
+            self.assertEqual(result["legs"][0]["estimated_amount_u"], "6.12")
+            self.assertEqual(result["legs"][0]["weex_order_id"], "conditional-order-1")
+
+    def test_guard_rejects_nested_raw_credentials_before_any_provider_or_state_write(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = Path(tempdir) / "state" / "state.sqlite3"
+            state = state_module.AutoTradeState(db_path)
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="credential-boundary", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 14, 45, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["SPOT"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "20",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            risk_provider = Mock()
+            facts_provider = Mock()
+            submitter = Mock()
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.place_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="credential-in-order",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "quantity": "1",
+                        "price": "10",
+                        "metadata": {"api_secret": "must-not-enter-guard"},
+                    }
+                ],
+                risk_payload_provider=risk_provider,
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=facts_provider,
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(result["error"]["code"], "RAW_CREDENTIALS_NOT_ALLOWED")
+            risk_provider.assert_not_called()
+            facts_provider.assert_not_called()
+            submitter.assert_not_called()
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM authorization_usage").fetchone()[0],
+                    0,
+                )
+
+    def test_guard_rejects_fields_outside_the_official_operation_schema(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        risk_provider = Mock()
+        facts_provider = Mock()
+        submitter = Mock()
+        result = trade_guard.submit_authorized_order(
+            state=Mock(),
+            operation_key="spot.order.place_order",
+            strategy_id="str_fixture",
+            authorization_id="auth_fixture",
+            idempotency_key="unknown-order-field",
+            orders=[
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": "1",
+                    "price": "10",
+                    "metadata": {"strategy_note": "not an official request field"},
+                }
+            ],
+            risk_payload_provider=risk_provider,
+            risk_evaluator=Mock(),
+            facts_provider=facts_provider,
+            submitter=submitter,
+            confirm_live=True,
+            now=datetime(2026, 8, 16, 14, 50, tzinfo=UTC),
+            now_ms=1_700_000_000_000,
+        )
+
+        self.assertEqual(result["error"]["code"], "UNSUPPORTED_ORDER_FIELDS")
+        risk_provider.assert_not_called()
+        facts_provider.assert_not_called()
+        submitter.assert_not_called()
+
+    def test_official_batch_leg_limits_block_before_providers(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        for operation_key, count in (
+            ("spot.order.bulk_order", 11),
+            ("transaction.place_orders_batch", 6),
+        ):
+            with self.subTest(operation_key=operation_key):
+                risk_provider = Mock()
+                facts_provider = Mock()
+                submitter = Mock()
+                order = {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": "1",
+                    "price": "10",
+                }
+                if operation_key.startswith("transaction."):
+                    order["positionSide"] = "LONG"
+                result = trade_guard.submit_authorized_order(
+                    state=Mock(),
+                    operation_key=operation_key,
+                    strategy_id="str_fixture",
+                    authorization_id="auth_fixture",
+                    idempotency_key="too-many-legs",
+                    orders=[dict(order) for _ in range(count)],
+                    risk_payload_provider=risk_provider,
+                    risk_evaluator=Mock(),
+                    facts_provider=facts_provider,
+                    submitter=submitter,
+                    confirm_live=True,
+                    now=datetime(2026, 8, 16, 14, 55, tzinfo=UTC),
+                    now_ms=1_700_000_000_000,
+                )
+                self.assertEqual(result["error"]["code"], "BATCH_LEG_LIMIT_EXCEEDED")
+                risk_provider.assert_not_called()
+                facts_provider.assert_not_called()
+                submitter.assert_not_called()
+
+    def test_partial_tp_sl_uses_proven_reduce_only_fee_and_single_response_mapping(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state = state_module.AutoTradeState(Path(tempdir) / "state" / "state.sqlite3")
+            state.initialize()
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="partial-tp", distribution="official"
+            )
+            now = datetime(2026, 8, 16, 15, 0, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["FUTURES"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "1",
+                    "max_total_amount": "10",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            submitted = []
+
+            def submitter(operation_key, prepared_legs):
+                submitted.append(prepared_legs)
+                outgoing = prepared_legs[0]["order"]
+                self.assertTrue(outgoing["clientAlgoId"].startswith("wxa_"))
+                self.assertNotIn("newClientOrderId", outgoing)
+                return [{"success": True, "orderId": "tp-order-1"}]
+
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="transaction.place_tp_sl_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="partial-tp-order",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "clientAlgoId": "caller-controlled-id",
+                        "planType": "TAKE_PROFIT",
+                        "triggerPrice": "65000",
+                        "executePrice": "60000",
+                        "quantity": "0.001",
+                        "positionSide": "LONG",
+                    }
+                ],
+                risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "reduce_only_proven": True,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "marginAsset": "USDT",
+                        "contractVal": "0.001",
+                        "makerFeeRate": "0.001",
+                        "takerFeeRate": "0.002",
+                        "marginType": "CROSSED",
+                        "crossLeverage": "10",
+                    },
+                },
+                submitter=submitter,
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+
+            self.assertEqual(len(submitted), 1)
+            self.assertEqual(result["status"], "ACCEPTED")
+            self.assertEqual(result["legs"][0]["estimated_amount_u"], "0.12")
+            self.assertEqual(result["legs"][0]["weex_order_id"], "tp-order-1")
+
+    def test_state_conflict_fails_closed_without_calling_submitter(self) -> None:
+        import weex_trade_guard as trade_guard
+        import weex_auto_trade_state as state_module
+
+        class FailingState:
+            def prepare_submission_group(self, **kwargs):
+                raise state_module.StateConflictError("injected state failure")
+
+        submitter = Mock()
+        result = trade_guard.submit_authorized_order(
+            state=FailingState(),
+            operation_key="spot.order.place_order",
+            strategy_id="str_fixture",
+            authorization_id="auth_fixture",
+            idempotency_key="state-conflict",
+            orders=[
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": "1",
+                    "price": "10",
+                }
+            ],
+            risk_payload_provider=lambda leg: {"partial": False, "degraded_reasons": [], "constraints": []},
+            risk_evaluator=lambda payload: {"alerts": []},
+            facts_provider=lambda leg: {
+                "timestamp_ms": 1_700_000_000_000,
+                "symbol": {
+                    "quoteAsset": "USDT",
+                    "makerFeeRate": "0",
+                    "takerFeeRate": "0",
+                },
+            },
+            submitter=submitter,
+            confirm_live=True,
+            now=datetime(2026, 8, 16, 15, 15, tzinfo=UTC),
+            now_ms=1_700_000_000_000,
+        )
+
+        self.assertEqual(result["status"], "MANUAL_CONFIRMATION_REQUIRED")
+        self.assertEqual(result["error"]["code"], "STATE_CONFLICT")
+        submitter.assert_not_called()
+
+    def test_restore_waits_until_authorized_submission_is_settled(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            config_dir = Path(tempdir) / "config"
+            state = state_module.AutoTradeState(
+                config_dir / "auto-trade" / "authorization-state.sqlite3"
+            )
+            state.initialize()
+            now = datetime(2026, 8, 16, 20, 0, tzinfo=UTC)
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="restore-race", distribution="official"
+            )
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"],
+                scope={
+                    "trade_types": ["SPOT"],
+                    "symbols": ["BTCUSDT"],
+                    "all_symbols": False,
+                    "max_single_amount": "50",
+                    "max_total_amount": "100",
+                },
+                now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"],
+                request_id=request["request_id"],
+                scope_signature=request["scope_signature"],
+                confirm_live=True,
+                now=now,
+            )
+            snapshot = state.snapshot_state(now=now)
+            submit_entered = threading.Event()
+            allow_submit_to_finish = threading.Event()
+            restore_started = threading.Event()
+            restore_enabled_kill_switch = threading.Event()
+            original_enable_kill_switch = state._enable_restore_kill_switch
+            results = {}
+            errors = []
+
+            def observed_enable_kill_switch(now_text):
+                restore_enabled_kill_switch.set()
+                return original_enable_kill_switch(now_text)
+
+            def submitter(operation_key, prepared_legs):
+                submit_entered.set()
+                if not allow_submit_to_finish.wait(timeout=3):
+                    raise RuntimeError("test did not release the submitter")
+                return [
+                    {
+                        "leg_id": prepared_legs[0]["leg_id"],
+                        "status": "ACCEPTED",
+                        "weex_order_id": "weex-before-restore",
+                    }
+                ]
+
+            def submit_order():
+                try:
+                    results["submission"] = trade_guard.submit_authorized_order(
+                        state=state,
+                        operation_key="spot.order.place_order",
+                        strategy_id=strategy["strategy_id"],
+                        authorization_id=authorization["authorization_id"],
+                        idempotency_key="restore-race-order",
+                        orders=[
+                            {
+                                "symbol": "BTCUSDT",
+                                "side": "BUY",
+                                "type": "LIMIT",
+                                "timeInForce": "GTC",
+                                "quantity": "1",
+                                "price": "10",
+                            }
+                        ],
+                        risk_payload_provider=lambda leg: {
+                            "partial": False,
+                            "degraded_reasons": [],
+                            "constraints": [],
+                        },
+                        risk_evaluator=lambda payload: {"alerts": []},
+                        facts_provider=lambda leg: {
+                            "timestamp_ms": 1_700_000_000_000,
+                            "symbol": {
+                                "quoteAsset": "USDT",
+                                "makerFeeRate": "0",
+                                "takerFeeRate": "0",
+                            },
+                        },
+                        submitter=submitter,
+                        confirm_live=True,
+                        now=now,
+                        now_ms=1_700_000_000_000,
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+
+            def restore_snapshot():
+                restore_started.set()
+                try:
+                    results["restore"] = state.restore_state(
+                        snapshot_id=snapshot["snapshot_id"],
+                        now=datetime(2026, 8, 16, 20, 1, tzinfo=UTC),
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+
+            with patch.object(
+                state,
+                "_enable_restore_kill_switch",
+                side_effect=observed_enable_kill_switch,
+            ):
+                submission_thread = threading.Thread(target=submit_order)
+                submission_thread.start()
+                self.assertTrue(submit_entered.wait(timeout=3))
+
+                restore_thread = threading.Thread(target=restore_snapshot)
+                restore_thread.start()
+                self.assertTrue(restore_started.wait(timeout=3))
+                restore_entered_early = restore_enabled_kill_switch.wait(timeout=0.2)
+                allow_submit_to_finish.set()
+                submission_thread.join(timeout=3)
+                restore_thread.join(timeout=3)
+
+            self.assertFalse(
+                restore_entered_early,
+                "restore entered its critical section before the in-flight order settled",
+            )
+            self.assertFalse(submission_thread.is_alive())
+            self.assertFalse(restore_thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(results["submission"]["status"], "ACCEPTED")
+            self.assertEqual(results["restore"]["status"], "STATE_RESTORED_DISABLED")
+            self.assertTrue(restore_enabled_kill_switch.is_set())
+
+    def test_attached_tp_sl_and_conditional_presets_fall_back_before_any_side_effect(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        for operation_key, order in (
+            (
+                "transaction.place_order",
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "positionSide": "LONG",
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": "1",
+                    "price": "60000",
+                    "tpTriggerPrice": "65000",
+                },
+            ),
+            (
+                "transaction.place_pending_order",
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "positionSide": "LONG",
+                    "type": "STOP",
+                    "quantity": "1",
+                    "price": "60000",
+                    "triggerPrice": "59000",
+                    "presetStopLossPrice": "58000",
+                },
+            ),
+        ):
+            with self.subTest(operation_key=operation_key):
+                risk_provider = Mock()
+                facts_provider = Mock()
+                submitter = Mock()
+                result = trade_guard.submit_authorized_order(
+                    state=Mock(),
+                    operation_key=operation_key,
+                    strategy_id="str_fixture",
+                    authorization_id="auth_fixture",
+                    idempotency_key="attached-protection",
+                    orders=[order],
+                    risk_payload_provider=risk_provider,
+                    risk_evaluator=Mock(),
+                    facts_provider=facts_provider,
+                    submitter=submitter,
+                    confirm_live=True,
+                )
+                self.assertEqual(result["error"]["code"], "LEG_MAPPING_UNAVAILABLE")
+                risk_provider.assert_not_called()
+                facts_provider.assert_not_called()
+                submitter.assert_not_called()
+
+    def test_missing_risk_completeness_metadata_fails_closed(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        facts_provider = Mock()
+        submitter = Mock()
+        result = trade_guard.submit_authorized_order(
+            state=Mock(),
+            operation_key="spot.order.place_order",
+            strategy_id="str_fixture",
+            authorization_id="auth_fixture",
+            idempotency_key="missing-risk-metadata",
+            orders=[
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": "1",
+                    "price": "10",
+                }
+            ],
+            risk_payload_provider=lambda leg: {},
+            risk_evaluator=lambda payload: {},
+            facts_provider=facts_provider,
+            submitter=submitter,
+            confirm_live=True,
+        )
+        self.assertEqual(result["error"]["code"], "RISK_DATA_INCOMPLETE")
+        facts_provider.assert_not_called()
+        submitter.assert_not_called()
+
+    def test_unproven_rejection_keeps_quota_reserved_for_review(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, strategy, authorization, now = self._authorized_state(
+                state_module, Path(tempdir)
+            )
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.place_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="unproven-rejection",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "timeInForce": "GTC",
+                        "quantity": "1",
+                        "price": "10",
+                    }
+                ],
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                },
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {"clientOrderId": legs[0]["client_order_id"], "success": False}
+                ],
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+            self.assertEqual(result["status"], "REVIEW_REQUIRED")
+            self.assertEqual(result["legs"][0]["reserved_amount_u"], "10")
+
+    def test_idempotent_replay_returns_persisted_result_before_volatile_checks(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, strategy, authorization, now = self._authorized_state(
+                state_module, Path(tempdir)
+            )
+            order = {
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "LIMIT",
+                "timeInForce": "GTC",
+                "quantity": "1",
+                "price": "10",
+            }
+            common = {
+                "state": state,
+                "operation_key": "spot.order.place_order",
+                "strategy_id": strategy["strategy_id"],
+                "authorization_id": authorization["authorization_id"],
+                "idempotency_key": "stable-replay",
+                "orders": [order],
+                "confirm_live": True,
+                "now": now,
+                "now_ms": 1_700_000_000_000,
+            }
+            first = trade_guard.submit_authorized_order(
+                **common,
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                },
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {
+                        "clientOrderId": legs[0]["client_order_id"],
+                        "success": True,
+                        "orderId": "stable-order",
+                    }
+                ],
+            )
+            replay_risk = Mock(side_effect=RuntimeError("must not refresh"))
+            replay_submitter = Mock()
+            replay = trade_guard.submit_authorized_order(
+                **common,
+                risk_payload_provider=replay_risk,
+                risk_evaluator=Mock(),
+                facts_provider=Mock(),
+                submitter=replay_submitter,
+            )
+            self.assertEqual(first["status"], "ACCEPTED")
+            self.assertEqual(replay["status"], "ACCEPTED")
+            replay_risk.assert_not_called()
+            replay_submitter.assert_not_called()
+
+    def test_legacy_replay_verifies_persisted_order_fields_before_volatile_checks(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, strategy, authorization, now = self._authorized_state(
+                state_module, Path(tempdir)
+            )
+            order = {
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "LIMIT",
+                "timeInForce": "GTC",
+                "quantity": "1",
+                "price": "10",
+            }
+            common = {
+                "state": state,
+                "operation_key": "spot.order.place_order",
+                "strategy_id": strategy["strategy_id"],
+                "authorization_id": authorization["authorization_id"],
+                "idempotency_key": "legacy-guard-replay",
+                "orders": [order],
+                "confirm_live": True,
+                "now": now,
+                "now_ms": 1_700_000_000_000,
+            }
+            first = trade_guard.submit_authorized_order(
+                **common,
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                },
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {
+                        "clientOrderId": legs[0]["client_order_id"],
+                        "success": True,
+                        "orderId": "legacy-order",
+                    }
+                ],
+            )
+            with closing(sqlite3.connect(state.db_path)) as connection:
+                connection.execute(
+                    "UPDATE authorization_usage SET request_fingerprint = NULL"
+                )
+                connection.commit()
+
+            replay_risk = Mock(side_effect=RuntimeError("must not refresh"))
+            replay_submitter = Mock()
+            replay = trade_guard.submit_authorized_order(
+                **common,
+                risk_payload_provider=replay_risk,
+                risk_evaluator=Mock(),
+                facts_provider=Mock(),
+                submitter=replay_submitter,
+            )
+            self.assertEqual(first["status"], "ACCEPTED")
+            self.assertEqual(replay["status"], "ACCEPTED")
+            replay_risk.assert_not_called()
+            replay_submitter.assert_not_called()
+
+            conflicting = trade_guard.submit_authorized_order(
+                **{**common, "orders": [{**order, "quantity": "2"}]},
+                risk_payload_provider=Mock(),
+                risk_evaluator=Mock(),
+                facts_provider=Mock(),
+                submitter=Mock(),
+            )
+            self.assertEqual(conflicting["error"]["code"], "IDEMPOTENCY_CONFLICT")
+
+    def test_spot_batch_requires_one_envelope_symbol(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        risk_provider = Mock()
+        result = trade_guard.submit_authorized_order(
+            state=Mock(),
+            operation_key="spot.order.bulk_order",
+            strategy_id="str_fixture",
+            authorization_id="auth_fixture",
+            idempotency_key="mixed-symbols",
+            orders=[
+                {
+                    "symbol": symbol,
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": "1",
+                    "price": "10",
+                }
+                for symbol in ("BTCUSDT", "ETHUSDT")
+            ],
+            risk_payload_provider=risk_provider,
+            risk_evaluator=Mock(),
+            facts_provider=Mock(),
+            submitter=Mock(),
+            confirm_live=True,
+        )
+        self.assertEqual(result["error"]["code"], "SPOT_BATCH_SYMBOL_MISMATCH")
+        risk_provider.assert_not_called()
+
+    def test_batch_result_leg_id_without_client_id_is_not_trusted(self) -> None:
+        state_module = load_state_module()
+        import weex_trade_guard as trade_guard
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, strategy, authorization, now = self._authorized_state(
+                state_module, Path(tempdir)
+            )
+            result = trade_guard.submit_authorized_order(
+                state=state,
+                operation_key="spot.order.bulk_order",
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="untrusted-leg-id",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "LIMIT",
+                        "timeInForce": "GTC",
+                        "quantity": "1",
+                        "price": str(price),
+                    }
+                    for price in (10, 11)
+                ],
+                risk_payload_provider=lambda leg: {
+                    "partial": False,
+                    "degraded_reasons": [],
+                    "constraints": [],
+                },
+                risk_evaluator=lambda payload: {"alerts": []},
+                facts_provider=lambda leg: {
+                    "timestamp_ms": 1_700_000_000_000,
+                    "symbol": {
+                        "quoteAsset": "USDT",
+                        "makerFeeRate": "0",
+                        "takerFeeRate": "0",
+                    },
+                },
+                submitter=lambda operation_key, legs: [
+                    {
+                        "leg_id": leg["leg_id"],
+                        "status": "ACCEPTED",
+                        "orderId": f"order-{index}",
+                    }
+                    for index, leg in enumerate(legs)
+                ],
+                confirm_live=True,
+                now=now,
+                now_ms=1_700_000_000_000,
+            )
+            self.assertEqual(result["status"], "REVIEW_REQUIRED")
+            self.assertEqual({leg["status"] for leg in result["legs"]}, {"REVIEW_REQUIRED"})
+
+    def test_official_conditional_required_fields_fail_before_providers(self) -> None:
+        import weex_trade_guard as trade_guard
+
+        risk_provider = Mock()
+        result = trade_guard.submit_authorized_order(
+            state=Mock(),
+            operation_key="spot.order.place_order",
+            strategy_id="str_fixture",
+            authorization_id="auth_fixture",
+            idempotency_key="missing-time-in-force",
+            orders=[
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "quantity": "1",
+                    "price": "10",
+                }
+            ],
+            risk_payload_provider=risk_provider,
+            risk_evaluator=Mock(),
+            facts_provider=Mock(),
+            submitter=Mock(),
+            confirm_live=True,
+        )
+        self.assertEqual(result["error"]["code"], "HARD_CHECK_FAILED")
+        risk_provider.assert_not_called()
+
+class AutoTradeAmountConversionTests(unittest.TestCase):
+    def test_asset_conversion_requires_fresh_direct_or_reverse_tradable_rate(self) -> None:
+        amount_module = load_amount_module()
+        now_ms = 1_700_000_000_000
+        base = {
+            "timestamp_ms": now_ms - 100,
+            "symbol": {"quoteAsset": "USDC", "makerFeeRate": "0", "takerFeeRate": "0"},
+            "conversion_rates": {
+                "USDCUSDT": {
+                    "price": "1.01",
+                    "timestamp_ms": now_ms - 100,
+                    "tradable": True,
+                }
+            },
+        }
+        direct = amount_module.estimate_order_amount(
+            market="SPOT",
+            order={"symbol": "BTCUSDC", "side": "BUY", "type": "LIMIT", "quantity": "1", "price": "10"},
+            facts=base,
+            now_ms=now_ms,
+        )
+        self.assertEqual(direct["estimated_amount_u"], "10.1")
+        stale = {**base, "conversion_rates": {"USDCUSDT": {"price": "1.01", "timestamp_ms": now_ms - 10_000, "tradable": True}}}
+        with self.assertRaises(amount_module.ValuationUnavailable):
+            amount_module.estimate_order_amount(
+                market="SPOT",
+                order={"symbol": "BTCUSDC", "side": "BUY", "type": "LIMIT", "quantity": "1", "price": "10"},
+                facts=stale,
+                now_ms=now_ms,
+            )
+        reverse_fallback = {
+            **base,
+            "conversion_rates": {
+                "USDCUSDT": {
+                    "price": "1.01",
+                    "timestamp_ms": now_ms - 10_000,
+                    "tradable": True,
+                },
+                "USDTUSDC": {
+                    "price": "0.98",
+                    "timestamp_ms": now_ms - 100,
+                    "tradable": True,
+                },
+            },
+        }
+        reverse = amount_module.estimate_order_amount(
+            market="SPOT",
+            order={
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "type": "LIMIT",
+                "quantity": "1",
+                "price": "10",
+            },
+            facts=reverse_fallback,
+            now_ms=now_ms,
+        )
+        self.assertEqual(reverse["conversion_source"], "USDTUSDC_REVERSE")
+
+    def test_futures_uses_contract_value_leverage_and_fee_and_rejects_missing_facts(self) -> None:
+        amount_module = load_amount_module()
+        now_ms = 1_700_000_000_000
+        facts = {
+            "timestamp_ms": now_ms - 100,
+            "depth": {
+                "timestamp_ms": now_ms - 100,
+                "limit": 15,
+                "asks": [["20000", "100"]],
+                "bids": [["19900", "100"]],
+            },
+            "symbol": {
+                "quoteAsset": "USDT",
+                "marginAsset": "USDT",
+                "contractVal": "0.001",
+                "makerFeeRate": "0.0002",
+                "takerFeeRate": "0.0004",
+                "crossLeverage": "10",
+            },
+        }
+        result = amount_module.estimate_order_amount(
+            market="FUTURES",
+            order={
+                "symbol": "cmt_btcusdt",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "100",
+                "marginType": "CROSSED",
+            },
+            facts=facts,
+            now_ms=now_ms,
+        )
+        self.assertEqual(result["estimated_amount_u"], "200800")
+        self.assertTrue(result["estimated"])
+        self.assertIn("estimated", result["disclaimer"].lower())
+
+        missing = {**facts, "symbol": {**facts["symbol"], "contractVal": None, "crossLeverage": None}}
+        with self.assertRaises(amount_module.ValuationUnavailable):
+            amount_module.estimate_order_amount(
+                market="FUTURES",
+                order={"symbol": "cmt_btcusdt", "side": "BUY", "type": "MARKET", "quantity": "100"},
+                facts=missing,
+                now_ms=now_ms,
+            )
+        missing_margin_asset = {
+            **facts,
+            "symbol": {key: value for key, value in facts["symbol"].items() if key != "marginAsset"},
+        }
+        with self.assertRaises(amount_module.ValuationUnavailable):
+            amount_module.estimate_order_amount(
+                market="FUTURES",
+                order={
+                    "symbol": "cmt_btcusdt",
+                    "side": "BUY",
+                    "type": "MARKET",
+                    "quantity": "100",
+                    "marginType": "CROSSED",
+                },
+                facts=missing_margin_asset,
+                now_ms=now_ms,
+            )
+
+    def test_futures_quantity_is_not_double_scaled_by_subunit_contract_value(self) -> None:
+        amount_module = load_amount_module()
+        now_ms = 1_700_000_000_000
+
+        result = amount_module.estimate_order_amount(
+            market="FUTURES",
+            order={
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "0.0001",
+                "marginType": "ISOLATED",
+            },
+            facts={
+                "timestamp_ms": now_ms,
+                "depth": {
+                    "timestamp_ms": now_ms,
+                    "limit": 15,
+                    "asks": [["60000", "1"]],
+                    "bids": [["59900", "1"]],
+                },
+                "symbol": {
+                    "quoteAsset": "USDT",
+                    "marginAsset": "USDT",
+                    "contractVal": "0.000001",
+                    "makerFeeRate": "0",
+                    "takerFeeRate": "0",
+                    "isolatedLongLeverage": "20",
+                    "isolatedShortLeverage": "10",
+                },
+            },
+            now_ms=now_ms,
+        )
+
+        self.assertEqual(result["notional_quote"], "6")
+        self.assertEqual(result["estimated_amount_u"], "0.3")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -707,6 +707,32 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertEqual(task_map["preview TP/SL conditional-order risk"], preview_files)
         self.assertEqual(task_map["confirm a TP/SL conditional order"], confirm_files)
 
+    def test_manifest_routes_automated_recovery_and_notification_operations(self) -> None:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        task_map = manifest["routing"]["task_map"]
+        domain = manifest["routing"]["domains"]["automated_strategy_authorization"]
+
+        self.assertIn(
+            "resolve uncertain automated usage or re-enable automatic trading",
+            task_map,
+        )
+        self.assertIn("dispatch automated authorization notifications", task_map)
+        self.assertIn("scripts/weex_auto_trade_notify.py", domain["entrypoints"])
+        self.assertIn(
+            "WEEX_AUTO_TRADE_NOTIFICATION_MODE",
+            manifest["state"]["env_vars"],
+        )
+        operations = SCRIPT_OPERATIONS_REFERENCE.read_text(encoding="utf-8")
+        for field in (
+            "snapshot_id",
+            "created_at",
+            "relative_path",
+            "database_schema_version",
+            "size_bytes",
+            "sha256",
+        ):
+            self.assertIn(f"`{field}`", operations)
+
     def test_contract_definitions_include_futures_demo_endpoints(self) -> None:
         definitions = json.loads((ROOT / "references" / "contract-api-definitions.json").read_text(encoding="utf-8"))
         by_key = {definition["key"]: definition for definition in definitions["definitions"]}
@@ -874,6 +900,8 @@ class RepoConsistencyTests(unittest.TestCase):
                 "scripts/weex_trade_data_aggregator.py",
                 "scripts/weex_order_intent_state.py",
                 "scripts/weex_trade_risk_review.py",
+                "scripts/weex_auto_trade_amount.py",
+                "scripts/weex_auto_trade_state.py",
             ],
         )
 
