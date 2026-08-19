@@ -361,7 +361,7 @@
       ]
     },
     "scripts/weex_auto_trade_state.py": {
-      "role": "Owner-only six-table SQLite state kernel for stable strategies, authorization requests/grants, atomic Decimal quota usage, order ownership, versioned events, adjacent schema migrations, managed snapshots, and restore-safe atomic replacement.",
+      "role": "Owner-only six-table SQLite state kernel for stable strategies, complete strategy authorization scope, atomic Decimal quota and order-count usage, order ownership, versioned events, schema v5 migrations, managed snapshots, and restore-safe atomic replacement.",
       "when": [
         "following automated authorization state transitions behind the facade",
         "auditing submission-group and per-leg quota/order ownership",
@@ -395,7 +395,7 @@
       ]
     },
     "scripts/weex_auto_trade_notify.py": {
-      "role": "One-shot dispatcher for already-claimed local automated-trading notifications; records delivery/failure once without retrying or changing trade state.",
+      "role": "Credential-free one-shot worker and dispatcher for immediate or window-closed local automated-trading notifications; records delivery/failure once without retrying or changing trade state.",
       "when": [
         "delivering claimed ordinary 60-second summaries or immediate exception events",
         "testing notification adapter failure isolation"
@@ -404,11 +404,13 @@
         "scripts/weex_auto_trade_state.py"
       ],
       "surface": [
-        "dispatch_notification_claims"
+        "dispatch_notification_claims",
+        "launch_notification_worker",
+        "run_notification_worker"
       ]
     },
     "scripts/weex_trade_guard.py": {
-      "role": "Trade guard that previews order risk, previews TP/SL conditional order risk, scans current account risk, stores environment-bound intents, gates live or demo order submission, and enforces automatic-authorization scope and quota before injected official order submission.",
+      "role": "Trade guard that previews order risk, previews TP/SL conditional order risk, scans current account risk, stores environment-bound intents, gates live or demo order submission, and enforces automatic scope/quota plus Spot product-quantity and side-specific asset-balance checks before injected official order submission.",
       "when": [
         "previewing a futures or spot order before submission",
         "previewing a simulated futures order before submission",

@@ -230,17 +230,17 @@ Register a stable strategy identity. Reuse the returned `strategy_id` after a re
 python3 scripts/weex_auto_trade.py register-strategy --input @register-strategy.json --pretty
 ```
 
-Request the five-dimensional scope. `trade_types` may contain `SPOT`, `FUTURES`, or both. `valid_hours` defaults to `24` and cannot exceed `24`; all amount fields are Decimal strings:
+Request the complete V1.1 strategy scope. `trade_types` may contain `SPOT`, `FUTURES`, or both. `max_single_amount` constrains the conservative U estimate per leg, not the requested or actual fill amount. `max_total_amount` caps cumulative conservative investment during the validity period. `valid_hours` is required, has no default, and must be greater than zero and no more than `720`; all amount fields are Decimal strings:
 
 ```json
-{"profile":"main","strategy_id":"<strategy_id>","trade_types":["SPOT","FUTURES"],"symbols":["BTCUSDT"],"all_symbols":false,"max_single_amount":"200","max_total_amount":"2000","valid_hours":"24"}
+{"profile":"main","strategy_id":"<strategy_id>","trade_types":["SPOT"],"symbols":["BTCUSDT"],"all_symbols":false,"max_single_amount":"200","max_total_amount":"2000","valid_hours":"720"}
 ```
 
 ```bash
 python3 scripts/weex_auto_trade.py ensure-authorization --input @ensure-authorization.json --pretty
 ```
 
-Inspect the exact pending request before grant. The response shows the saved profile, masked strategy ID, modules, symbols, both quota limits, projected expiry, confirmation effect, revoke action, and local trust boundary:
+Inspect the exact pending request before grant. The response shows the saved profile, masked strategy ID, modules, symbols, conservative per-leg maximum, cumulative quota, projected expiry, confirmation effect, revoke action, and local trust boundary:
 
 ```json
 {"profile":"main","strategy_id":"<strategy_id>","request_id":"<request_id>"}
@@ -263,16 +263,16 @@ python3 scripts/weex_auto_trade.py grant-authorization --input @grant-authorizat
 Granting is a local authorization mutation; it does not itself call WEEX. A strategy integrates by invoking `submit-auto` through this JSON CLI, passing the exact `strategy_id`, `authorization_id`, unique idempotency key, official operation key, and complete order legs. The facade constructs saved-profile/Vault clients and official risk, valuation, submission, and reconciliation boundaries internally. Caller-supplied trusted amounts, leverage, authorization status, risk results, exchange facts, and injected submitters are not accepted.
 
 ```json
-{"profile":"main","strategy_id":"<strategy_id>","authorization_id":"<authorization_id>","idempotency_key":"strategy-order-0001","operation_key":"spot.order.place_order","orders":[{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","timeInForce":"GTC","quantity":"0.001","price":"60000"}]}
+{"profile":"main","strategy_id":"<strategy_id>","authorization_id":"<authorization_id>","idempotency_key":"strategy-order-0001","operation_key":"spot.order.place_order","orders":[{"symbol":"BTCUSDT","side":"BUY","type":"MARKET","quantity":"0.001"}]}
 ```
 
 ```bash
 python3 scripts/weex_auto_trade.py submit-auto --input @submit-auto.json --confirm-live --pretty
 ```
 
-The guard injects opaque client order IDs after all legs pass preflight and quota reservation. Futures valuation uses `quantity * price * max(1, contractVal)` when the official quantity unit cannot be proven uniquely, then applies leverage and fee bounds; the result is a conservative upper-bound estimate, not exact exchange margin. The strategy must not write SQLite, calculate trusted quota with AI output, split a submitted group, retry a submitted request, or bypass manual fallback. Pre-submit hard failures produce a bound local `auto_fallback` intent and exception event without calling WEEX. A result of `REVIEW_REQUIRED` means a request may have reached WEEX; it never produces a manual retry intent.
+The guard injects opaque client order IDs after all legs pass preflight and quota reservation. Spot quantity must be an exact Decimal multiple of official `stepSize` and remain within `minTradeAmount`/`maxTradeAmount`. Spot BUY checks the matching quote asset's available U value; Spot SELL checks the matching base asset's available quantity. Futures valuation uses `quantity * price * max(1, contractVal)` when the official quantity unit cannot be proven uniquely, then applies leverage and fee bounds; the result is a conservative upper-bound estimate, not exact exchange margin. The strategy must not write SQLite, calculate trusted quota with AI output, split a submitted group, retry a submitted request, or bypass manual fallback. Pre-submit hard failures produce a bound local `auto_fallback` intent and exception event without calling WEEX. A result of `REVIEW_REQUIRED` means a request may have reached WEEX; it never produces a manual retry intent.
 
-The automatic operation catalog is limited to `spot.order.place_order`, `spot.order.bulk_order`, `transaction.place_order`, `transaction.place_orders_batch`, `transaction.place_pending_order`, and `transaction.place_tp_sl_order`. Authorization follows the official `SPOT`/`FUTURES` module. Full-position TP/SL (`quantity` `0` or omitted), unproven reduce-only semantics, incomplete risk or valuation facts, scope/quota failures, state conflicts, and unknown operations return to the normal preview/confirmation path before any WEEX write. A leg that is explicitly rejected and proven not created returns `RELEASED` with sanitized `error_code` (maximum 128 characters) and `error_message` (control whitespace normalized, maximum 512 characters); the same fields are stored in its `USAGE_RELEASED` event without the raw response. Error text is display evidence only and does not decide whether release is safe.
+The automatic operation catalog is limited to `spot.order.place_order`, `spot.order.bulk_order`, `transaction.place_order`, `transaction.place_orders_batch`, `transaction.place_pending_order`, and `transaction.place_tp_sl_order`. Authorization follows the official `SPOT`/`FUTURES` module. Full-position TP/SL (`quantity` `0` or omitted), unproven reduce-only semantics, incomplete risk or valuation facts, product/asset-rule failures, scope/quota failures, state conflicts, and unknown operations return to the normal preview/confirmation path before any WEEX write. Authorizations containing the removed expanded-scope fields are retained for audit after migration but fail with `AUTHORIZATION_SCOPE_REAUTHORIZATION_REQUIRED`; create and explicitly grant a new V1.1 scope instead of editing the database. A leg that is explicitly rejected and proven not created returns `RELEASED` with sanitized `error_code` (maximum 128 characters) and `error_message` (control whitespace normalized, maximum 512 characters); the same fields are stored in its `USAGE_RELEASED` event without the raw response. Error text is display evidence only and does not decide whether release is safe.
 
 Operational inspection and stop commands:
 
@@ -304,7 +304,11 @@ Accepted conservative quota and exchange fill facts are separate ledgers. `recon
 python3 scripts/weex_auto_trade.py reconcile-auto-order --input @reconcile-auto-order.json --pretty
 ```
 
-Reconciliation records `COMPLETE`, `PARTIAL`, or `UNAVAILABLE` facts but never releases or increases accepted quota. Use `event-list` as the durable per-order display source. Each facade call performs a post-commit one-shot notification pass by default: ordinary accepted events are eligible after their owner-scoped UTC 60-second window closes, while exception events are immediate. Set `WEEX_AUTO_TRADE_NOTIFICATION_MODE=disabled` only for controlled testing or an operator-approved no-notification environment. Notification failure is recorded once, never retried, and never changes the order or quota state.
+Reconciliation records `COMPLETE`, `PARTIAL`, or `UNAVAILABLE` facts but never releases or increases accepted quota. If an archived Spot order returns `-2200` from current order detail, the read-only runtime searches official history orders and requires both the saved WEEX order ID and client order ID to match before reading `myTrades`; incomplete fill coverage or fee-asset evidence remains `PARTIAL`, and any non-unique match remains `UNAVAILABLE` at the facade. No reconciliation fallback calls a trading endpoint.
+
+Public `submit-auto` legs, `event-list` usage payloads, and reconciliation responses keep the per-order conservative amount in `estimated_amount_u`. Authorization-level totals are grouped under `authorization_quota` as `consumed_amount_u`, `reserved_amount_u`, and `remaining_amount_u`; those public surfaces do not expose cumulative `accepted_amount_u` beside a per-order amount. Historical usage events are projected into the same public shape without rewriting their stored audit payload.
+
+Use `event-list` as the durable per-order display source. Each facade call performs an immediate post-commit notification pass by default. A newly accepted submission also launches a detached, credential-free one-shot worker with only the summary notification key, owner-only state path, and UTC window end; it waits for that owner-scoped 60-second window to close, attempts the exact key once, and exits even when no later facade command runs. Exception events remain immediate. Set `WEEX_AUTO_TRADE_NOTIFICATION_MODE=disabled` only for controlled testing or an operator-approved no-notification environment. Worker launch or notification failure never changes the committed order or quota state; a claimed notification is recorded once and never retried.
 
 ## Regenerate Definitions
 

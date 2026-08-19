@@ -20,11 +20,11 @@ from pathlib import Path
 from typing import Any
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 5
 EVENT_SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 5_000
-DEFAULT_VALID_HOURS = Decimal("24")
-MAX_VALID_SECONDS = 86_400
+MAX_VALID_HOURS = Decimal("720")
+MAX_VALID_SECONDS = 2_592_000
 DEFAULT_REQUEST_TTL_SECONDS = 900
 SNAPSHOT_INDEX_VERSION = 2
 DEFAULT_SNAPSHOT_RETENTION_COUNT = 10
@@ -42,6 +42,12 @@ SCOPE_FIELDS = frozenset(
         "max_total_amount",
         "valid_hours",
     }
+)
+DEPRECATED_EXPANDED_SCOPE_COLUMNS = (
+    "allowed_sides_csv",
+    "allowed_order_types_csv",
+    "min_single_amount_u",
+    "max_order_count",
 )
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9:_-]+$")
 EXPECTED_TABLES = frozenset(
@@ -88,7 +94,7 @@ CREATE TABLE authorization_requests (
     all_symbols INTEGER NOT NULL CHECK (all_symbols IN (0, 1)),
     max_single_amount_u TEXT NOT NULL,
     max_total_amount_u TEXT NOT NULL,
-    valid_seconds INTEGER NOT NULL CHECK (valid_seconds > 0 AND valid_seconds <= 86400),
+    valid_seconds INTEGER NOT NULL CHECK (valid_seconds > 0 AND valid_seconds <= 2592000),
     status TEXT NOT NULL CHECK (status IN ('PENDING', 'GRANTED', 'EXPIRED', 'REJECTED')),
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
@@ -109,7 +115,7 @@ CREATE TABLE authorizations (
     all_symbols INTEGER NOT NULL CHECK (all_symbols IN (0, 1)),
     max_single_amount_u TEXT NOT NULL,
     max_total_amount_u TEXT NOT NULL,
-    valid_seconds INTEGER NOT NULL CHECK (valid_seconds > 0 AND valid_seconds <= 86400),
+    valid_seconds INTEGER NOT NULL CHECK (valid_seconds > 0 AND valid_seconds <= 2592000),
     accepted_amount_u TEXT NOT NULL,
     reserved_amount_u TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'EXPIRED', 'REVOKED', 'REPLACED')),
@@ -226,7 +232,141 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
     )
 
 
-MIGRATION_REGISTRY = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3}
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    """Retain the historical expanded-scope columns for audit compatibility."""
+    for table in ("authorization_requests", "authorizations"):
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN allowed_sides_csv TEXT")
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN allowed_order_types_csv TEXT")
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN min_single_amount_u TEXT")
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN max_order_count INTEGER")
+
+
+def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
+    """Raise the persisted authorization validity limit from 24 hours to 30 days."""
+    migration_sql = """
+        CREATE TABLE authorization_requests_v5 (
+            request_id TEXT PRIMARY KEY,
+            strategy_id TEXT NOT NULL REFERENCES strategies(strategy_id),
+            owner_key TEXT NOT NULL,
+            scope_signature TEXT NOT NULL,
+            spot_allowed INTEGER NOT NULL CHECK (spot_allowed IN (0, 1)),
+            futures_allowed INTEGER NOT NULL CHECK (futures_allowed IN (0, 1)),
+            symbols_csv TEXT NOT NULL,
+            all_symbols INTEGER NOT NULL CHECK (all_symbols IN (0, 1)),
+            max_single_amount_u TEXT NOT NULL,
+            max_total_amount_u TEXT NOT NULL,
+            valid_seconds INTEGER NOT NULL CHECK (
+                valid_seconds > 0 AND valid_seconds <= 2592000
+            ),
+            status TEXT NOT NULL CHECK (
+                status IN ('PENDING', 'GRANTED', 'EXPIRED', 'REJECTED')
+            ),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            allowed_sides_csv TEXT,
+            allowed_order_types_csv TEXT,
+            min_single_amount_u TEXT,
+            max_order_count INTEGER,
+            UNIQUE (request_id, strategy_id),
+            FOREIGN KEY (strategy_id, owner_key)
+                REFERENCES strategies(strategy_id, owner_key)
+        );
+
+        CREATE TABLE authorizations_v5 (
+            authorization_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL UNIQUE REFERENCES authorization_requests(request_id),
+            strategy_id TEXT NOT NULL REFERENCES strategies(strategy_id),
+            owner_key TEXT NOT NULL,
+            scope_signature TEXT NOT NULL,
+            spot_allowed INTEGER NOT NULL CHECK (spot_allowed IN (0, 1)),
+            futures_allowed INTEGER NOT NULL CHECK (futures_allowed IN (0, 1)),
+            symbols_csv TEXT NOT NULL,
+            all_symbols INTEGER NOT NULL CHECK (all_symbols IN (0, 1)),
+            max_single_amount_u TEXT NOT NULL,
+            max_total_amount_u TEXT NOT NULL,
+            valid_seconds INTEGER NOT NULL CHECK (
+                valid_seconds > 0 AND valid_seconds <= 2592000
+            ),
+            accepted_amount_u TEXT NOT NULL,
+            reserved_amount_u TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('ACTIVE', 'EXPIRED', 'REVOKED', 'REPLACED')
+            ),
+            starts_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            ended_at TEXT,
+            allowed_sides_csv TEXT,
+            allowed_order_types_csv TEXT,
+            min_single_amount_u TEXT,
+            max_order_count INTEGER,
+            UNIQUE (authorization_id, strategy_id),
+            FOREIGN KEY (strategy_id, owner_key)
+                REFERENCES strategies(strategy_id, owner_key)
+        );
+
+        INSERT INTO authorization_requests_v5 (
+            request_id, strategy_id, owner_key, scope_signature,
+            spot_allowed, futures_allowed, symbols_csv, all_symbols,
+            max_single_amount_u, max_total_amount_u, valid_seconds,
+            status, created_at, expires_at, updated_at,
+            allowed_sides_csv, allowed_order_types_csv,
+            min_single_amount_u, max_order_count
+        )
+        SELECT
+            request_id, strategy_id, owner_key, scope_signature,
+            spot_allowed, futures_allowed, symbols_csv, all_symbols,
+            max_single_amount_u, max_total_amount_u, valid_seconds,
+            status, created_at, expires_at, updated_at,
+            allowed_sides_csv, allowed_order_types_csv,
+            min_single_amount_u, max_order_count
+        FROM authorization_requests;
+
+        INSERT INTO authorizations_v5 (
+            authorization_id, request_id, strategy_id, owner_key, scope_signature,
+            spot_allowed, futures_allowed, symbols_csv, all_symbols,
+            max_single_amount_u, max_total_amount_u, valid_seconds,
+            accepted_amount_u, reserved_amount_u, status,
+            starts_at, expires_at, created_at, updated_at, ended_at,
+            allowed_sides_csv, allowed_order_types_csv,
+            min_single_amount_u, max_order_count
+        )
+        SELECT
+            authorization_id, request_id, strategy_id, owner_key, scope_signature,
+            spot_allowed, futures_allowed, symbols_csv, all_symbols,
+            max_single_amount_u, max_total_amount_u, valid_seconds,
+            accepted_amount_u, reserved_amount_u, status,
+            starts_at, expires_at, created_at, updated_at, ended_at,
+            allowed_sides_csv, allowed_order_types_csv,
+            min_single_amount_u, max_order_count
+        FROM authorizations;
+
+        DROP TABLE authorizations;
+        DROP TABLE authorization_requests;
+        ALTER TABLE authorization_requests_v5 RENAME TO authorization_requests;
+        ALTER TABLE authorizations_v5 RENAME TO authorizations;
+
+        CREATE UNIQUE INDEX one_pending_request_per_owner_scope
+            ON authorization_requests(owner_key, scope_signature)
+            WHERE status = 'PENDING';
+        CREATE UNIQUE INDEX one_active_authorization_per_owner
+            ON authorizations(owner_key)
+            WHERE status = 'ACTIVE';
+        """
+    for statement in migration_sql.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
+MIGRATION_REGISTRY = {
+    1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
+}
+MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF = frozenset({4})
 
 
 class AutoTradeState:
@@ -311,7 +451,14 @@ class AutoTradeState:
                         raise StateConflictError(
                             f"missing migration from automated-trading state schema version {version}"
                         )
+                    disable_foreign_keys = version in MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF
                     try:
+                        if disable_foreign_keys:
+                            connection.execute("PRAGMA foreign_keys = OFF")
+                            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 0:
+                                raise StateConflictError(
+                                    "unable to disable SQLite foreign keys for schema migration"
+                                )
                         connection.execute("BEGIN IMMEDIATE")
                         migration(connection)
                         next_version = version + 1
@@ -320,16 +467,32 @@ class AutoTradeState:
                             connection,
                             full=True,
                             expected_version=next_version,
+                            require_foreign_keys=not disable_foreign_keys,
                         )
                         connection.execute("COMMIT")
+                        if disable_foreign_keys:
+                            connection.execute("PRAGMA foreign_keys = ON")
+                            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+                                raise StateConflictError(
+                                    "unable to restore SQLite foreign keys after schema migration"
+                                )
+                            _validate_connection(
+                                connection,
+                                full=True,
+                                expected_version=next_version,
+                            )
                         version = next_version
                     except StateConflictError:
                         if connection.in_transaction:
                             connection.execute("ROLLBACK")
+                        if disable_foreign_keys:
+                            connection.execute("PRAGMA foreign_keys = ON")
                         raise
                     except Exception as exc:
                         if connection.in_transaction:
                             connection.execute("ROLLBACK")
+                        if disable_foreign_keys:
+                            connection.execute("PRAGMA foreign_keys = ON")
                         raise StateConflictError("automated-trading schema migration failed") from exc
                 _validate_connection(connection, full=not existed)
         except (OSError, sqlite3.Error) as exc:
@@ -976,6 +1139,33 @@ class AutoTradeState:
                     owner_key=strategy["owner_key"],
                     now_text=current_text,
                 )
+                stale_requests = connection.execute(
+                    """
+                    SELECT * FROM authorization_requests
+                    WHERE owner_key = ? AND scope_signature != ? AND status = 'PENDING'
+                    ORDER BY created_at, request_id
+                    """,
+                    (strategy["owner_key"], scope_signature),
+                ).fetchall()
+                for stale_request in stale_requests:
+                    updated = connection.execute(
+                        """
+                        UPDATE authorization_requests
+                        SET status = 'REJECTED', updated_at = ?
+                        WHERE request_id = ? AND status = 'PENDING'
+                        """,
+                        (current_text, stale_request["request_id"]),
+                    )
+                    if updated.rowcount:
+                        _append_event(
+                            connection,
+                            strategy_id=strategy_id,
+                            request_id=stale_request["request_id"],
+                            event_type="AUTHORIZATION_REQUEST_REJECTED",
+                            occurred_at=current_text,
+                            payload={"status": "REJECTED", "reason": "SCOPE_CHANGED"},
+                            severity="EXCEPTION",
+                        )
                 active = connection.execute(
                     """
                     SELECT * FROM authorizations
@@ -1096,6 +1286,8 @@ class AutoTradeState:
                     raise ValueError("STRATEGY_AUTHORIZATION_MISMATCH")
                 if request["scope_signature"] != scope_signature:
                     raise ValueError("SCOPE_MISMATCH")
+                if _has_deprecated_expanded_scope(request):
+                    raise ValueError("AUTHORIZATION_SCOPE_REAUTHORIZATION_REQUIRED")
                 _expire_owner_records(
                     connection,
                     owner_key=strategy["owner_key"],
@@ -1525,6 +1717,9 @@ class AutoTradeState:
                 if authorization["status"] != "ACTIVE":
                     connection.execute("COMMIT")
                     raise ValueError("AUTHORIZATION_NOT_ACTIVE")
+                if _has_deprecated_expanded_scope(authorization):
+                    connection.execute("COMMIT")
+                    raise ValueError("AUTHORIZATION_SCOPE_REAUTHORIZATION_REQUIRED")
                 if module == "SPOT" and not authorization["spot_allowed"]:
                     raise ValueError("SCOPE_MISMATCH")
                 if module == "FUTURES" and not authorization["futures_allowed"]:
@@ -1818,6 +2013,10 @@ class AutoTradeState:
                 if authorization["status"] != "ACTIVE":
                     connection.execute("COMMIT")
                     raise ValueError("AUTHORIZATION_NOT_ACTIVE")
+
+                if _has_deprecated_expanded_scope(authorization):
+                    connection.execute("COMMIT")
+                    raise ValueError("AUTHORIZATION_SCOPE_REAUTHORIZATION_REQUIRED")
 
                 allowed_symbols = set(authorization["symbols_csv"].split(","))
                 max_single = Decimal(authorization["max_single_amount_u"])
@@ -2185,6 +2384,8 @@ class AutoTradeState:
         now_text: str,
     ) -> str:
         if authorization["status"] != "ACTIVE":
+            return "REQUEST_NEW_AUTHORIZATION"
+        if _has_deprecated_expanded_scope(authorization):
             return "REQUEST_NEW_AUTHORIZATION"
         kill_switch_path = self._kill_switch_path()
         if not kill_switch_path.exists():
@@ -2747,11 +2948,63 @@ class AutoTradeState:
             raise StateConflictError("unable to record uncertain submission state") from exc
         return {"ok": True, "event_id": event_id, "status": "SUBMISSION_UNCERTAINTY_RECORDED"}
 
-    def claim_notifications(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    def accepted_summary_notification_target(
+        self,
+        *,
+        strategy_id: str,
+    ) -> dict[str, Any]:
+        strategy = self.get_strategy(strategy_id=strategy_id)
+        try:
+            with closing(self._connect()) as connection:
+                accepted_event = connection.execute(
+                    """
+                    SELECT occurred_at
+                    FROM authorization_events
+                    WHERE strategy_id = ? AND event_type = 'USAGE_ACCEPTED'
+                    ORDER BY occurred_at DESC, event_id DESC
+                    LIMIT 1
+                    """,
+                    (strategy_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise StateConflictError(
+                "unable to resolve accepted-summary notification target"
+            ) from exc
+        if accepted_event is None:
+            raise ValueError("ACCEPTED_USAGE_NOT_FOUND")
+        window_start = _parse_time(accepted_event["occurred_at"]).replace(
+            second=0,
+            microsecond=0,
+        )
+        owner_key = _owner_key(
+            distribution=strategy["distribution"],
+            profile_id=strategy["profile_id"],
+            trading_mode=strategy["trading_mode"],
+            strategy_id=strategy["strategy_id"],
+        )
+        return {
+            "notification_key": _accepted_summary_notification_key(
+                owner_key=owner_key,
+                window_start=window_start,
+            ),
+            "not_before": window_start + timedelta(seconds=60),
+        }
+
+    def claim_notifications(
+        self,
+        *,
+        now: datetime | None = None,
+        notification_key: str | None = None,
+    ) -> list[dict[str, Any]]:
         current = _coerce_now(now)
         current_text = _format_time(current)
         closed_before = current.replace(second=0, microsecond=0)
         closed_before_text = _format_time(closed_before)
+        selected_key = (
+            None
+            if notification_key is None
+            else _required_text(notification_key, "notification_key")
+        )
         claims: list[dict[str, Any]] = []
         try:
             with closing(self._connect()) as connection:
@@ -2781,10 +3034,13 @@ class AutoTradeState:
                     bucket = _format_time(_parse_time(row["occurred_at"]).replace(second=0, microsecond=0))
                     grouped.setdefault((row["owner_key"], bucket), []).append(row)
                 for (owner_key, bucket), rows in grouped.items():
-                    notification_key = "summary:" + hashlib.sha256(
-                        f"{owner_key}:{bucket}".encode("utf-8")
-                    ).hexdigest()
-                    if notification_key in existing_keys:
+                    summary_key = _accepted_summary_notification_key(
+                        owner_key=owner_key,
+                        window_start=_parse_time(bucket),
+                    )
+                    if summary_key in existing_keys or (
+                        selected_key is not None and summary_key != selected_key
+                    ):
                         continue
                     estimated_total = _exact_decimal_sum(
                         *(Decimal(row["estimated_amount_u"]) for row in rows)
@@ -2798,7 +3054,7 @@ class AutoTradeState:
                     window_start = _parse_time(bucket)
                     claim = {
                         "kind": "ACCEPTED_SUMMARY",
-                        "notification_key": notification_key,
+                        "notification_key": summary_key,
                         "strategy_name": latest["strategy_name"],
                         "strategy_id": _mask_identifier(latest["strategy_id"]),
                         "window_start": bucket,
@@ -2816,11 +3072,11 @@ class AutoTradeState:
                         event_type="NOTIFICATION_CLAIMED",
                         occurred_at=current_text,
                         payload=claim,
-                        notification_key=notification_key,
+                        notification_key=summary_key,
                         notification_status="CLAIMED",
                     )
                     claims.append({**claim, "claim_event_id": claim_event_id})
-                    existing_keys.add(notification_key)
+                    existing_keys.add(summary_key)
 
                 exception_rows = connection.execute(
                     """
@@ -2834,7 +3090,9 @@ class AutoTradeState:
                 ).fetchall()
                 for row in exception_rows:
                     notification_key = f"event:{row['event_id']}"
-                    if notification_key in existing_keys:
+                    if notification_key in existing_keys or (
+                        selected_key is not None and notification_key != selected_key
+                    ):
                         continue
                     claim = {
                         "kind": "EXCEPTION",
@@ -3416,8 +3674,9 @@ def _validate_connection(
     *,
     full: bool,
     expected_version: int = CURRENT_SCHEMA_VERSION,
+    require_foreign_keys: bool = True,
 ) -> None:
-    if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+    if require_foreign_keys and int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
         raise StateConflictError("SQLite foreign_keys pragma is disabled")
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if version != expected_version:
@@ -3438,10 +3697,16 @@ def _validate_connection(
     foreign_key_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
     if foreign_key_rows:
         raise StateConflictError("SQLite foreign_key_check failed")
-    _validate_business_invariants(connection)
+    _validate_business_invariants(connection, schema_version=version)
 
 
-def _validate_business_invariants(connection: sqlite3.Connection) -> None:
+def _validate_business_invariants(
+    connection: sqlite3.Connection,
+    *,
+    schema_version: int | None = None,
+) -> None:
+    if schema_version is None:
+        schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     strategies = {
         row["strategy_id"]: row
         for row in connection.execute("SELECT * FROM strategies").fetchall()
@@ -3488,6 +3753,21 @@ def _validate_business_invariants(connection: sqlite3.Connection) -> None:
             )
         ):
             raise StateConflictError("authorization request linkage invariant failed")
+        if schema_version >= 4:
+            if any(
+                (
+                    request["allowed_sides_csv"]
+                    != authorization["allowed_sides_csv"],
+                    request["allowed_order_types_csv"]
+                    != authorization["allowed_order_types_csv"],
+                    request["min_single_amount_u"]
+                    != authorization["min_single_amount_u"],
+                    request["max_order_count"] != authorization["max_order_count"],
+                )
+            ):
+                raise StateConflictError(
+                    "authorization request strategy scope linkage invariant failed"
+                )
         max_single = _stored_decimal(authorization["max_single_amount_u"], positive=True)
         max_total = _stored_decimal(authorization["max_total_amount_u"], positive=True)
         accepted = _stored_decimal(authorization["accepted_amount_u"], positive=False)
@@ -3660,6 +3940,11 @@ def _owner_key(*, distribution: str, profile_id: str, trading_mode: str, strateg
     return f"{distribution}:{profile_id}:{trading_mode}:{strategy_id}"
 
 
+def _accepted_summary_notification_key(*, owner_key: str, window_start: datetime) -> str:
+    bucket = _format_time(window_start.replace(second=0, microsecond=0))
+    return "summary:" + hashlib.sha256(f"{owner_key}:{bucket}".encode("utf-8")).hexdigest()
+
+
 def _expire_owner_records(
     connection: sqlite3.Connection,
     *,
@@ -3790,12 +4075,11 @@ def normalize_scope(scope: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(scope, dict):
         raise ValueError("scope must be an object")
     unknown = set(scope) - SCOPE_FIELDS
-    missing = SCOPE_FIELDS - {"valid_hours"} - set(scope)
+    missing = SCOPE_FIELDS - set(scope)
     if unknown:
         raise ValueError(f"unknown scope fields: {', '.join(sorted(unknown))}")
     if missing:
         raise ValueError(f"missing scope fields: {', '.join(sorted(missing))}")
-
     raw_trade_types = scope["trade_types"]
     if not isinstance(raw_trade_types, list) or not raw_trade_types:
         raise ValueError("trade_types must be a non-empty array")
@@ -3825,7 +4109,7 @@ def normalize_scope(scope: dict[str, Any]) -> dict[str, Any]:
     if Decimal(max_total) < Decimal(max_single):
         raise ValueError("max_total_amount must be greater than or equal to max_single_amount")
 
-    raw_valid_hours = scope.get("valid_hours", "24")
+    raw_valid_hours = scope["valid_hours"]
     if isinstance(raw_valid_hours, bool) or not isinstance(raw_valid_hours, (str, int)):
         raise ValueError("valid_hours must be an integer or decimal string")
     try:
@@ -3836,10 +4120,10 @@ def normalize_scope(scope: dict[str, Any]) -> dict[str, Any]:
     if (
         not valid_hours.is_finite()
         or valid_hours <= 0
-        or valid_hours > DEFAULT_VALID_HOURS
+        or valid_hours > MAX_VALID_HOURS
         or valid_seconds != valid_seconds.to_integral_value()
     ):
-        raise ValueError("valid_hours must resolve to whole seconds between 0 and 24 hours")
+        raise ValueError("valid_hours must resolve to whole seconds between 0 and 720 hours")
 
     return {
         "trade_types": trade_types,
@@ -3959,6 +4243,10 @@ def _scope_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _has_deprecated_expanded_scope(row: sqlite3.Row) -> bool:
+    return any(row[column] is not None for column in DEPRECATED_EXPANDED_SCOPE_COLUMNS)
+
+
 def _request_result(request: sqlite3.Row, strategy: sqlite3.Row) -> dict[str, Any]:
     scope = _scope_from_row(request)
     return {
@@ -3996,6 +4284,7 @@ def _authorization_result(
         "authorization_id": authorization["authorization_id"],
         "scope_signature": authorization["scope_signature"],
         "scope": _scope_from_row(authorization),
+        "starts_at": authorization["starts_at"],
         "expires_at": authorization["expires_at"],
         "consumed_amount_u": _decimal_text(accepted),
         "reserved_amount_u": _decimal_text(reserved),

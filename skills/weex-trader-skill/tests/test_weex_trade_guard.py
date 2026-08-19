@@ -588,6 +588,123 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIsNone(remaining_intent)
         self.assertIn('"order_id": "9001"', stream.getvalue())
 
+    def test_confirm_order_executes_bound_auto_fallback_once(self) -> None:
+        args = mock.Mock(
+            intent_id="fallback-intent",
+            risk_signature="fallback-signature",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="zh",
+            pretty=True,
+        )
+        execution_payload = {
+            "ok": True,
+            "status": "ACCEPTED",
+            "results": [{"leg_id": "leg-0", "status": "ACCEPTED", "orderId": "9002"}],
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                order = {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "MARKET",
+                    "quantity": "0.001",
+                }
+                intent = intent_state.build_intent(
+                    profile_name="live-profile",
+                    market="spot",
+                    trading_mode="live",
+                    order_preview={"operation_key": "spot.order.place_order", "orders": [order]},
+                    raw_order=order,
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                )
+                intent.update(
+                    {
+                        "intent_id": "fallback-intent",
+                        "risk_signature": "fallback-signature",
+                        "auto_fallback_operation_key": "spot.order.place_order",
+                        "auto_fallback_orders": [order],
+                    }
+                )
+                intent_state.save_intent(intent)
+                stream = io.StringIO()
+                with mock.patch.object(
+                    trade_guard,
+                    "_submit_live_auto_fallback_order",
+                    return_value=execution_payload,
+                    create=True,
+                ) as submit_mock:
+                    with mock.patch.object(sys, "stdout", stream):
+                        exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+                remaining_intent = intent_state.load_intent()
+
+        self.assertEqual(exit_code, 0)
+        submit_mock.assert_called_once()
+        self.assertEqual(submit_mock.call_args.args[0]["intent_id"], "fallback-intent")
+        self.assertIsNone(remaining_intent)
+        self.assertEqual(json.loads(stream.getvalue())["status"], "ACCEPTED")
+
+    def test_auto_fallback_submitter_preserves_batch_legs_and_stops_on_uncertain_result(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        orders = [
+            {
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "LIMIT",
+                "timeInForce": "GTC",
+                "quantity": "0.001",
+                "price": "60000",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "LIMIT",
+                "timeInForce": "GTC",
+                "quantity": "0.001",
+                "price": "70000",
+            },
+        ]
+        intent = {
+            "intent_id": "batch-fallback",
+            "profile_name": "saved-profile",
+            "market": "spot",
+            "auto_fallback_operation_key": "spot.order.bulk_order",
+            "auto_fallback_orders": orders,
+        }
+        runtime = mock.Mock()
+        runtime.submitter.return_value = [
+            {"leg_id": "leg-0", "status": "ACCEPTED", "orderId": "batch-1"},
+            {"leg_id": "leg-1", "status": "ACCEPTED", "orderId": "batch-2"},
+        ]
+        with mock.patch.object(runtime_module, "OfficialAutoTradeRuntime", return_value=runtime):
+            accepted = trade_guard._submit_live_auto_fallback_order(intent)
+
+        self.assertEqual(accepted["status"], "ACCEPTED")
+        runtime.submitter.assert_called_once()
+        operation_key, prepared = runtime.submitter.call_args.args
+        self.assertEqual(operation_key, "spot.order.bulk_order")
+        self.assertEqual([item["order"]["symbol"] for item in prepared], ["BTCUSDT", "BTCUSDT"])
+        client_ids = [item["order"]["newClientOrderId"] for item in prepared]
+        self.assertEqual(len(set(client_ids)), 2)
+
+        uncertain_runtime = mock.Mock()
+        uncertain_runtime.submitter.side_effect = runtime_module.OfficialRequestUncertain(
+            "injected uncertain result"
+        )
+        with mock.patch.object(
+            runtime_module, "OfficialAutoTradeRuntime", return_value=uncertain_runtime
+        ):
+            uncertain = trade_guard._submit_live_auto_fallback_order(intent)
+
+        self.assertEqual(uncertain["status"], "REVIEW_REQUIRED")
+        self.assertEqual(uncertain["error"]["code"], "SUBMISSION_STATE_UNCERTAIN")
+        uncertain_runtime.submitter.assert_called_once()
+
     def test_confirm_order_executes_demo_order_with_matching_demo_flag(self) -> None:
         args = mock.Mock(
             intent_id="intent-demo",

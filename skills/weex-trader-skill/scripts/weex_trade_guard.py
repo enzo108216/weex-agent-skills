@@ -52,6 +52,7 @@ AUTO_TRADE_DEFINITION_FILES = {
     "SPOT": "spot-api-definitions.json",
     "FUTURES": "contract-api-definitions.json",
 }
+ADVISORY_DEGRADED_REASONS = frozenset({"spot_equity_estimate_partial"})
 AUTO_TRADE_RAW_CREDENTIAL_KEYS = frozenset(
     {
         "apikey",
@@ -169,7 +170,7 @@ def _blocking_reasons_from_risk_payload(
         reasons.extend(
             {"code": "RISK_DATA_DEGRADED", "message": str(item)}
             for item in degraded
-            if str(item).strip()
+            if str(item).strip() and str(item) not in ADVISORY_DEGRADED_REASONS
         )
     constraints = payload.get("constraints")
     if not isinstance(constraints, list):
@@ -207,9 +208,17 @@ def _blocking_reasons_from_risk_payload(
         reasons.extend(
             {"code": "RISK_DATA_DEGRADED", "message": str(item)}
             for item in analysis_degraded
-            if str(item).strip()
+            if str(item).strip() and str(item) not in ADVISORY_DEGRADED_REASONS
         )
-    return reasons
+    deduplicated: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for reason in reasons:
+        identity = (reason["code"], reason["message"])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduplicated.append(reason)
+    return deduplicated
 
 
 def _request_fingerprint(operation_key: str, orders: list[dict[str, Any]]) -> str:
@@ -296,6 +305,68 @@ def _positive_decimal_field(order: dict[str, Any], field: str) -> bool:
     except (InvalidOperation, TypeError, ValueError):
         return False
     return value.is_finite() and value > 0
+
+
+def _spot_quantity_blocking_reason(
+    facts: dict[str, Any],
+    quantity_value: Any,
+) -> dict[str, str] | None:
+    symbol_facts = facts.get("symbol") if isinstance(facts, dict) else None
+    if not isinstance(symbol_facts, dict):
+        return {
+            "code": "SPOT_PRODUCT_RULES_UNAVAILABLE",
+            "message": "official spot product quantity rules are unavailable",
+        }
+    try:
+        quantity = Decimal(str(quantity_value))
+        step_size = Decimal(str(symbol_facts.get("stepSize")))
+        minimum = Decimal(str(symbol_facts.get("minTradeAmount")))
+        maximum = Decimal(str(symbol_facts.get("maxTradeAmount")))
+    except (InvalidOperation, TypeError, ValueError):
+        return {
+            "code": "SPOT_PRODUCT_RULES_UNAVAILABLE",
+            "message": "official spot product quantity rules are unavailable",
+        }
+    if any(
+        not value.is_finite() or value <= 0
+        for value in (quantity, step_size, minimum, maximum)
+    ) or maximum < minimum:
+        return {
+            "code": "SPOT_PRODUCT_RULES_UNAVAILABLE",
+            "message": "official spot product quantity rules are invalid",
+        }
+    if quantity < minimum:
+        return {
+            "code": "SPOT_QUANTITY_BELOW_MINIMUM",
+            "message": "spot order quantity is below minTradeAmount",
+        }
+    if quantity > maximum:
+        return {
+            "code": "SPOT_QUANTITY_ABOVE_MAXIMUM",
+            "message": "spot order quantity is above maxTradeAmount",
+        }
+    try:
+        if quantity % step_size != 0:
+            return {
+                "code": "SPOT_QUANTITY_STEP_MISMATCH",
+                "message": "spot order quantity is not an integer multiple of stepSize",
+            }
+    except InvalidOperation:
+        return {
+            "code": "SPOT_PRODUCT_RULES_UNAVAILABLE",
+            "message": "official spot product quantity rules cannot be applied",
+        }
+    return None
+
+
+def _finite_nonnegative_decimal(value: Any) -> Decimal | None:
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not decimal_value.is_finite() or decimal_value < 0:
+        return None
+    return decimal_value
 
 
 def _validate_official_order_semantics(
@@ -700,6 +771,13 @@ def _submit_authorized_order_unlocked(
             continue
         try:
             facts = facts_provider(leg)
+            if operation["module"] == "SPOT":
+                quantity_reason = _spot_quantity_blocking_reason(
+                    facts, raw_order.get("quantity")
+                )
+                if quantity_reason is not None:
+                    blocking_reasons.append(quantity_reason)
+                    continue
             valuation_order = dict(raw_order)
             record_order_type = str(
                 raw_order.get("type")
@@ -759,6 +837,96 @@ def _submit_authorized_order_unlocked(
                 {"code": "VALUATION_UNAVAILABLE", "message": "official conservative valuation is unavailable"}
             )
             continue
+        if operation["module"] == "SPOT":
+            account_snapshot = risk_payload.get("account_snapshot")
+            symbol_facts = facts.get("symbol") if isinstance(facts, dict) else None
+            base_asset = (
+                str(symbol_facts.get("baseAsset") or "").strip().upper()
+                if isinstance(symbol_facts, dict)
+                else ""
+            )
+            quote_asset = (
+                str(symbol_facts.get("quoteAsset") or "").strip().upper()
+                if isinstance(symbol_facts, dict)
+                else ""
+            )
+            if not isinstance(account_snapshot, dict) or not base_asset or not quote_asset:
+                blocking_reasons.append(
+                    {
+                        "code": "AVAILABLE_BALANCE_UNAVAILABLE",
+                        "message": "spot base and quote asset balance facts are unavailable",
+                    }
+                )
+                continue
+            side = str(valuation_order.get("side") or "").upper()
+            if side == "BUY":
+                snapshot_quote_asset = str(
+                    account_snapshot.get("quote_asset") or ""
+                ).strip().upper()
+                available_balance = _finite_nonnegative_decimal(
+                    account_snapshot.get("quote_available_balance_u")
+                )
+                estimated_amount_u = _finite_nonnegative_decimal(
+                    valuation.get("estimated_amount_u")
+                )
+                if snapshot_quote_asset != quote_asset or available_balance is None:
+                    blocking_reasons.append(
+                        {
+                            "code": "AVAILABLE_BALANCE_UNAVAILABLE",
+                            "message": "spot quote available balance is unavailable",
+                        }
+                    )
+                    continue
+                if estimated_amount_u is None:
+                    blocking_reasons.append(
+                        {
+                            "code": "VALUATION_UNAVAILABLE",
+                            "message": "official conservative valuation is unavailable",
+                        }
+                    )
+                    continue
+                if available_balance < estimated_amount_u:
+                    blocking_reasons.append(
+                        {
+                            "code": "INSUFFICIENT_AVAILABLE_BALANCE",
+                            "message": "spot quote available balance is below the conservative order amount",
+                        }
+                    )
+                    continue
+            elif side == "SELL":
+                snapshot_base_asset = str(
+                    account_snapshot.get("base_asset") or ""
+                ).strip().upper()
+                base_available_quantity = _finite_nonnegative_decimal(
+                    account_snapshot.get("base_available_quantity")
+                )
+                order_quantity = _finite_nonnegative_decimal(
+                    valuation_order.get("quantity")
+                )
+                if snapshot_base_asset != base_asset or base_available_quantity is None:
+                    blocking_reasons.append(
+                        {
+                            "code": "BASE_ASSET_BALANCE_UNAVAILABLE",
+                            "message": "spot base asset available quantity is unavailable",
+                        }
+                    )
+                    continue
+                if order_quantity is None or base_available_quantity < order_quantity:
+                    blocking_reasons.append(
+                        {
+                            "code": "INSUFFICIENT_BASE_ASSET_BALANCE",
+                            "message": "spot base asset available quantity is below the sell quantity",
+                        }
+                    )
+                    continue
+            else:
+                blocking_reasons.append(
+                    {
+                        "code": "HARD_CHECK_FAILED",
+                        "message": "spot order side is invalid",
+                    }
+                )
+                continue
         prepared.append(
             {
                 **leg,
@@ -1613,6 +1781,88 @@ def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, A
     )
 
 
+def _submit_live_auto_fallback_order(intent: dict[str, Any]) -> dict[str, Any]:
+    from weex_auto_trade_runtime import OfficialAutoTradeRuntime, OfficialRequestUncertain
+
+    operation_key = str(intent.get("auto_fallback_operation_key") or "").strip()
+    operation = resolve_official_auto_trade_operation(operation_key)
+    orders = intent.get("auto_fallback_orders")
+    if operation is None:
+        raise AggregationInputError("auto fallback operation is not in the official catalog")
+    if not isinstance(orders, list) or not orders or any(not isinstance(item, dict) for item in orders):
+        raise AggregationInputError("auto fallback orders must be a non-empty array")
+    if len(orders) > operation["max_legs"] or (
+        operation["kind"] != "BATCH" and len(orders) != 1
+    ):
+        raise AggregationInputError("auto fallback order count does not match the official operation")
+    if any(set(order) - operation["allowed_order_fields"] for order in orders):
+        raise AggregationInputError("auto fallback order contains unsupported fields")
+    if operation_key == "spot.order.bulk_order" and len(
+        {str(order.get("symbol") or "").upper() for order in orders}
+    ) != 1:
+        raise AggregationInputError("auto fallback Spot batch orders must share one symbol")
+    if any(_validate_official_order_semantics(operation, order) for order in orders):
+        raise AggregationInputError("auto fallback order failed official semantic validation")
+    intent_market = str(intent.get("market") or "").upper()
+    if intent_market != operation["module"]:
+        raise AggregationInputError("auto fallback market does not match the official operation")
+
+    prepared: list[dict[str, Any]] = []
+    for index, raw_order in enumerate(orders):
+        order = dict(raw_order)
+        client_field = (
+            "clientAlgoId"
+            if operation["kind"] in {"CONDITIONAL", "TP_SL"}
+            else "newClientOrderId"
+        )
+        client_order_id = str(order.get(client_field) or "").strip()
+        if not client_order_id:
+            digest = hashlib.sha256(
+                f"{intent.get('intent_id')}:{index}".encode("utf-8")
+            ).hexdigest()[:24]
+            client_order_id = "mnl_" + digest
+            order[client_field] = client_order_id
+        prepared.append(
+            {
+                "leg_id": f"leg-{index}",
+                "leg_index": index,
+                "client_order_id": client_order_id,
+                "order": order,
+            }
+        )
+
+    runtime = OfficialAutoTradeRuntime(profile_name=str(intent["profile_name"]))
+    try:
+        results = runtime.submitter(operation_key, prepared)
+    except OfficialRequestUncertain:
+        return {
+            "ok": False,
+            "status": "REVIEW_REQUIRED",
+            "error": {"code": "SUBMISSION_STATE_UNCERTAIN"},
+            "results": [],
+            "next_action": "INSPECT_AND_RECONCILE_MANUALLY",
+        }
+    if not isinstance(results, list):
+        raise AggregationInputError("auto fallback submission result is not an order array")
+    statuses = {str(item.get("status") or "REVIEW_REQUIRED").upper() for item in results}
+    if statuses == {"ACCEPTED"}:
+        status = "ACCEPTED"
+    elif "REVIEW_REQUIRED" in statuses:
+        status = "REVIEW_REQUIRED"
+    elif statuses == {"RELEASED"}:
+        status = "RELEASED"
+    else:
+        status = "SUBMISSION_GROUP_PARTIAL"
+    return {
+        "ok": status == "ACCEPTED",
+        "status": status,
+        "results": results,
+        "next_action": (
+            "NONE" if status == "ACCEPTED" else "INSPECT_RESULT_BEFORE_ANY_NEW_ORDER"
+        ),
+    }
+
+
 def _submit_live_tp_sl_order(*, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
     contract_api, client = _build_contract_client(profile_name)
     endpoint = contract_api.ENDPOINTS[contract_api.find_endpoint_key_by_doc_suffix("PlaceTpSlOrder")]
@@ -1792,11 +2042,14 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         return 1
 
     if intent_mode == "live":
-        execution_payload = _submit_live_order(
-            market=str(intent["market"]),
-            profile_name=str(intent["profile_name"]),
-            raw_order=dict(intent["raw_order"]),
-        )
+        if intent.get("auto_fallback_operation_key") is not None:
+            execution_payload = _submit_live_auto_fallback_order(intent)
+        else:
+            execution_payload = _submit_live_order(
+                market=str(intent["market"]),
+                profile_name=str(intent["profile_name"]),
+                raw_order=dict(intent["raw_order"]),
+            )
     else:
         execution_payload = _submit_order(
             market=str(intent["market"]),

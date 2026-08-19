@@ -3,15 +3,25 @@
 
 from __future__ import annotations
 
+import argparse
+import os
 import platform
 import shutil
 import subprocess
-from datetime import datetime
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 
 class NotificationState(Protocol):
-    def claim_notifications(self, *, now: datetime | None = None) -> list[dict[str, Any]]: ...
+    def claim_notifications(
+        self,
+        *,
+        now: datetime | None = None,
+        notification_key: str | None = None,
+    ) -> list[dict[str, Any]]: ...
 
     def complete_notification(
         self,
@@ -30,10 +40,15 @@ def dispatch_notification_claims(
     adapter: NotificationAdapter,
     *,
     now: datetime | None = None,
+    notification_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Claim, attempt once, and record a result without changing business state."""
     results: list[dict[str, Any]] = []
-    for claim in state.claim_notifications(now=now):
+    if notification_key is None:
+        claims = state.claim_notifications(now=now)
+    else:
+        claims = state.claim_notifications(now=now, notification_key=notification_key)
+    for claim in claims:
         try:
             adapter_result = adapter(claim)
             outcome = "UNKNOWN" if adapter_result == "UNKNOWN" else "DELIVERED"
@@ -52,6 +67,87 @@ def dispatch_notification_claims(
             }
         )
     return results
+
+
+def run_notification_worker(
+    *,
+    state_path: str | Path,
+    notification_key: str,
+    not_before: datetime,
+    adapter: NotificationAdapter,
+    now_provider: Callable[[], datetime] | None = None,
+    sleep: Callable[[float], Any] = time.sleep,
+) -> list[dict[str, Any]]:
+    """Wait for one summary window, attempt its notification once, then exit."""
+    if not isinstance(notification_key, str) or not notification_key.startswith("summary:"):
+        raise ValueError("notification_key must identify an accepted summary")
+    deadline = _aware_utc(not_before, "not_before")
+    clock = now_provider or (lambda: datetime.now(UTC))
+    while True:
+        current = _aware_utc(clock(), "now_provider result")
+        remaining_seconds = (deadline - current).total_seconds()
+        if remaining_seconds <= 0:
+            break
+        sleep(remaining_seconds)
+
+    from weex_auto_trade_state import AutoTradeState
+
+    state = AutoTradeState(Path(state_path))
+    state.initialize()
+    return dispatch_notification_claims(
+        state,
+        adapter,
+        now=current,
+        notification_key=notification_key,
+    )
+
+
+def launch_notification_worker(
+    *,
+    state_path: str | Path,
+    notification_key: str,
+    not_before: datetime,
+) -> None:
+    """Detach a credential-free worker for one accepted-summary notification key."""
+    deadline = _aware_utc(not_before, "not_before")
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--state-path",
+        str(Path(state_path)),
+        "--notification-key",
+        notification_key,
+        "--not-before",
+        deadline.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+    ]
+    popen_options: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        popen_options["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        popen_options["start_new_session"] = True
+    subprocess.Popen(command, **popen_options)
+
+
+def _aware_utc(value: datetime, field: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{field} must be a timezone-aware datetime")
+    return value.astimezone(UTC)
+
+
+def _parse_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("not_before must be an ISO-8601 timestamp") from exc
+    return _aware_utc(parsed, "not_before")
 
 
 def build_notification_text(claim: dict[str, Any]) -> tuple[str, str]:
@@ -131,9 +227,39 @@ class SystemNotificationAdapter:
         return None
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Deliver one delayed WEEX automated-trading summary notification"
+    )
+    parser.add_argument("--state-path", required=True)
+    parser.add_argument("--notification-key", required=True)
+    parser.add_argument("--not-before", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        run_notification_worker(
+            state_path=args.state_path,
+            notification_key=args.notification_key,
+            not_before=_parse_time(args.not_before),
+            adapter=SystemNotificationAdapter(),
+        )
+    except Exception:
+        return 1
+    return 0
+
+
 __all__ = [
     "NotificationAdapter",
     "SystemNotificationAdapter",
     "build_notification_text",
     "dispatch_notification_claims",
+    "launch_notification_worker",
+    "run_notification_worker",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

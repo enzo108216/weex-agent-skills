@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from weex_auto_trade_state import AutoTradeState, StateConflictError
-from weex_trade_guard import resolve_official_auto_trade_operation, submit_authorized_order
+from weex_trade_guard import (
+    _validate_official_order_semantics,
+    resolve_official_auto_trade_operation,
+    submit_authorized_order,
+)
 
 
 STATE_DB_NAME = "authorization-state.sqlite3"
@@ -54,8 +58,9 @@ COMMAND_SCHEMAS: dict[str, tuple[set[str], set[str]]] = {
             "all_symbols",
             "max_single_amount",
             "max_total_amount",
+            "valid_hours",
         },
-        {"valid_hours"},
+        set(),
     ),
     "show-authorization-request": ({"profile", "strategy_id", "request_id"}, set()),
     "grant-authorization": (
@@ -115,6 +120,7 @@ class AutoTradeFacade:
         reconciliation_provider: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
         manual_intent_writer: Callable[[dict[str, Any]], Any] | None = None,
         notification_adapter: Callable[[dict[str, Any]], Any] | None = None,
+        notification_worker_launcher: Callable[..., Any] | None = None,
     ) -> None:
         self.state = state
         self.profile_resolver = profile_resolver
@@ -122,6 +128,7 @@ class AutoTradeFacade:
         self.reconciliation_provider = reconciliation_provider
         self.manual_intent_writer = manual_intent_writer
         self.notification_adapter = notification_adapter
+        self.notification_worker_launcher = notification_worker_launcher
 
     def execute(
         self,
@@ -158,6 +165,7 @@ class AutoTradeFacade:
                 operation_lock = candidate
         with operation_lock:
             result = handler(payload, confirm_live=confirm_live)
+            self._schedule_accepted_summary_worker(command, payload, result)
         self._dispatch_post_commit_notifications()
         return result
 
@@ -170,6 +178,35 @@ class AutoTradeFacade:
             dispatch_notification_claims(self.state, self.notification_adapter)
         except Exception:
             # Notification delivery is a post-commit projection, never a business transition.
+            return
+
+    def _schedule_accepted_summary_worker(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        if self.notification_worker_launcher is None or command != "submit-auto":
+            return
+        if result.get("next_action") == "INSPECT_EXISTING_USAGE":
+            return
+        accepted = any(
+            isinstance(leg, dict) and leg.get("status") == "ACCEPTED"
+            for leg in result.get("legs") or []
+        )
+        if not accepted:
+            return
+        try:
+            target = self.state.accepted_summary_notification_target(
+                strategy_id=_required_text(payload.get("strategy_id"), "strategy_id")
+            )
+            self.notification_worker_launcher(
+                state_path=self.state.db_path,
+                notification_key=target["notification_key"],
+                not_before=target["not_before"],
+            )
+        except Exception:
+            # Worker launch is best-effort and cannot change a committed order result.
             return
 
     def _profile(self, payload: dict[str, Any]) -> Any:
@@ -241,8 +278,9 @@ class AutoTradeFacade:
                 "all_symbols",
                 "max_single_amount",
                 "max_total_amount",
+                "valid_hours",
             },
-            optional={"valid_hours"},
+            optional=set(),
         )
         profile = self._profile(payload)
         strategy_id = _required_text(payload["strategy_id"], "strategy_id")
@@ -265,36 +303,67 @@ class AutoTradeFacade:
             strategy_id=strategy_id,
             request_id=_required_text(payload["request_id"], "request_id"),
         )
-        generated_at = datetime.now(UTC)
-        valid_hours = Decimal(request["scope"]["valid_hours"])
-        projected_expiry = generated_at + timedelta(seconds=int(valid_hours * Decimal(3600)))
+        request_status = request["request_status"]
+        confirmation = {
+            "profile": profile.name,
+            "trading_mode": "live",
+            "strategy_name": strategy["strategy_name"],
+            "strategy_id": _mask_identifier(strategy_id),
+            "trade_types": request["scope"]["trade_types"],
+            "symbols": request["scope"]["symbols"],
+            "all_symbols": request["scope"]["all_symbols"],
+            "max_single_amount_u": request["scope"]["max_single_amount"],
+            "max_total_amount_u": request["scope"]["max_total_amount"],
+            "valid_hours": request["scope"]["valid_hours"],
+            "request_expires_at": request["request_expires_at"],
+            "orders_skip_per_order_confirmation": request_status in {"PENDING", "GRANTED"},
+            "revoke_command": "weex_auto_trade.py revoke-authorization --input -",
+            "trust_boundary": (
+                "Local same-OS-user misuse guard; not identity authentication and not protection "
+                "against an attacker controlling the same OS user, Agent, Vault session, or API key."
+            ),
+        }
+        if request_status == "PENDING":
+            generated_at = datetime.now(UTC)
+            valid_hours = Decimal(request["scope"]["valid_hours"])
+            projected_expiry = generated_at + timedelta(
+                seconds=int(valid_hours * Decimal(3600))
+            )
+            confirmation.update(
+                {
+                    "preview_generated_at": _format_time(generated_at),
+                    "projected_expires_at_if_granted_now": _format_time(projected_expiry),
+                }
+            )
+            next_action = "CONFIRM_OR_REJECT_AUTHORIZATION"
+        elif request_status == "GRANTED":
+            matching = [
+                item
+                for item in self.state.list_authorizations(strategy_id=strategy_id)
+                if item["request_id"] == request["request_id"]
+            ]
+            if len(matching) != 1:
+                raise StateConflictError("granted authorization request has no unique authorization")
+            authorization = matching[0]
+            confirmation.update(
+                {
+                    "authorization_id": _mask_identifier(authorization["authorization_id"]),
+                    "authorization_status": authorization["status"],
+                    "authorization_starts_at": authorization["starts_at"],
+                    "authorization_expires_at": authorization["expires_at"],
+                    "orders_skip_per_order_confirmation": authorization["status"] == "ACTIVE",
+                }
+            )
+            next_action = authorization["next_action"]
+        else:
+            next_action = "REQUEST_NEW_AUTHORIZATION"
         return {
             "ok": True,
-            "status": request["request_status"],
+            "status": request_status,
             "request_id": request["request_id"],
             "scope_signature": request["scope_signature"],
-            "confirmation": {
-                "profile": profile.name,
-                "trading_mode": "live",
-                "strategy_name": strategy["strategy_name"],
-                "strategy_id": _mask_identifier(strategy_id),
-                "trade_types": request["scope"]["trade_types"],
-                "symbols": request["scope"]["symbols"],
-                "all_symbols": request["scope"]["all_symbols"],
-                "max_single_amount_u": request["scope"]["max_single_amount"],
-                "max_total_amount_u": request["scope"]["max_total_amount"],
-                "valid_hours": request["scope"]["valid_hours"],
-                "preview_generated_at": _format_time(generated_at),
-                "projected_expires_at_if_granted_now": _format_time(projected_expiry),
-                "request_expires_at": request["request_expires_at"],
-                "orders_skip_per_order_confirmation": True,
-                "revoke_command": "weex_auto_trade.py revoke-authorization --input -",
-                "trust_boundary": (
-                    "Local same-OS-user misuse guard; not identity authentication and not protection "
-                    "against an attacker controlling the same OS user, Agent, Vault session, or API key."
-                ),
-            },
-            "next_action": "CONFIRM_OR_REJECT_AUTHORIZATION",
+            "confirmation": confirmation,
+            "next_action": next_action,
         }
 
     def _grant_authorization(self, payload: dict[str, Any], *, confirm_live: bool) -> dict[str, Any]:
@@ -355,11 +424,23 @@ class AutoTradeFacade:
         strategy_id = _required_text(payload["strategy_id"], "strategy_id")
         self._assert_strategy_profile(strategy_id, profile)
         events = self.state.list_events(strategy_id=strategy_id)
+        authorization_totals = {
+            item["authorization_id"]: item["scope"]["max_total_amount"]
+            for item in self.state.list_authorizations(strategy_id=strategy_id)
+        }
         return {
             "ok": True,
             "profile": profile.name,
             "strategy_id": _mask_identifier(strategy_id),
-            "events": [_public_event(event) for event in events],
+            "events": [
+                _public_event(
+                    event,
+                    max_total_amount_u=authorization_totals.get(
+                        event.get("authorization_id")
+                    ),
+                )
+                for event in events
+            ],
         }
 
     def _submit_auto(self, payload: dict[str, Any], *, confirm_live: bool) -> dict[str, Any]:
@@ -461,14 +542,48 @@ class AutoTradeFacade:
                 orders=orders,
                 guard_result=result,
             )
-            writer = self.manual_intent_writer or _save_manual_fallback_intent
-            writer(intent)
-            result = {
-                **result,
-                "intent_id": intent["intent_id"],
-                "expires_at": intent["expires_at"],
-                "risk_signature": intent["risk_signature"],
-            }
+            if intent is not None:
+                writer = self.manual_intent_writer or _save_manual_fallback_intent
+                writer(intent)
+                authorization_hint = (
+                    "如需取消二次确认功能，可申请自动交易授权。授权后，在指定交易类型、交易对、"
+                    "单笔金额和有效期范围内，下单无需逐笔确认。发送“申请自动交易授权”即可开始配置。"
+                )
+                is_authorization_miss = error_code in {
+                    "AUTHORIZATION_NOT_ACTIVE",
+                    "SCOPE_MISMATCH",
+                    "SINGLE_LIMIT_EXCEEDED",
+                    "TOTAL_LIMIT_EXCEEDED",
+                }
+                notice = (
+                    "本次订单超过自动交易授权范围，尚未下单。"
+                    if is_authorization_miss
+                    else "本次订单未进入自动交易执行，尚未下单。"
+                )
+                confirmation_lines = [
+                    notice,
+                    "",
+                    "请核对 order_preview 中的完整订单。",
+                    "",
+                    "确认后回复：确认，我直接下单。",
+                ]
+                if is_authorization_miss:
+                    confirmation_lines.extend(["", authorization_hint])
+                result = {
+                    **result,
+                    "intent_id": intent["intent_id"],
+                    "expires_at": intent["expires_at"],
+                    "risk_signature": intent["risk_signature"],
+                    "order_preview": intent["order_preview"],
+                    "user_confirmation": {
+                        "language": "zh",
+                        "reply_text": "确认",
+                        "reply_instruction": "\n".join(confirmation_lines),
+                    },
+                    "next_action": "CONFIRM_ORDER_MANUALLY",
+                }
+                if is_authorization_miss:
+                    result["authorization_hint"] = authorization_hint
         return _public_auto_result(
             result,
             profile_name=profile.name,
@@ -530,11 +645,7 @@ class AutoTradeFacade:
             fee_asset=facts["fee_asset"],
             reconciliation_source=facts["reconciliation_source"],
         )
-        return {
-            **result,
-            "profile": profile.name,
-            "authorization_id": _mask_identifier(result["authorization_id"]),
-        }
+        return _public_reconciliation_result(result, profile_name=profile.name)
 
     def _resolve_auto_usage(self, payload: dict[str, Any], *, confirm_live: bool) -> dict[str, Any]:
         required, optional = COMMAND_SCHEMAS["resolve-auto-usage"]
@@ -553,7 +664,7 @@ class AutoTradeFacade:
             confirm_live=confirm_live,
         )
         return {
-            **result,
+            **_public_usage_amounts(result),
             "profile": profile.name,
             "strategy_id": _mask_identifier(result["strategy_id"]),
             "authorization_id": _mask_identifier(result["authorization_id"]),
@@ -644,13 +755,29 @@ def _build_manual_fallback_intent(
     operation_key: str,
     orders: list[dict[str, Any]],
     guard_result: dict[str, Any],
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     from weex_order_intent_state import build_intent
 
     operation = resolve_official_auto_trade_operation(operation_key)
-    market = str((operation or {}).get("module") or "FUTURES").lower()
+    if operation is None or not orders or any(not isinstance(item, dict) for item in orders):
+        return None
+    if len(orders) > operation["max_legs"] or (
+        operation["kind"] != "BATCH" and len(orders) != 1
+    ):
+        return None
+    if any(set(order) - operation["allowed_order_fields"] for order in orders):
+        return None
+    if operation_key == "spot.order.bulk_order" and len(
+        {str(order.get("symbol") or "").upper() for order in orders}
+    ) != 1:
+        return None
+    if any(_validate_official_order_semantics(operation, order) for order in orders):
+        return None
+    market = str(operation["module"]).lower()
     preview = {
         "operation_key": operation_key,
+        "market": market,
+        "kind": operation["kind"],
         "order_count": len(orders),
         "symbols": sorted(
             {
@@ -659,6 +786,7 @@ def _build_manual_fallback_intent(
                 if isinstance(item, dict) and str(item.get("symbol") or "").strip()
             }
         ),
+        "orders": [dict(item) for item in orders],
     }
     analysis_output = {
         "alerts": list(guard_result.get("advisory_alerts") or []),
@@ -669,10 +797,9 @@ def _build_manual_fallback_intent(
         market=market,
         trading_mode="live",
         order_preview=preview,
-        raw_order={"operation_key": operation_key, "orders": orders},
+        raw_order=dict(orders[0]),
         analysis_output=analysis_output,
         now_ms=int(time.time() * 1000),
-        intent_type="auto_fallback",
     )
     intent.update(
         {
@@ -680,6 +807,8 @@ def _build_manual_fallback_intent(
             "authorization_id": authorization_id,
             "idempotency_key": idempotency_key,
             "operation_key": operation_key,
+            "auto_fallback_operation_key": operation_key,
+            "auto_fallback_orders": [dict(item) for item in orders],
         }
     )
     return intent
@@ -702,9 +831,10 @@ def _public_auto_result(
     for leg in result.get("legs") or []:
         if not isinstance(leg, dict):
             continue
+        public_leg = _public_usage_amounts(leg)
         public_legs.append(
             {
-                **leg,
+                **public_leg,
                 "strategy_id": _mask_identifier(leg.get("strategy_id")),
                 "authorization_id": _mask_identifier(leg.get("authorization_id")),
             }
@@ -715,6 +845,25 @@ def _public_auto_result(
         "strategy_id": _mask_identifier(strategy_id),
         "authorization_id": _mask_identifier(authorization_id),
         "legs": public_legs,
+    }
+
+
+def _public_reconciliation_result(
+    result: dict[str, Any],
+    *,
+    profile_name: str,
+) -> dict[str, Any]:
+    public = dict(result)
+    authorization_quota = {
+        "consumed_amount_u": public.pop("accepted_amount_u"),
+        "reserved_amount_u": public.pop("reserved_amount_u"),
+        "remaining_amount_u": public.pop("remaining_amount_u"),
+    }
+    return {
+        **public,
+        "profile": profile_name,
+        "authorization_id": _mask_identifier(result["authorization_id"]),
+        "authorization_quota": authorization_quota,
     }
 
 
@@ -732,12 +881,49 @@ def _public_strategy(result: dict[str, str], profile_name: str) -> dict[str, Any
     }
 
 
-def _public_event(event: dict[str, Any]) -> dict[str, Any]:
+def _public_event(
+    event: dict[str, Any],
+    *,
+    max_total_amount_u: str | None = None,
+) -> dict[str, Any]:
+    payload = dict(event.get("payload") or {})
+    if "accepted_amount_u" in payload or "reserved_amount_u" in payload:
+        consumed = payload.pop("accepted_amount_u", None)
+        reserved = payload.pop("reserved_amount_u", None)
+        quota: dict[str, Any] = {
+            "consumed_amount_u": consumed,
+            "reserved_amount_u": reserved,
+        }
+        if consumed is not None and reserved is not None and max_total_amount_u is not None:
+            quota["remaining_amount_u"] = _decimal_text(
+                Decimal(max_total_amount_u) - Decimal(consumed) - Decimal(reserved)
+            )
+        payload["authorization_quota"] = quota
     return {
         **event,
         "strategy_id": _mask_identifier(event["strategy_id"]),
         "authorization_id": _mask_identifier(event["authorization_id"]),
+        "payload": payload,
     }
+
+
+def _public_usage_amounts(result: dict[str, Any]) -> dict[str, Any]:
+    public = dict(result)
+    keys = ("accepted_amount_u", "reserved_amount_u", "remaining_amount_u")
+    if all(key in public for key in keys):
+        public["authorization_quota"] = {
+            "consumed_amount_u": public.pop("accepted_amount_u"),
+            "reserved_amount_u": public.pop("reserved_amount_u"),
+            "remaining_amount_u": public.pop("remaining_amount_u"),
+        }
+    return public
+
+
+def _decimal_text(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
 
 
 def _mask_identifier(value: str | None) -> str | None:
@@ -912,17 +1098,24 @@ def main(argv: list[str] | None = None) -> int:
             )
         state = AutoTradeState(state_db_path())
         notification_adapter = None
+        notification_worker_launcher = None
         if os.getenv("WEEX_AUTO_TRADE_NOTIFICATION_MODE", "system") == "system":
             try:
-                from weex_auto_trade_notify import SystemNotificationAdapter
+                from weex_auto_trade_notify import (
+                    SystemNotificationAdapter,
+                    launch_notification_worker,
+                )
 
                 notification_adapter = SystemNotificationAdapter()
+                notification_worker_launcher = launch_notification_worker
             except Exception:
                 notification_adapter = None
+                notification_worker_launcher = None
         facade = AutoTradeFacade(
             state,
             profile_resolver=profile_resolver,
             notification_adapter=notification_adapter,
+            notification_worker_launcher=notification_worker_launcher,
         )
         # Input validation and credential rejection have completed before any state file action.
         state.initialize()

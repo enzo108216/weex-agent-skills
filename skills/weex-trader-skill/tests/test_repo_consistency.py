@@ -408,12 +408,15 @@ class RepoConsistencyTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
-    def test_skill_frontmatter_declares_compatibility(self) -> None:
-        compatibility = extract_frontmatter_field(SKILL.read_text(encoding="utf-8"), "compatibility")
+    def test_skill_body_declares_compatibility(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        frontmatter = skill_text.split("---", 2)[1]
+        body = skill_text.split("---", 2)[2]
 
-        self.assertIn("Python", compatibility)
-        self.assertIn("network", compatibility)
-        self.assertIn("Tk", compatibility)
+        self.assertNotIn("compatibility:", frontmatter)
+        self.assertIn("Python", body)
+        self.assertIn("network", body)
+        self.assertIn("Tk", body)
 
     def test_documented_repo_paths_exist(self) -> None:
         referenced_paths: set[str] = set()

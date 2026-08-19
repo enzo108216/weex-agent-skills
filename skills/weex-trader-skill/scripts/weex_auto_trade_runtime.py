@@ -32,6 +32,20 @@ class OfficialRequestUncertain(RuntimeError):
     """The transport or upstream response cannot prove whether a write was accepted."""
 
 
+class OfficialReadRequestFailed(RuntimeError):
+    """An official read failed with a preserved, sanitized exchange error code."""
+
+    def __init__(
+        self,
+        *,
+        error_code: str | None,
+        error_message: str | None = None,
+    ) -> None:
+        super().__init__("official WEEX read request failed")
+        self.error_code = error_code
+        self.error_message = error_message
+
+
 class OfficialApiBoundary:
     """Build saved-profile clients and reject any endpoint/purpose mismatch."""
 
@@ -143,7 +157,11 @@ class OfficialApiBoundary:
                 raise OfficialRequestUncertain(
                     "official WEEX write result is transport or upstream uncertain"
                 )
-            raise RuntimeError(f"official WEEX request failed: {response.get('error')}")
+            error_payload = response.get("error")
+            raise OfficialReadRequestFailed(
+                error_code=_official_error_code(error_payload),
+                error_message=_official_error_message(error_payload),
+            )
         return response.get("data")
 
 
@@ -448,17 +466,101 @@ def query_official_order_facts(
             order_id=actual_order_id,
             source="WEEX_FUTURES_PLAN_ORDER_AND_TRADES",
         )
+    if module == "SPOT":
+        return _query_spot_order_facts(
+            boundary=boundary,
+            symbol=symbol,
+            order_id=order_id,
+            client_order_id=_optional_text(order.get("client_order_id")),
+        )
     return _query_active_order_facts(
         boundary=boundary,
         module=module,
         symbol=symbol,
         order_id=order_id,
-        source=(
-            "WEEX_SPOT_ORDER_AND_TRADES"
-            if module == "SPOT"
-            else "WEEX_FUTURES_ORDER_AND_TRADES"
-        ),
+        source="WEEX_FUTURES_ORDER_AND_TRADES",
     )
+
+
+def _query_spot_order_facts(
+    *,
+    boundary: Any,
+    symbol: str,
+    order_id: str,
+    client_order_id: str | None,
+) -> dict[str, Any]:
+    try:
+        return _query_active_order_facts(
+            boundary=boundary,
+            module="SPOT",
+            symbol=symbol,
+            order_id=order_id,
+            source="WEEX_SPOT_ORDER_AND_TRADES",
+        )
+    except OfficialReadRequestFailed as exc:
+        if exc.error_code != "-2200":
+            raise
+    detail = _query_spot_history_order(
+        boundary=boundary,
+        symbol=symbol,
+        order_id=order_id,
+        client_order_id=client_order_id,
+    )
+    return _query_order_and_trade_facts(
+        boundary=boundary,
+        module="SPOT",
+        symbol=symbol,
+        order_id=order_id,
+        detail=detail,
+        source="WEEX_SPOT_HISTORY_ORDER_AND_TRADES",
+    )
+
+
+def _query_spot_history_order(
+    *,
+    boundary: Any,
+    symbol: str,
+    order_id: str,
+    client_order_id: str | None,
+) -> dict[str, Any]:
+    page = 1
+    limit = 1000
+    seen_order_ids: set[str] = set()
+    while True:
+        rows = _extract_rows(
+            boundary.call(
+                module="SPOT",
+                endpoint_key="spot.order.history_orders",
+                query={"symbol": symbol, "limit": limit, "page": page},
+            ),
+            "items",
+            "orders",
+        )
+        matches = [
+            item
+            for item in rows
+            if str(_pick(item, "orderId", "order_id") or "") == order_id
+            and (
+                client_order_id is None
+                or str(_pick(item, "clientOrderId", "client_order_id") or "")
+                == client_order_id
+            )
+        ]
+        if len(matches) == 1:
+            return dict(matches[0])
+        if len(matches) > 1:
+            break
+        page_order_ids = {
+            str(_pick(item, "orderId", "order_id") or "")
+            for item in rows
+            if _pick(item, "orderId", "order_id") not in (None, "")
+        }
+        new_order_ids = page_order_ids - seen_order_ids
+        seen_order_ids.update(page_order_ids)
+        if len(rows) < limit or not new_order_ids:
+            break
+        page += 1
+    raise ValueError("official spot history query returned no unique matching order")
 
 
 def _query_active_order_facts(
@@ -471,14 +573,10 @@ def _query_active_order_facts(
 ) -> dict[str, Any]:
     if module == "SPOT":
         detail_key = "spot.order.order_details"
-        trades_key = "spot.order.transaction_details"
         detail_query = {"orderId": order_id}
-        trades_query = {"symbol": symbol, "orderId": order_id, "limit": 100}
     else:
         detail_key = "transaction.get_single_order_info"
-        trades_key = "transaction.get_trade_details"
         detail_query = {"orderId": order_id}
-        trades_query = {"symbol": symbol, "orderId": order_id, "limit": 100}
     detail = _unwrap_mapping(
         boundary.call(
             module=module,
@@ -488,6 +586,31 @@ def _query_active_order_facts(
     )
     if str(_pick(detail, "orderId", "order_id") or "") != order_id:
         raise ValueError("official order query returned a different order")
+    return _query_order_and_trade_facts(
+        boundary=boundary,
+        module=module,
+        symbol=symbol,
+        order_id=order_id,
+        detail=detail,
+        source=source,
+    )
+
+
+def _query_order_and_trade_facts(
+    *,
+    boundary: Any,
+    module: str,
+    symbol: str,
+    order_id: str,
+    detail: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    trades_key = (
+        "spot.order.transaction_details"
+        if module == "SPOT"
+        else "transaction.get_trade_details"
+    )
+    trades_query = {"symbol": symbol, "orderId": order_id, "limit": 100}
     trades = _extract_rows(
         boundary.call(
             module=module,
@@ -906,6 +1029,7 @@ def _utc_now_text() -> str:
 __all__ = [
     "OfficialApiBoundary",
     "OfficialAutoTradeRuntime",
+    "OfficialReadRequestFailed",
     "OfficialRequestRejected",
     "OfficialRequestUncertain",
     "query_official_order_facts",
