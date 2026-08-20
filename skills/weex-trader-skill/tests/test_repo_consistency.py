@@ -22,6 +22,7 @@ README = ROOT / "README.md"
 MANIFEST = ROOT / "manifest.json"
 FILE_INDEX = ROOT / "file-index.json"
 REPO_README = REPO_ROOT / "README.md"
+ZH_REPO_README = REPO_ROOT / "README.zh-CN.md"
 AGENTS_GUIDE = REPO_ROOT / "AGENTS.md"
 CLAUDE_GUIDE = REPO_ROOT / "CLAUDE.md"
 COPILOT_GUIDE = REPO_ROOT / ".github" / "copilot-instructions.md"
@@ -52,7 +53,7 @@ TRADE_GUARD_SCRIPT = ROOT / "scripts" / "weex_trade_guard.py"
 API_DEFINITION_GENERATOR = ROOT / "scripts" / "generate_weex_api_definitions.py"
 REQUIREMENTS = ROOT / "requirements.txt"
 REQUIREMENTS_LOCK = ROOT / "requirements.lock"
-PUBLISHED_REPO_URL = "https://github.com/weex-labs/weex-trader-skill"
+PUBLISHED_REPO_URL = "https://github.com/weex-labs/weex-agent-skills"
 DOC_FILES = (
     SKILL,
     README,
@@ -318,11 +319,17 @@ class RepoConsistencyTests(unittest.TestCase):
     def test_readmes_reference_published_github_install_source(self) -> None:
         readme_text = README.read_text(encoding="utf-8")
         repo_readme_text = REPO_README.read_text(encoding="utf-8")
+        zh_readme_text = ZH_REPO_README.read_text(encoding="utf-8")
+        openclaw_script_text = OPENCLAW_UPDATE_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(PUBLISHED_REPO_URL, readme_text)
         self.assertIn(PUBLISHED_REPO_URL, repo_readme_text)
+        self.assertIn(PUBLISHED_REPO_URL, zh_readme_text)
+        self.assertIn(f'{PUBLISHED_REPO_URL}.git', openclaw_script_text)
+        self.assertIn('readonly DEFAULT_BRANCH="main"', openclaw_script_text)
         self.assertNotIn("https://github.com/drgnchan/weex-trader-skill", readme_text)
         self.assertNotIn("https://github.com/drgnchan/weex-trader-skill", repo_readme_text)
+        self.assertNotIn("https://github.com/drgnchan/weex-trader-skill", zh_readme_text)
 
     def test_skill_identity_matches_manifest(self) -> None:
         skill_name = extract_frontmatter_name(SKILL.read_text(encoding="utf-8"))

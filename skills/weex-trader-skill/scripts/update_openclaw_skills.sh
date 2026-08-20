@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly DEFAULT_REPO_URL="https://github.com/enzo108216/weex-agent-skills.git"
-readonly DEFAULT_BRANCH="feature/Trading-Competition"
+readonly DEFAULT_REPO_URL="https://github.com/weex-labs/weex-agent-skills.git"
+readonly DEFAULT_BRANCH="main"
 readonly OPENCLAW_ROOT="${OPENCLAW_HOME:-${HOME}/.openclaw}"
 readonly REPO_URL="${WEEX_OPENCLAW_REPO_URL:-${DEFAULT_REPO_URL}}"
 readonly REPO_DIR="${WEEX_OPENCLAW_REPO_DIR:-${OPENCLAW_ROOT}/skill-repos/weex-agent-skills}"

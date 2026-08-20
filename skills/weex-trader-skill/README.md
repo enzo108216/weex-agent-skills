@@ -55,7 +55,7 @@ Prefer local secret-entry flows such as the GUI profile manager, the vault UI, `
 
 ## Install In Codex
 
-Install from the checkout you plan to use, or from the published GitHub repo URL `https://github.com/weex-labs/weex-trader-skill`. In that repo layout, this skill should be read from `skills/weex-trader-skill/`, including `skills/weex-trader-skill/README.md`, `skills/weex-trader-skill/SKILL.md`, `skills/weex-trader-skill/manifest.json`, `skills/weex-trader-skill/file-index.json`, `skills/weex-trader-skill/scripts/`, `skills/weex-trader-skill/references/`, `skills/weex-trader-skill/requirements.txt`, and `skills/weex-trader-skill/requirements.lock`.
+Install from the checkout you plan to use, or from the published GitHub repo URL `https://github.com/weex-labs/weex-agent-skills`. In that repo layout, this skill should be read from `skills/weex-trader-skill/`, including `skills/weex-trader-skill/README.md`, `skills/weex-trader-skill/SKILL.md`, `skills/weex-trader-skill/manifest.json`, `skills/weex-trader-skill/file-index.json`, `skills/weex-trader-skill/scripts/`, `skills/weex-trader-skill/references/`, `skills/weex-trader-skill/requirements.txt`, and `skills/weex-trader-skill/requirements.lock`.
 
 If you install from the source repository, prefer the clean-export wrapper instead of installing directly from the working tree:
 
@@ -78,7 +78,7 @@ Private contract and spot CLIs can now auto-attempt that runtime setup helper wh
 Example prompts:
 
 ```text
-Help me install this skill from https://github.com/weex-labs/weex-trader-skill
+Help me install this skill from https://github.com/weex-labs/weex-agent-skills
 ```
 
 ```text
@@ -162,9 +162,16 @@ Partner queries use the exact production default unless the selected saved profi
 
 ## Automated Strategy Authorization
 
-Automatic authorization is an explicit integration for user-maintained Python or quantitative strategies. The skill does not discover external scripts. Each strategy registers once, persists its stable `strategy_id`, and calls `ensure-authorization` at startup before its first order. Restarts and renames reuse that ID; a copied strategy registers a new ID. Every strategy has an independent authorization and quota.
+Automatic authorization is an explicit saved-profile, real-trading-only integration for user-maintained Python or quantitative strategies; demo trading is not supported. The skill does not discover external scripts. Each strategy registers once, persists its stable `strategy_id`, and calls `ensure-authorization` at startup before its first order. Restarts and renames reuse that ID; a copied strategy registers a new ID. Every strategy has an independent authorization and quota.
 
-The detailed confirmation covers Spot/Futures modules (either or both), selected symbols or all symbols, the maximum conservative U estimate per leg, the maximum cumulative U amount during the validity period, and validity. A natural-language request that omits validity must be clarified instead of receiving a default. The JSON CLI requires `valid_hours`, which must be greater than zero and cannot exceed 720 hours (30 days). Activation binds the exact strategy, request, saved profile, and scope signature and requires `--confirm-live`. A pending request never grants trading authority. Authorizations that contain removed expanded-scope fields remain in the audit database but require a new V1.1 authorization before automatic submission.
+The detailed confirmation covers five scope dimensions only: Spot/Futures modules (either or both), selected symbols or all symbols, the maximum conservative U estimate per leg, the maximum cumulative U amount during the validity period, and validity. It does not add separate restrictions for side, order type, minimum order amount, or order count. A natural-language request that omits validity must be clarified instead of receiving a default. The JSON CLI requires `valid_hours`, which must be greater than zero and cannot exceed 720 hours (30 days). Activation binds the exact strategy, request, saved profile, and scope signature and requires `--confirm-live`. A pending request grants no trading authority and expires after 15 minutes; authorization validity starts when the grant succeeds. Changing any scope dimension requires a new request and explicit grant, which replaces the previous active authorization. Authorizations that contain removed expanded-scope fields remain in the audit database but require a new V1.1 authorization before automatic submission.
+
+The user-facing confirmation must make the authorization effect clear:
+
+- Granting changes local authorization state only and does not submit an order to WEEX.
+- While active, eligible in-scope orders may skip per-order confirmation, but every order still passes deterministic official-data, risk, product, balance, scope, and quota checks.
+- Per-leg and cumulative limits apply to conservative U estimates. An accepted estimate remains consumed for the authorization period and is not refunded by later reconciliation.
+- Expiry or revocation blocks future automatic reservations. Retiring a strategy also permanently blocks new authorizations for that strategy identity. None of these actions cancels, retries, or amends an order already submitted to WEEX.
 
 The automatic path uses only the explicit official operation catalog. Authorization follows the official Spot/Futures module, not an endpoint string, so a new endpoint does not silently inherit permission. Before any WEEX write, deterministic code checks fresh official risk and valuation facts, authorization state, module/symbol scope, the conservative per-leg maximum, cumulative quota, and the complete batch. The per-leg maximum describes the conservative authorization estimate, not the requested or actual fill amount. Spot quantity must satisfy official `stepSize`, `minTradeAmount`, and `maxTradeAmount`; BUY checks matching quote-asset available U value, while SELL checks matching base-asset available quantity. When the official Futures quantity unit cannot be proven uniquely, the conservative notional uses `quantity * price * max(1, contractVal)` before leverage and fee bounds; this is an upper-bound estimate, not exact exchange margin. AI-generated text does not calculate or mutate quota.
 
