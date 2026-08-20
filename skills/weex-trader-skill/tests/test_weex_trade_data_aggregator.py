@@ -31,6 +31,36 @@ class WindowSplitTests(unittest.TestCase):
 
 
 class ReplayCollectionTests(unittest.TestCase):
+    def test_account_risk_normalizes_separated_position_identity(self) -> None:
+        fetcher = mock.Mock()
+        fetcher.fetch_futures_balance.return_value = []
+        fetcher.fetch_futures_positions.return_value = [
+            {
+                "id": 785178733873988293,
+                "symbol": "ETHUSDT",
+                "positionSide": "LONG",
+                "size": "0.001",
+                "separatedMode": "SEPARATED",
+                "separatedOpenOrderId": 785178733848822469,
+            }
+        ]
+        fetcher.fetch_futures_open_orders.return_value = []
+        fetcher.fetch_futures_pending_orders.return_value = []
+        fetcher.fetch_futures_orders.return_value = []
+
+        payload = aggregator.TradeDataAggregator(fetcher=fetcher).collect_account_risk_payload(
+            profile_name="main",
+            market="futures",
+            trading_mode="live",
+            symbol="ETHUSDT",
+        )
+
+        self.assertEqual(payload["positions"][0]["position_id"], "785178733873988293")
+        self.assertEqual(
+            payload["positions"][0]["separated_open_order_id"],
+            "785178733848822469",
+        )
+
     def test_extract_latest_price_rejects_non_positive_and_non_finite_values(self) -> None:
         for raw_price in ("0", "-1", "nan", "inf", "-inf"):
             with self.subTest(raw_price=raw_price):

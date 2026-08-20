@@ -22,6 +22,98 @@ import weex_monitor_cli as monitor  # noqa: E402
 
 
 class MonitorTaskTests(unittest.TestCase):
+    def test_order_baseline_binds_unique_separated_position_by_open_order_id(self) -> None:
+        task = {
+            "task_type": "order_baseline_pnl_monitor",
+            "profile": "main",
+            "trading_mode": "live",
+            "symbol": "ETHUSDT",
+            "position_side": "LONG",
+            "baseline": {
+                "order_id": "open-order-2",
+                "entry_price": "2251.92",
+                "quantity": "0.001",
+            },
+            "condition": {
+                "metric": "baseline_unrealized_pnl",
+                "operator": ">=",
+                "threshold": "-100",
+            },
+            "action": {"type": "market_close", "target": "LONG"},
+            "callback": {"type": "current_thread"},
+        }
+        positions = [
+            {
+                "position_id": "position-1",
+                "separated_open_order_id": "open-order-1",
+                "position_mode": "SEPARATED",
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "quantity": "0.01",
+            },
+            {
+                "position_id": "position-2",
+                "separated_open_order_id": "open-order-2",
+                "position_mode": "SEPARATED",
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "quantity": "0.001",
+            },
+        ]
+
+        result = monitor.evaluate_order_baseline_pnl_task(
+            task,
+            positions,
+            account_payload={"market_snapshot": {"current_price": "2252"}},
+        )
+
+        self.assertTrue(result["triggered"])
+        self.assertEqual(result["close_order"]["position_id"], "position-2")
+
+    def test_position_pnl_multiple_separated_positions_fail_closed(self) -> None:
+        task = monitor.normalize_task(
+            {
+                "task_type": "position_pnl_monitor",
+                "profile": "main",
+                "trading_mode": "live",
+                "symbol": "ETHUSDT",
+                "position_side": "LONG",
+                "condition": {
+                    "metric": "unrealized_pnl",
+                    "operator": ">=",
+                    "threshold": "1",
+                },
+                "action": {"type": "market_close", "target": "LONG"},
+                "callback": {"type": "current_thread"},
+            },
+            now_ms=1000,
+        )
+        positions = [
+            {
+                "position_id": "position-1",
+                "separated_open_order_id": "open-order-1",
+                "position_mode": "SEPARATED",
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "quantity": "0.01",
+                "unrealized_pnl": "1",
+            },
+            {
+                "position_id": "position-2",
+                "separated_open_order_id": "open-order-2",
+                "position_mode": "SEPARATED",
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "quantity": "0.02",
+                "unrealized_pnl": "2",
+            },
+        ]
+
+        result = monitor.evaluate_pnl_task(task, positions)
+
+        self.assertFalse(result["triggered"])
+        self.assertEqual(result["reason"], "separated_position_ambiguous")
+
     def _prepare_and_confirm(
         self,
         task_json: dict[str, object],

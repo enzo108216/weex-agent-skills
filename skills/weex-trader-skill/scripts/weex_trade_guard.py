@@ -1692,6 +1692,81 @@ def _build_spot_client(profile_name: str) -> tuple[Any, Any]:
     return spot_api, client
 
 
+def _position_identity(position: dict[str, Any], *keys: str) -> str | None:
+    value = next(
+        (position.get(key) for key in keys if position.get(key) not in (None, "")),
+        None,
+    )
+    if value in (None, ""):
+        raw = position.get("raw")
+        if isinstance(raw, dict):
+            value = next(
+                (raw.get(key) for key in keys if raw.get(key) not in (None, "")),
+                None,
+            )
+    return None if value in (None, "") else str(value).strip()
+
+
+def _validate_exact_position_close(
+    raw_order: dict[str, Any],
+    account_payload: dict[str, Any],
+) -> int:
+    requested_id = _position_identity(raw_order, "position_id", "positionId")
+    if requested_id is None:
+        raise AggregationInputError("exact position close requires position_id")
+    try:
+        numeric_position_id = int(requested_id)
+    except (TypeError, ValueError) as exc:
+        raise AggregationInputError("position_id must be a positive integer") from exc
+    if numeric_position_id <= 0:
+        raise AggregationInputError("position_id must be a positive integer")
+    if account_payload.get("partial") is not False or account_payload.get("degraded_reasons"):
+        raise AggregationInputError("fresh account data is incomplete for exact position close")
+
+    positions = account_payload.get("positions")
+    if not isinstance(positions, list):
+        raise AggregationInputError("fresh account positions are unavailable for exact position close")
+    matches = [
+        position
+        for position in positions
+        if isinstance(position, dict)
+        and _position_identity(position, "position_id", "positionId", "id") == requested_id
+    ]
+    if len(matches) != 1:
+        reason = "not found" if not matches else "ambiguous"
+        raise AggregationInputError(f"exact position_id is {reason} in fresh account positions")
+
+    position = matches[0]
+    requested_symbol = str(raw_order.get("symbol") or "").strip().upper()
+    actual_symbol = str(position.get("symbol") or "").strip().upper()
+    if not requested_symbol or requested_symbol != actual_symbol:
+        raise AggregationInputError("exact position close symbol does not match the fresh position")
+    requested_position_side = str(
+        raw_order.get("position_side") or raw_order.get("positionSide") or ""
+    ).strip().upper()
+    actual_position_side = str(
+        position.get("position_side") or position.get("positionSide") or position.get("side") or ""
+    ).strip().upper()
+    if requested_position_side not in {"LONG", "SHORT"} or requested_position_side != actual_position_side:
+        raise AggregationInputError("exact position close side does not match the fresh position")
+    expected_order_side = "SELL" if requested_position_side == "LONG" else "BUY"
+    if str(raw_order.get("side") or "").strip().upper() != expected_order_side:
+        raise AggregationInputError("exact position close order side is not directionally closing")
+    order_type = str(raw_order.get("order_type") or raw_order.get("type") or "").strip().upper()
+    if order_type != "MARKET":
+        raise AggregationInputError("exact position close requires MARKET order_type")
+    try:
+        requested_quantity = Decimal(str(raw_order.get("quantity") or "").strip())
+        position_quantity = Decimal(str(position.get("quantity") or "").strip())
+    except InvalidOperation as exc:
+        raise AggregationInputError("exact position close quantity is unavailable") from exc
+    if requested_quantity <= 0 or position_quantity <= 0 or requested_quantity != position_quantity:
+        raise AggregationInputError(
+            "exact position close quantity must equal the full separated position quantity"
+        )
+    return numeric_position_id
+
+
 def _submit_order(
     *,
     market: str,
@@ -1710,6 +1785,32 @@ def _submit_order(
             raise AggregationInputError("futures order requires positionSide")
         if not order_type:
             raise AggregationInputError("futures order requires type")
+        requested_position_id = _position_identity(raw_order, "position_id", "positionId")
+        if requested_position_id is not None:
+            if mode != "live":
+                raise AggregationInputError("exact position close is only supported for live futures")
+            fresh_account = TradeDataAggregator().collect_account_risk_payload(
+                profile_name=profile_name,
+                market="futures",
+                trading_mode=mode,
+                symbol=str(raw_order.get("symbol") or ""),
+            )
+            position_id = _validate_exact_position_close(raw_order, fresh_account)
+            contract_api, client = _build_contract_client(profile_name)
+            endpoint_key = contract_api.find_endpoint_key_by_doc_suffix("ClosePositions")
+            normalized_symbol = contract_api.normalize_contract_trade_symbol(str(raw_order["symbol"]))
+            body = {"symbol": normalized_symbol, "positionId": position_id}
+            _, payload = contract_api.execute_endpoint_payload(
+                client=client,
+                endpoint_key=endpoint_key,
+                query={},
+                body=body,
+                dry_run=False,
+                confirm_live=True,
+                trading_mode=mode,
+                pretty=False,
+            )
+            return payload
         contract_api, client = _build_contract_client(profile_name)
         endpoint_key = (
             "sim.transaction.place_order"
@@ -1885,6 +1986,8 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         trading_mode=trading_mode,
         raw_order=raw_order,
     )
+    if _position_identity(raw_order, "position_id", "positionId") is not None:
+        _validate_exact_position_close(raw_order, risk_payload)
     environment = _environment_from_payload_or_mode(risk_payload, trading_mode, args.market)
     analysis_output = analysis.analyze_order_risk(risk_payload)
     analysis_output = _merge_environment_context(

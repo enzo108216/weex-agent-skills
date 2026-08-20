@@ -83,6 +83,114 @@ class OrderIntentStateTests(unittest.TestCase):
 
 
 class TradeGuardTests(unittest.TestCase):
+    def test_submit_order_routes_exact_position_close_to_close_positions(self) -> None:
+        fake_contract_api = mock.Mock()
+        fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "transaction.close_positions"
+        fake_contract_api.ENDPOINTS = {"transaction.place_order": mock.Mock()}
+        fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
+        fake_contract_api.execute_endpoint_payload.return_value = (
+            0,
+            {
+                "endpoint": "transaction.close_positions",
+                "businessOk": True,
+                "exitCode": 0,
+                "result": [{"positionId": 9001, "success": True, "successOrderId": 9101}],
+            },
+        )
+        fresh_account = {
+            "partial": False,
+            "degraded_reasons": [],
+            "positions": [
+                {
+                    "position_id": "1001",
+                    "separated_open_order_id": "8001",
+                    "symbol": "ETHUSDT",
+                    "position_side": "LONG",
+                    "quantity": 0.001,
+                    "position_mode": "SEPARATED",
+                }
+            ],
+        }
+
+        with mock.patch.object(
+            trade_guard.TradeDataAggregator,
+            "collect_account_risk_payload",
+            return_value=fresh_account,
+        ), mock.patch.object(
+            trade_guard,
+            "_build_contract_client",
+            return_value=(fake_contract_api, mock.Mock()),
+        ):
+            result = trade_guard._submit_order(
+                market="futures",
+                profile_name="main",
+                trading_mode="live",
+                raw_order={
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "position_side": "LONG",
+                    "type": "MARKET",
+                    "quantity": "0.001",
+                    "position_id": "1001",
+                },
+            )
+
+        self.assertEqual(result["endpoint"], "transaction.close_positions")
+        fake_contract_api.find_endpoint_key_by_doc_suffix.assert_called_once_with("ClosePositions")
+        execute_kwargs = fake_contract_api.execute_endpoint_payload.call_args.kwargs
+        self.assertEqual(execute_kwargs["body"], {"symbol": "ETHUSDT", "positionId": 1001})
+
+    def test_submit_order_rejects_partial_quantity_for_exact_position_close(self) -> None:
+        fresh_account = {
+            "partial": False,
+            "degraded_reasons": [],
+            "positions": [
+                {
+                    "position_id": "1001",
+                    "symbol": "ETHUSDT",
+                    "position_side": "LONG",
+                    "quantity": 0.01,
+                    "position_mode": "SEPARATED",
+                }
+            ],
+        }
+
+        fake_contract_api = mock.Mock()
+        fake_contract_api.ENDPOINTS = {"transaction.place_order": mock.Mock()}
+        fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
+        fake_contract_api.generate_client_oid.return_value = "generated-client-id"
+        fake_client = mock.Mock()
+        fake_client.send.return_value = {"ok": True, "data": {}}
+
+        with mock.patch.object(
+            trade_guard.TradeDataAggregator,
+            "collect_account_risk_payload",
+            return_value=fresh_account,
+        ), mock.patch.object(
+            trade_guard,
+            "_build_contract_client",
+            return_value=(fake_contract_api, fake_client),
+        ) as client_mock:
+            with self.assertRaisesRegex(
+                trade_guard.AggregationInputError,
+                "full separated position quantity",
+            ):
+                trade_guard._submit_order(
+                    market="futures",
+                    profile_name="main",
+                    trading_mode="live",
+                    raw_order={
+                        "symbol": "ETHUSDT",
+                        "side": "SELL",
+                        "position_side": "LONG",
+                        "type": "MARKET",
+                        "quantity": "0.001",
+                        "position_id": "1001",
+                    },
+                )
+
+        client_mock.assert_not_called()
+
     def test_trader_local_risk_review_adds_standard_disclaimer(self) -> None:
         order_payload = {
             "order_preview": {

@@ -769,6 +769,12 @@ def _normalize_positions(
     for row in rows:
         quantity = _to_float(_pick(row, "size", "quantity", "qty"))
         side = str(_pick(row, "side", "positionSide") or "unknown").lower()
+        position_id = _pick(row, "positionId", "position_id", "id")
+        separated_open_order_id = _pick(
+            row,
+            "separatedOpenOrderId",
+            "separated_open_order_id",
+        )
         open_value = _to_float(_pick(row, "openValue", "open_value"))
         unrealized_pnl = _to_float(
             _pick(row, "unrealizePnl", "unrealizedPnl", "unrealized_pnl")
@@ -838,6 +844,12 @@ def _normalize_positions(
                 "symbol": _normalize_symbol_for_trading_mode(
                     _pick(row, "symbol", "instId"),
                     trading_mode,
+                ),
+                "position_id": None if position_id in (None, "") else str(position_id),
+                "separated_open_order_id": (
+                    None
+                    if separated_open_order_id in (None, "")
+                    else str(separated_open_order_id)
                 ),
                 "side": side,
                 "margin_type": _normalize_margin_type(_pick(row, "marginType", "margin_type")),
