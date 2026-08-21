@@ -38,6 +38,18 @@ CONFIRMATION_PROMPTS = {
         "reply_instruction": "If you accept the risks and want to continue, reply: confirm",
     },
 }
+AUTO_TRADE_AUTHORIZATION_HINTS = {
+    "zh": (
+        "如需取消二次确认功能，可申请自动交易授权。授权后，在指定交易类型、交易对、"
+        "单笔金额和有效期范围内，下单无需逐笔确认。发送“申请自动交易授权”即可开始配置。"
+    ),
+    "en": (
+        "To disable per-order confirmation, you can request automated trading authorization. "
+        "After authorization, orders within the specified trade types, symbols, single-order amount, "
+        'and validity period can be placed without per-order confirmation. Send "Request automated '
+        'trading authorization" to start configuration.'
+    ),
+}
 TRADING_MODES = ("live", "demo")
 DEFAULT_TRADING_MODE = "live"
 AUTO_TRADE_OPERATION_POLICY = {
@@ -1481,6 +1493,7 @@ def _build_zh_confirmation_instruction(
     environment: dict[str, Any],
     preview_context: dict[str, Any] | None,
     include_mode_switch: bool,
+    auto_trade_authorization_hint: str | None,
     reply_text: str,
 ) -> tuple[str, str | None]:
     mode = _confirmation_environment_label(environment, language="zh")
@@ -1507,6 +1520,8 @@ def _build_zh_confirmation_instruction(
         switch_text = _switch_reply_text(environment, language="zh")
         other_mode = _other_confirmation_environment_label(environment, language="zh")
         lines.extend(["", f"如果需要切换为{other_mode}，请回复：{switch_text}。"])
+    if auto_trade_authorization_hint is not None:
+        lines.extend(["", auto_trade_authorization_hint])
     return "\n".join(lines), switch_text
 
 
@@ -1515,6 +1530,7 @@ def _build_en_confirmation_instruction(
     environment: dict[str, Any],
     preview_context: dict[str, Any] | None,
     include_mode_switch: bool,
+    auto_trade_authorization_hint: str | None,
     reply_text: str,
 ) -> tuple[str, str | None]:
     mode = _confirmation_environment_label(environment, language="en")
@@ -1542,6 +1558,8 @@ def _build_en_confirmation_instruction(
         switch_text = _switch_reply_text(environment, language="en")
         other_mode = _other_confirmation_environment_label(environment, language="en")
         lines.extend(["", f"To switch to {other_mode}, reply: {switch_text}."])
+    if auto_trade_authorization_hint is not None:
+        lines.extend(["", auto_trade_authorization_hint])
     return "\n".join(lines), switch_text
 
 
@@ -1551,9 +1569,15 @@ def _build_user_confirmation(
     environment: dict[str, Any] | None = None,
     preview_context: dict[str, Any] | None = None,
     include_mode_switch: bool = False,
+    include_auto_trade_authorization_hint: bool = False,
 ) -> dict[str, str]:
     resolved_language = resolve_language(language)
     prompt = CONFIRMATION_PROMPTS[resolved_language]
+    auto_trade_authorization_hint = (
+        AUTO_TRADE_AUTHORIZATION_HINTS[resolved_language]
+        if include_auto_trade_authorization_hint
+        else None
+    )
     reply_instruction = prompt["reply_instruction"]
     switch_text = None
     if environment is not None:
@@ -1562,6 +1586,7 @@ def _build_user_confirmation(
                 environment=environment,
                 preview_context=preview_context,
                 include_mode_switch=include_mode_switch,
+                auto_trade_authorization_hint=auto_trade_authorization_hint,
                 reply_text=prompt["reply_text"],
             )
         else:
@@ -1569,6 +1594,7 @@ def _build_user_confirmation(
                 environment=environment,
                 preview_context=preview_context,
                 include_mode_switch=include_mode_switch,
+                auto_trade_authorization_hint=auto_trade_authorization_hint,
                 reply_text=prompt["reply_text"],
             )
     result = {
@@ -2023,6 +2049,7 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         environment=environment,
         preview_context=confirmation_context,
         include_mode_switch=True,
+        include_auto_trade_authorization_hint=True,
     )
     _output_json(response, args.pretty)
     return 0

@@ -529,6 +529,12 @@ class TradeGuardTests(unittest.TestCase):
             reply_instruction,
         )
         self.assertIn("如果确认使用真实资金提交这笔订单，请回复：确认", reply_instruction)
+        self.assertTrue(
+            reply_instruction.endswith(
+                "如需取消二次确认功能，可申请自动交易授权。授权后，在指定交易类型、交易对、"
+                "单笔金额和有效期范围内，下单无需逐笔确认。发送“申请自动交易授权”即可开始配置。"
+            )
+        )
         self.assertIn("如果需要切换为模拟盘，请回复：切换到模拟盘。", reply_instruction)
         self.assertNotIn("当前盘别：live", reply_instruction)
         self.assertNotIn("确认下单", payload["user_confirmation"]["reply_instruction"])
@@ -578,6 +584,14 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIn("reply: confirm", payload["user_confirmation"]["reply_instruction"])
         self.assertNotIn("Trading mode: live", payload["user_confirmation"]["reply_instruction"])
         self.assertNotIn("确认", payload["user_confirmation"]["reply_instruction"])
+        self.assertTrue(
+            payload["user_confirmation"]["reply_instruction"].endswith(
+                'To disable per-order confirmation, you can request automated trading authorization. '
+                'After authorization, orders within the specified trade types, symbols, single-order amount, '
+                'and validity period can be placed without per-order confirmation. '
+                'Send "Request automated trading authorization" to start configuration.'
+            )
+        )
 
     def test_english_confirmation_missing_order_fields_use_english_placeholder(self) -> None:
         confirmation = trade_guard._build_user_confirmation(
@@ -1284,6 +1298,7 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIn("risk_signature", payload)
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
         self.assertEqual(payload["user_confirmation"]["reply_text"], "确认")
+        self.assertNotIn("申请自动交易授权", payload["user_confirmation"]["reply_instruction"])
 
     def test_tp_sl_normalization_accepts_omitted_and_zero_quantity_as_full_position(self) -> None:
         base = {
