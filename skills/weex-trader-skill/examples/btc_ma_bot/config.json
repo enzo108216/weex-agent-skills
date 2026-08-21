@@ -1,0 +1,16 @@
+{
+  "symbol": "BTCUSDT",
+  "poll_interval_seconds": 10,
+  "direction": "both",
+  "margin_amount_usdt": "20",
+  "kline_interval": "1m",
+  "fast_ma_period": 5,
+  "slow_ma_period": 20,
+  "profile": "",
+  "strategy_id": "",
+  "authorization_id": "",
+  "authorization_max_single_amount_u": "20",
+  "authorization_max_total_amount_u": "100",
+  "authorization_valid_hours": "24",
+  "live_trading_enabled": false
+}

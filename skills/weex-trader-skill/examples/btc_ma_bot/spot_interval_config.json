@@ -1,0 +1,13 @@
+{
+  "symbol": "BTCUSDT",
+  "poll_interval_seconds": 60,
+  "quote_amount_usdt": "19.9",
+  "profile": "YOUR_SAVED_PROFILE",
+  "strategy_id": "YOUR_STRATEGY_ID",
+  "authorization_id": "YOUR_AUTHORIZATION_ID",
+  "authorization_max_single_amount_u": "20.1",
+  "authorization_max_total_amount_u": "100",
+  "authorization_valid_hours": "24",
+  "live_trading_enabled": false,
+  "log_file": "btc_spot_interval.jsonl"
+}
