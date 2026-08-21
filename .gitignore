@@ -23,6 +23,8 @@
 !/skills/**
 !/tools/
 !/tools/**
+!/evals/
+!/evals/**
 
 # Ignore editor, OS, and Python cache files anywhere, including inside allowed paths.
 **/.DS_Store
@@ -30,3 +32,8 @@
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
+**/node_modules/
+evals/.promptfoo/
+evals/artifacts/
+skills/weex-trader-skill/examples/btc_ma_bot/*.jsonl
+skills/weex-trader-skill/examples/btc_ma_bot/*.log

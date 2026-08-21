@@ -208,6 +208,25 @@ Do not use `gh skill install --agent openclaw`; the root Python installer remain
 
 Users of Codex, Claude Code, Cursor, or GitHub Copilot usually only need the GitHub install command in [Start Here](#start-here); OpenClaw users should keep using the workflow above.
 
+## Local Skill Evaluations
+
+The repository includes deterministic local evaluations that do not access WEEX, read profiles or Vault, or call model APIs. Install the Promptfoo development dependency once:
+
+```bash
+npm --prefix evals install
+```
+
+Run the Python harness and Promptfoo:
+
+```bash
+python3 tools/run_local_evals.py --json
+npm --prefix evals run eval
+```
+
+The evaluation layer lives under `evals/` and calls only the repository's local scripts and documentation contracts. `skills/` remains the only Skill source of truth. See [`evals/README.md`](evals/README.md) for details.
+
+To run real model routing evaluations with the current Codex session, follow the “当前 Codex 模型评测” section in [`evals/README.md`](evals/README.md). It uses the local Codex SDK session only and never writes credentials to the repository, command line, or reports.
+
 ## User Safety Notes
 
 - Live order, cancel, or account-changing actions can affect real assets. Check the account, symbol, side, size, price, order type, and risk preview before you confirm any action.

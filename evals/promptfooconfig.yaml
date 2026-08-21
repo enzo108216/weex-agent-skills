@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: WEEX offline deterministic Skill evaluations
+
+prompts:
+  - "{{case_id}}"
+
+providers:
+  - id: file://providers/local_provider.cjs
+    label: weex-local-deterministic
+
+tests: file://cases/promptfoo-tests.json
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://graders/local_assertion.cjs

@@ -1,0 +1,45 @@
+name: skills-local-evals
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-evals:
+    runs-on: ubuntu-latest
+    env:
+      WEEX_EVAL_OFFLINE: "1"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: evals/package-lock.json
+
+      - name: Install local eval dependencies
+        run: npm ci --ignore-scripts --prefix evals
+
+      - name: Run Python eval harness tests
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s evals/tests -p 'test_*.py' -v
+
+      - name: Run deterministic offline evals
+        run: PYTHONDONTWRITEBYTECODE=1 python3 tools/run_local_evals.py --json
+
+      - name: Run Promptfoo offline evals
+        run: npm --prefix evals run eval -- --no-table
+
+      - name: Run existing Skill regression tests
+        run: PYTHONDONTWRITEBYTECODE=1 python3 tools/run_skill_tests.py

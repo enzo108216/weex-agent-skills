@@ -1,0 +1,15 @@
+{
+  "name": "weex-agent-skills-local-evals",
+  "private": true,
+  "description": "Local deterministic Promptfoo evaluations for WEEX Agent Skills",
+  "scripts": {
+    "eval": "node scripts/run_promptfoo.cjs eval --config promptfooconfig.yaml --no-cache --no-share --no-progress-bar",
+    "eval:json": "node scripts/run_promptfoo.cjs eval --config promptfooconfig.yaml --no-cache --no-share --no-progress-bar --no-table --output artifacts/promptfoo-results.json",
+    "codex:check-auth": "node scripts/run_codex_promptfoo.cjs check-auth --json",
+    "eval:codex:json": "node scripts/run_codex_promptfoo.cjs eval --config promptfooconfig.codex.yaml --no-cache --no-share --no-progress-bar --no-table --max-concurrency 2 --output artifacts/codex-model-eval.json",
+    "eval:codex:html": "node scripts/run_codex_promptfoo.cjs eval --config promptfooconfig.codex.yaml --no-cache --no-share --no-progress-bar --no-table --max-concurrency 2 --output artifacts/codex-model-eval.html"
+  },
+  "devDependencies": {
+    "promptfoo": "0.122.0"
+  }
+}

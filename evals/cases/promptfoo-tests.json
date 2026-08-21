@@ -1,0 +1,98 @@
+[
+  {
+    "description": "analysis empty order risk is partial",
+    "vars": {
+      "case_id": "analysis.empty_order_risk"
+    }
+  },
+  {
+    "description": "analysis missing fill fields is degraded",
+    "vars": {
+      "case_id": "analysis.missing_fill_fields"
+    }
+  },
+  {
+    "description": "analysis snapshot missing risk fields is partial",
+    "vars": {
+      "case_id": "analysis.snapshot_missing_fields"
+    }
+  },
+  {
+    "description": "analysis replay preserves top-level account scope",
+    "vars": {
+      "case_id": "analysis.replay_scope_inheritance"
+    }
+  },
+  {
+    "description": "monitor missing trading mode is rejected",
+    "vars": {
+      "case_id": "monitor.missing_trading_mode"
+    }
+  },
+  {
+    "description": "monitor price condition is rejected",
+    "vars": {
+      "case_id": "monitor.price_condition_rejected"
+    }
+  },
+  {
+    "description": "monitor confirmation token binds to task",
+    "vars": {
+      "case_id": "monitor.confirmation_token_binding"
+    }
+  },
+  {
+    "description": "monitor dry run trigger is non-mutating",
+    "vars": {
+      "case_id": "monitor.dry_run_trigger"
+    }
+  },
+  {
+    "description": "monitor order baseline pnl uses fixed quantity",
+    "vars": {
+      "case_id": "monitor.order_baseline_quantity"
+    }
+  },
+  {
+    "description": "partner catalog is seven read-only operations",
+    "vars": {
+      "case_id": "partner.read_only_catalog"
+    }
+  },
+  {
+    "description": "partner natural language fixtures are complete",
+    "vars": {
+      "case_id": "partner.natural_language_fixture"
+    }
+  },
+  {
+    "description": "partner validation rejects missing uid without REST",
+    "vars": {
+      "case_id": "partner.missing_uid"
+    }
+  },
+  {
+    "description": "trader mutation requires explicit confirmation flags",
+    "vars": {
+      "case_id": "trader.confirmation_boundary"
+    }
+  },
+  {
+    "description": "trader secret transport is documented",
+    "vars": {
+      "case_id": "trader.secret_transport"
+    }
+  },
+  {
+    "description": "repository evaluation layer has no network or mutation path",
+    "vars": {
+      "case_id": "repository.offline_safety"
+    }
+  },
+  {
+    "description": "repository skills remain the only source of truth",
+    "vars": {
+      "case_id": "repository.source_of_truth"
+    }
+  }
+]

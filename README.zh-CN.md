@@ -208,6 +208,25 @@ openclaw skills check
 
 Codex、Claude Code、Cursor 或 GitHub Copilot 用户通常只需要使用 [从这里开始](#从这里开始) 中的 GitHub 安装命令；OpenClaw 用户继续使用上面的专用流程。
 
+## 本地 Skill 评测
+
+仓库提供不访问 WEEX、不读取 Profile/Vault、不调用模型 API 的本地确定性评测。首次安装 Promptfoo 依赖：
+
+```bash
+npm --prefix evals install
+```
+
+运行 Python harness 和 Promptfoo：
+
+```bash
+python3 tools/run_local_evals.py --json
+npm --prefix evals run eval
+```
+
+评测层位于 `evals/`，只调用仓库现有本地脚本和文档契约；`skills/` 仍然是唯一 Skill 事实源。详情见 [`evals/README.md`](evals/README.md)。
+
+如需使用当前 Codex 会话做真实模型路由评测，请按 [`evals/README.md`](evals/README.md) 的“当前 Codex 模型评测”流程执行；该流程只在本地使用 Codex SDK，不把认证值写入仓库、命令行或报告。
+
 ## 使用前请注意
 
 - 实时下单、撤单或修改账户状态的操作会影响真实资产。确认前请核对账户、交易对、方向、数量、价格、订单类型和风险预览。
