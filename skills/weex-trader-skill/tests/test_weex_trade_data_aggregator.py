@@ -31,6 +31,86 @@ class WindowSplitTests(unittest.TestCase):
 
 
 class ReplayCollectionTests(unittest.TestCase):
+    def test_account_risk_normalizes_separated_position_identity(self) -> None:
+        fetcher = mock.Mock()
+        fetcher.fetch_futures_balance.return_value = []
+        fetcher.fetch_futures_positions.return_value = [
+            {
+                "id": 785178733873988293,
+                "symbol": "ETHUSDT",
+                "positionSide": "LONG",
+                "size": "0.001",
+                "separatedMode": "SEPARATED",
+                "separatedOpenOrderId": 785178733848822469,
+            }
+        ]
+        fetcher.fetch_futures_open_orders.return_value = []
+        fetcher.fetch_futures_pending_orders.return_value = []
+        fetcher.fetch_futures_orders.return_value = []
+
+        payload = aggregator.TradeDataAggregator(fetcher=fetcher).collect_account_risk_payload(
+            profile_name="main",
+            market="futures",
+            trading_mode="live",
+            symbol="ETHUSDT",
+        )
+
+        self.assertEqual(payload["positions"][0]["position_id"], "785178733873988293")
+        self.assertEqual(
+            payload["positions"][0]["separated_open_order_id"],
+            "785178733848822469",
+        )
+
+    def test_extract_latest_price_rejects_non_positive_and_non_finite_values(self) -> None:
+        for raw_price in ("0", "-1", "nan", "inf", "-inf"):
+            with self.subTest(raw_price=raw_price):
+                self.assertIsNone(
+                    aggregator._extract_latest_price(
+                        {"symbol": "SBETUSDT", "price": raw_price}
+                    )
+                )
+
+    def test_spot_order_snapshot_does_not_replace_missing_quote_balance_with_total_equity(self) -> None:
+        account_snapshot, _ = aggregator._build_spot_account_estimates(
+            balances=[
+                {
+                    "asset": "BTC",
+                    "balance": 0.1,
+                    "available_balance": 0.1,
+                }
+            ],
+            symbol="BTCUSDT",
+            fetch_spot_latest_price=lambda *, symbol: {
+                "symbol": symbol,
+                "price": "65000",
+            },
+            degraded_reasons=[],
+        )
+
+        self.assertEqual(account_snapshot["equity"], 6500.0)
+        self.assertIsNone(account_snapshot["available_balance"])
+
+    def test_spot_order_snapshot_exposes_distinct_base_and_quote_available_balances(self) -> None:
+        account_snapshot, _ = aggregator._build_spot_account_estimates(
+            balances=[
+                {"asset": "BTC", "balance": 0.4, "available_balance": 0.3},
+                {"asset": "USDT", "balance": 100, "available_balance": 80},
+            ],
+            symbol="BTCUSDT",
+            fetch_spot_latest_price=lambda *, symbol: {
+                "symbol": symbol,
+                "price": "65000",
+            },
+            degraded_reasons=[],
+        )
+
+        self.assertEqual(account_snapshot["base_asset"], "BTC")
+        self.assertEqual(account_snapshot["base_available_quantity"], 0.3)
+        self.assertEqual(account_snapshot["quote_asset"], "USDT")
+        self.assertEqual(account_snapshot["quote_available_balance"], 80.0)
+        self.assertEqual(account_snapshot["quote_available_balance_u"], 80.0)
+        self.assertEqual(account_snapshot["available_balance"], 80.0)
+
     def test_collect_replay_payload_rejects_spot_market_without_symbol(self) -> None:
         trade_aggregator = aggregator.TradeDataAggregator(fetcher=mock.Mock())
 
@@ -1240,7 +1320,7 @@ class ReplayCollectionTests(unittest.TestCase):
         }
         fetcher.fetch_spot_orders.return_value = []
         fetcher.fetch_spot_open_orders.return_value = []
-        fetcher.fetch_spot_latest_price.side_effect = lambda *, symbol: {
+        fetcher.fetch_spot_latest_price.side_effect = lambda *, symbol, profile_name: {
             "BTCUSDT": {"symbol": "BTCUSDT", "lastPrice": "50000"},
             "ETHUSDT": {"symbol": "ETHUSDT", "lastPrice": "3000"},
         }[symbol]
@@ -1526,7 +1606,7 @@ class ReplayCollectionTests(unittest.TestCase):
         }
         fetcher.fetch_spot_orders.return_value = []
         fetcher.fetch_spot_open_orders.return_value = []
-        fetcher.fetch_spot_latest_price.side_effect = lambda *, symbol: {
+        fetcher.fetch_spot_latest_price.side_effect = lambda *, symbol, profile_name: {
             "BTCUSDT": {"symbol": "BTCUSDT", "lastPrice": "65000"},
             "ETHUSDT": {"symbol": "ETHUSDT", "lastPrice": "3000"},
         }[symbol]
@@ -2264,17 +2344,77 @@ class ApiFetcherTests(unittest.TestCase):
             query={},
         )
 
-    def test_fetch_spot_latest_price_uses_spot_ticker_price_endpoint(self) -> None:
+    def test_public_spot_client_uses_selected_profile_base_url_without_credentials(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        spot_api = mock.Mock()
+        spot_api.DEFAULT_BASE_URL = "https://api-spot.weex.com"
+        spot_api.DEFAULT_LOCALE = "en-US"
+        spot_api.DEFAULT_TIMEOUT = 15
+        profile = mock.Mock()
+        profile.name = "staging-profile"
+        profile.spot_base_url = "https://stg-spotpro-openapi.weex.tech"
+        spot_api.resolve_runtime_profile.return_value = profile
+        public_client = object()
+        spot_api.WeexSpotClient.return_value = public_client
+
+        with (
+            mock.patch.object(fetcher, "_spot_module", return_value=spot_api),
+            mock.patch.dict(
+                aggregator.os.environ,
+                {"WEEX_SPOT_API_BASE": "", "WEEX_API_BASE": ""},
+            ),
+        ):
+            resolved_module, resolved_client = fetcher._build_public_spot_client(
+                "staging-profile"
+            )
+
+        self.assertIs(resolved_module, spot_api)
+        self.assertIs(resolved_client, public_client)
+        spot_api.resolve_runtime_profile.assert_called_once_with(
+            requested_profile="staging-profile",
+            allow_invalid_default=False,
+        )
+        spot_api.WeexSpotClient.assert_called_once_with(
+            base_url="https://stg-spotpro-openapi.weex.tech",
+            timeout=15.0,
+            locale="en-US",
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name=None,
+        )
+
+    def test_fetch_spot_latest_price_uses_selected_profile_ticker_endpoint(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
 
         with mock.patch.object(fetcher, "_send_spot_request", return_value={"symbol": "BTCUSDT", "lastPrice": "65000"}) as send_mock:
-            payload = fetcher.fetch_spot_latest_price(symbol="BTCUSDT")
+            payload = fetcher.fetch_spot_latest_price(
+                profile_name="staging-profile",
+                symbol="BTCUSDT",
+            )
 
         self.assertEqual(payload, {"symbol": "BTCUSDT", "lastPrice": "65000"})
         send_mock.assert_called_once_with(
-            profile_name="",
+            profile_name="staging-profile",
             endpoint_key="spot.market.get_ticker_info",
             query={"symbol": "BTCUSDT"},
+            public=True,
+        )
+
+    def test_fetch_spot_klines_uses_selected_profile_market_endpoint(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+
+        with mock.patch.object(fetcher, "_send_spot_request", return_value=[]) as send_mock:
+            payload = fetcher.fetch_spot_klines(
+                profile_name="staging-profile",
+                symbol="BTCUSDT",
+            )
+
+        self.assertEqual(payload, [])
+        send_mock.assert_called_once_with(
+            profile_name="staging-profile",
+            endpoint_key="spot.market.get_k_line_data",
+            query={"symbol": "BTCUSDT", "interval": "1h"},
             public=True,
         )
 

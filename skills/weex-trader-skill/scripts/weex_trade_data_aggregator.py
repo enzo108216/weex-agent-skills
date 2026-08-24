@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -768,6 +769,12 @@ def _normalize_positions(
     for row in rows:
         quantity = _to_float(_pick(row, "size", "quantity", "qty"))
         side = str(_pick(row, "side", "positionSide") or "unknown").lower()
+        position_id = _pick(row, "positionId", "position_id", "id")
+        separated_open_order_id = _pick(
+            row,
+            "separatedOpenOrderId",
+            "separated_open_order_id",
+        )
         open_value = _to_float(_pick(row, "openValue", "open_value"))
         unrealized_pnl = _to_float(
             _pick(row, "unrealizePnl", "unrealizedPnl", "unrealized_pnl")
@@ -837,6 +844,12 @@ def _normalize_positions(
                 "symbol": _normalize_symbol_for_trading_mode(
                     _pick(row, "symbol", "instId"),
                     trading_mode,
+                ),
+                "position_id": None if position_id in (None, "") else str(position_id),
+                "separated_open_order_id": (
+                    None
+                    if separated_open_order_id in (None, "")
+                    else str(separated_open_order_id)
                 ),
                 "side": side,
                 "margin_type": _normalize_margin_type(_pick(row, "marginType", "margin_type")),
@@ -1032,7 +1045,7 @@ def _extract_latest_price(payload: Any) -> float | None:
 
     for candidate in candidates:
         price = _to_float(_pick(candidate, "lastPrice", "price", "markPrice", "close"))
-        if price is not None:
+        if price is not None and math.isfinite(price) and price > 0:
             return price
     return None
 
@@ -1176,13 +1189,36 @@ def _build_spot_account_estimates(
         )
 
     quote_asset = _infer_spot_quote_asset(symbol, balances)
+    base_asset = None
+    base_available_quantity = None
     quote_available_balance = None
+    quote_available_balance_u = None
     if quote_asset:
-        quote_row = next((row for row in balances if str(row.get("asset") or "").upper() == quote_asset), None)
+        normalized_symbol = str(symbol or "").strip().upper()
+        base_asset = normalized_symbol[: -len(quote_asset)] or None
+        base_row = next(
+            (
+                row
+                for row in balances
+                if str(row.get("asset") or "").strip().upper() == base_asset
+            ),
+            None,
+        )
+        if base_row is not None:
+            base_available_quantity = _to_float(base_row.get("available_balance"))
+        quote_row = next(
+            (
+                row
+                for row in balances
+                if str(row.get("asset") or "").strip().upper() == quote_asset
+            ),
+            None,
+        )
         if quote_row is not None:
-            quote_available_balance = _extract_spot_balance_value_usdt(
+            quote_available_balance = _to_float(quote_row.get("available_balance"))
+            quote_available_balance_u = _extract_spot_balance_value_usdt(
                 asset=quote_asset,
-                amount=_to_float(quote_row.get("available_balance")),
+                amount=quote_available_balance,
                 fetch_price=cached_fetch_spot_latest_price,
                 degraded_reasons=degraded_reasons,
             )
@@ -1192,10 +1228,15 @@ def _build_spot_account_estimates(
         {
             "equity": equity_total if saw_equity_component else None,
             "available_balance": (
-                quote_available_balance
-                if quote_available_balance is not None
+                quote_available_balance_u
+                if quote_asset is not None
                 else (available_equity_total if saw_available_component else None)
             ),
+            "base_asset": base_asset,
+            "base_available_quantity": base_available_quantity,
+            "quote_asset": quote_asset,
+            "quote_available_balance": quote_available_balance,
+            "quote_available_balance_u": quote_available_balance_u,
         },
         positions,
     )
@@ -1684,7 +1725,10 @@ class TradeDataAggregator:
                 _merge_degraded_reasons(degraded_reasons, list(meta.get("degraded_reasons") or []))
                 _merge_constraints(constraints, list(meta.get("constraints") or []))
             try:
-                spot_kline_payload = self.fetcher.fetch_spot_klines(symbol=normalized_symbol)
+                spot_kline_payload = self.fetcher.fetch_spot_klines(
+                    profile_name=profile_name,
+                    symbol=normalized_symbol,
+                )
             except AggregationInputError as exc:
                 if _should_degrade_spot_kline_error(exc):
                     partial = True
@@ -1925,11 +1969,17 @@ class TradeDataAggregator:
             partial = partial or recent_orders_partial
             if symbol:
                 current_price = _safe_current_price(
-                    fetch_latest_price=lambda: self.fetcher.fetch_spot_latest_price(symbol=symbol),
+                    fetch_latest_price=lambda: self.fetcher.fetch_spot_latest_price(
+                        profile_name=profile_name,
+                        symbol=symbol,
+                    ),
                     market="spot",
                     symbol=symbol,
                     degraded_reasons=degraded_reasons,
-                    fetch_klines=lambda: self.fetcher.fetch_spot_klines(symbol=symbol),
+                    fetch_klines=lambda: self.fetcher.fetch_spot_klines(
+                        profile_name=profile_name,
+                        symbol=symbol,
+                    ),
                 )
             open_orders = _normalize_orders(
                 self.fetcher.fetch_spot_open_orders(
@@ -1947,7 +1997,10 @@ class TradeDataAggregator:
             account_snapshot, positions = _build_spot_account_estimates(
                 balances=balances,
                 symbol=symbol,
-                fetch_spot_latest_price=self.fetcher.fetch_spot_latest_price,
+                fetch_spot_latest_price=lambda *, symbol: self.fetcher.fetch_spot_latest_price(
+                    profile_name=profile_name,
+                    symbol=symbol,
+                ),
                 degraded_reasons=degraded_reasons,
             )
         else:
@@ -2133,11 +2186,17 @@ class TradeDataAggregator:
             )
             if normalized_symbol:
                 current_price = _safe_current_price(
-                    fetch_latest_price=lambda: self.fetcher.fetch_spot_latest_price(symbol=normalized_symbol),
+                    fetch_latest_price=lambda: self.fetcher.fetch_spot_latest_price(
+                        profile_name=profile_name,
+                        symbol=normalized_symbol,
+                    ),
                     market="spot",
                     symbol=normalized_symbol,
                     degraded_reasons=degraded_reasons,
-                    fetch_klines=lambda: self.fetcher.fetch_spot_klines(symbol=normalized_symbol),
+                    fetch_klines=lambda: self.fetcher.fetch_spot_klines(
+                        profile_name=profile_name,
+                        symbol=normalized_symbol,
+                    ),
                 )
             _merge_degraded_reasons(degraded_reasons, ["spot_tp_sl_state_unavailable"])
 
@@ -2148,7 +2207,10 @@ class TradeDataAggregator:
             account_snapshot, positions = _build_spot_account_estimates(
                 balances=balances,
                 symbol=normalized_symbol,
-                fetch_spot_latest_price=self.fetcher.fetch_spot_latest_price,
+                fetch_spot_latest_price=lambda *, symbol: self.fetcher.fetch_spot_latest_price(
+                    profile_name=profile_name,
+                    symbol=symbol,
+                ),
                 degraded_reasons=degraded_reasons,
             )
         else:
@@ -2273,11 +2335,19 @@ class WeexApiFetcher:
         )
         return spot_api, client
 
-    def _build_public_spot_client(self) -> tuple[Any, Any]:
+    def _build_public_spot_client(self, profile_name: str = "") -> tuple[Any, Any]:
         spot_api = self._spot_module()
         spot_api.refresh_agent_records(command="trade-aggregator.spot.public")
+        profile = spot_api.resolve_runtime_profile(
+            requested_profile=profile_name,
+            allow_invalid_default=False,
+        )
         env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
-        base_url = env_base_url or spot_api.DEFAULT_BASE_URL
+        base_url = (
+            (profile.spot_base_url if profile else "")
+            or env_base_url
+            or spot_api.DEFAULT_BASE_URL
+        )
         locale = os.getenv("WEEX_LOCALE") or spot_api.DEFAULT_LOCALE
         timeout = float(os.getenv("WEEX_API_TIMEOUT", spot_api.DEFAULT_TIMEOUT))
         client = spot_api.WeexSpotClient(
@@ -2325,7 +2395,7 @@ class WeexApiFetcher:
         public: bool = False,
     ) -> Any:
         if public:
-            spot_api, client = self._build_public_spot_client()
+            spot_api, client = self._build_public_spot_client(profile_name)
         else:
             spot_api, client = self._build_spot_client(profile_name)
         endpoint = spot_api.ENDPOINTS[endpoint_key]
@@ -2643,9 +2713,9 @@ class WeexApiFetcher:
             query={},
         )
 
-    def fetch_spot_latest_price(self, *, symbol: str) -> Any:
+    def fetch_spot_latest_price(self, *, profile_name: str = "", symbol: str) -> Any:
         return self._send_spot_request(
-            profile_name="",
+            profile_name=profile_name,
             endpoint_key="spot.market.get_ticker_info",
             query={"symbol": symbol},
             public=True,
@@ -2778,10 +2848,11 @@ class WeexApiFetcher:
     def fetch_spot_klines(
         self,
         *,
+        profile_name: str = "",
         symbol: str,
     ) -> Any:
         return self._send_spot_request(
-            profile_name="",
+            profile_name=profile_name,
             endpoint_key="spot.market.get_k_line_data",
             query={
                 "symbol": symbol,
