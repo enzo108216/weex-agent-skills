@@ -14,7 +14,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from weex_auto_trade_state import AutoTradeState, StateConflictError
+from weex_auto_trade_state import (
+    AutoTradeState,
+    StateConflictError,
+    build_verified_usage_evidence,
+)
 from weex_trade_guard import (
     _validate_official_order_semantics,
     resolve_official_auto_trade_operation,
@@ -81,8 +85,8 @@ COMMAND_SCHEMAS: dict[str, tuple[set[str], set[str]]] = {
         set(),
     ),
     "resolve-auto-usage": (
-        {"profile", "strategy_id", "usage_id", "outcome", "evidence_source"},
-        {"weex_order_id"},
+        {"profile", "strategy_id", "usage_id"},
+        set(),
     ),
     "enable-auto-trading-after-restore": ({"profile"}, set()),
     "reconcile-auto-order": (
@@ -118,6 +122,7 @@ class AutoTradeFacade:
         profile_resolver: Callable[[str], Any],
         auto_trade_runtime_factory: Callable[[Any], Any] | None = None,
         reconciliation_provider: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
+        usage_resolution_provider: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
         manual_intent_writer: Callable[[dict[str, Any]], Any] | None = None,
         notification_adapter: Callable[[dict[str, Any]], Any] | None = None,
         notification_worker_launcher: Callable[..., Any] | None = None,
@@ -126,6 +131,7 @@ class AutoTradeFacade:
         self.profile_resolver = profile_resolver
         self.auto_trade_runtime_factory = auto_trade_runtime_factory
         self.reconciliation_provider = reconciliation_provider
+        self.usage_resolution_provider = usage_resolution_provider
         self.manual_intent_writer = manual_intent_writer
         self.notification_adapter = notification_adapter
         self.notification_worker_launcher = notification_worker_launcher
@@ -653,16 +659,57 @@ class AutoTradeFacade:
         profile = self._profile(payload)
         strategy_id = _required_text(payload["strategy_id"], "strategy_id")
         self._assert_strategy_profile(strategy_id, profile)
-        result = self.state.resolve_uncertain_usage(
-            usage_id=_required_text(payload["usage_id"], "usage_id"),
-            strategy_id=strategy_id,
-            outcome=_required_text(payload["outcome"], "outcome").upper(),
-            evidence_source=_required_text(
-                payload["evidence_source"], "evidence_source"
-            ),
-            weex_order_id=payload.get("weex_order_id"),
-            confirm_live=confirm_live,
-        )
+        if confirm_live is not True:
+            raise FacadeError(
+                "LIVE_CONFIRMATION_REQUIRED",
+                "resolve-auto-usage requires --confirm-live",
+                "CONFIRM_LIVE_RECOVERY",
+            )
+        usage_id = _required_text(payload["usage_id"], "usage_id")
+        try:
+            current_order = self.state.get_order_for_usage(usage_id=usage_id)
+        except (ValueError, StateConflictError) as exc:
+            raise FacadeError(
+                _value_error_code(exc) if isinstance(exc, ValueError) else "STATE_CONFLICT",
+                str(exc),
+                "INSPECT_AUTOMATED_TRADING_STATE",
+            ) from exc
+        if current_order["strategy_id"] != strategy_id:
+            raise FacadeError(
+                "STRATEGY_AUTHORIZATION_MISMATCH",
+                "usage does not belong to the selected strategy",
+                "SELECT_MATCHING_STRATEGY",
+            )
+        provider = self.usage_resolution_provider or _load_usage_resolution_provider()
+        try:
+            facts = provider(current_order, profile)
+            verified_evidence = build_verified_usage_evidence(facts)
+        except Exception as exc:
+            if isinstance(exc, FacadeError):
+                raise
+            if current_order.get("usage_status") == "RESERVED":
+                try:
+                    self.state.settle_usage(
+                        usage_id=usage_id,
+                        outcome="REVIEW_REQUIRED",
+                    )
+                except Exception:
+                    # Preserve the reservation if the fail-closed review marker
+                    # itself cannot be persisted; never release quota here.
+                    pass
+            raise FacadeError(
+                "RECONCILIATION_FACTS_INVALID",
+                "official order query did not provide complete, bound resolution facts",
+                "INSPECT_OFFICIAL_QUERY",
+            ) from exc
+        try:
+            result = self.state.resolve_uncertain_usage(
+                verified_evidence=verified_evidence,
+                confirm_live=confirm_live,
+            )
+        except (ValueError, StateConflictError) as exc:
+            code = _value_error_code(exc) if isinstance(exc, ValueError) else "STATE_CONFLICT"
+            raise FacadeError(code, str(exc), "INSPECT_OFFICIAL_QUERY") from exc
         return {
             **_public_usage_amounts(result),
             "profile": profile.name,
@@ -741,6 +788,21 @@ def _load_reconciliation_provider() -> Callable[[dict[str, Any], Any], dict[str,
             "RUN_RUNTIME_SETUP",
         ) from exc
     return lambda order, profile: query_official_order_facts(
+        order=order,
+        profile_name=profile.name,
+    )
+
+
+def _load_usage_resolution_provider() -> Callable[[dict[str, Any], Any], dict[str, Any]]:
+    try:
+        from weex_auto_trade_runtime import query_official_usage_resolution
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise FacadeError(
+            "RUNTIME_UNAVAILABLE",
+            "official order resolution runtime is unavailable",
+            "RUN_RUNTIME_SETUP",
+        ) from exc
+    return lambda order, profile: query_official_usage_resolution(
         order=order,
         profile_name=profile.name,
     )

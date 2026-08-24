@@ -221,7 +221,7 @@ class InstallLocalSkillsTests(unittest.TestCase):
             env, repo_dir, skills_dir, openclaw_log = self.openclaw_env(temp_root, source_repo)
 
             first = subprocess.run(
-                ["bash", str(OPENCLAW_UPDATE_SCRIPT)],
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT), "--dev"],
                 cwd=REPO_ROOT,
                 env=env,
                 text=True,
@@ -236,16 +236,13 @@ class InstallLocalSkillsTests(unittest.TestCase):
                 self.assertEqual(link.resolve(), (repo_dir / "skills" / skill).resolve())
             bin_link = Path(env["WEEX_OPENCLAW_BIN_LINK"])
             self.assertTrue(bin_link.is_symlink())
-            self.assertEqual(
-                bin_link.resolve(),
-                (repo_dir / OPENCLAW_UPDATE_SCRIPT.relative_to(REPO_ROOT)).resolve(),
-            )
+            self.assertNotEqual(bin_link.resolve(), (repo_dir / OPENCLAW_UPDATE_SCRIPT.relative_to(REPO_ROOT)).resolve())
 
             marker = source_repo / "UPDATED"
             self.write_file(marker, "second revision\n")
             self.commit_all(source_repo, "second fixture")
             second = subprocess.run(
-                ["bash", str(OPENCLAW_UPDATE_SCRIPT)],
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT), "--dev"],
                 cwd=REPO_ROOT,
                 env=env,
                 text=True,
@@ -268,6 +265,22 @@ class InstallLocalSkillsTests(unittest.TestCase):
             )
             self.assertIn("Latest commit:", second.stdout)
 
+            stable_updater = temp_root / ".openclaw" / "update-weex-openclaw-skills.sh"
+            self.assertTrue(stable_updater.is_file())
+            rerun = subprocess.run(
+                ["bash", str(stable_updater), "--dev"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(rerun.returncode, 0, f"{rerun.stdout}\n{rerun.stderr}")
+            self.assertEqual(
+                subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip(),
+                subprocess.check_output(["git", "-C", str(source_repo), "rev-parse", "HEAD"], text=True).strip(),
+            )
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable on this platform")
     def test_openclaw_update_script_refuses_to_replace_a_real_skill_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -281,7 +294,7 @@ class InstallLocalSkillsTests(unittest.TestCase):
             self.write_file(occupied / "keep.txt", "do not overwrite\n")
 
             completed = subprocess.run(
-                ["bash", str(OPENCLAW_UPDATE_SCRIPT)],
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT), "--dev"],
                 cwd=REPO_ROOT,
                 env=env,
                 text=True,
@@ -292,6 +305,100 @@ class InstallLocalSkillsTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("not a symbolic link", completed.stderr)
             self.assertEqual((occupied / "keep.txt").read_text(encoding="utf-8"), "do not overwrite\n")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable on this platform")
+    def test_openclaw_update_replaces_symlink_to_directory_instead_of_following_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            source_repo = temp_root / "source"
+            source_repo.mkdir()
+            self.openclaw_source_repo(source_repo)
+            env, repo_dir, skills_dir, _openclaw_log = self.openclaw_env(temp_root, source_repo)
+            old_target = temp_root / "old-skill-target"
+            old_target.mkdir()
+            occupied = skills_dir / "weex-trader-skill"
+            occupied.parent.mkdir(parents=True, exist_ok=True)
+            occupied.symlink_to(old_target, target_is_directory=True)
+
+            completed = subprocess.run(
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT), "--dev"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, f"{completed.stdout}\n{completed.stderr}")
+            self.assertEqual(
+                occupied.resolve(), (repo_dir / "skills" / "weex-trader-skill").resolve()
+            )
+            self.assertFalse((old_target / "weex-trader-skill.tmp").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable on this platform")
+    def test_openclaw_check_failure_restores_previous_checkout_and_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            source_repo = temp_root / "source"
+            source_repo.mkdir()
+            self.openclaw_source_repo(source_repo)
+            env, repo_dir, skills_dir, _openclaw_log = self.openclaw_env(temp_root, source_repo)
+
+            first = subprocess.run(
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT), "--dev"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(first.returncode, 0, f"{first.stdout}\n{first.stderr}")
+            old_commit = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+            self.write_file(source_repo / "UPDATED", "rollback candidate\n")
+            self.commit_all(source_repo, "rollback candidate")
+            fake_openclaw = Path(env["PATH"].split(os.pathsep)[0]) / "openclaw"
+            fake_openclaw.write_text("#!/usr/bin/env bash\nexit 17\n", encoding="utf-8")
+            fake_openclaw.chmod(0o755)
+
+            second = subprocess.run(
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT), "--dev"],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(second.returncode, 0)
+            self.assertEqual(
+                subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip(),
+                old_commit,
+            )
+            self.assertFalse((repo_dir / "UPDATED").exists())
+            for skill in OPENCLAW_SKILLS:
+                self.assertEqual((skills_dir / skill).resolve(), (repo_dir / "skills" / skill).resolve())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable on this platform")
+    def test_openclaw_update_rejects_non_official_source_without_explicit_dev_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_root = Path(tempdir)
+            source_repo = temp_root / "source"
+            source_repo.mkdir()
+            self.openclaw_source_repo(source_repo)
+            env, repo_dir, _skills_dir, _openclaw_log = self.openclaw_env(temp_root, source_repo)
+
+            completed = subprocess.run(
+                ["bash", str(OPENCLAW_UPDATE_SCRIPT)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("--dev", completed.stderr)
+            self.assertFalse(repo_dir.exists())
 
 
 if __name__ == "__main__":

@@ -174,7 +174,7 @@ From a checkout containing this repository version, run:
 bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
 ```
 
-The script clones the repository when the fixed checkout is absent. By default it uses the published `main` branch; set `WEEX_OPENCLAW_REPO_URL` or `WEEX_OPENCLAW_BRANCH` when you intentionally need another source. For an existing checkout it fetches the selected branch, checks it out, and runs `git pull --ff-only`. It then creates or refreshes all four skill links, installs the stable updater link at `~/bin/update-weex-openclaw-skills.sh`, and runs:
+The script clones the official repository at the pinned approved release commit `e10c2089550159afb7247271d1041d9b415145cd`; it never follows a moving branch in production. It stages and validates the checkout (Git object integrity, expected skills, and no submodules), switches the four links only after validation, runs the OpenClaw checks, and keeps a stable updater copy at `~/.openclaw/update-weex-openclaw-skills.sh` so a fetched checkout cannot replace the updater itself. If any check fails, the previous checkout and links are restored.
 
 ```bash
 openclaw skills list --eligible
@@ -188,14 +188,20 @@ Future updates only need:
 ~/bin/update-weex-openclaw-skills.sh
 ```
 
-The script never replaces a real file or directory at a link destination. Resolve that conflict manually and rerun it. To use another repository, branch, or local directory, set `WEEX_OPENCLAW_REPO_URL`, `WEEX_OPENCLAW_BRANCH`, or `WEEX_OPENCLAW_REPO_DIR` for that invocation.
-
-To roll back, check out a known-good commit in the fixed repository; the links do not need to be recreated:
+The script never replaces a real file or directory at a link destination. Resolve that conflict manually and rerun it. Non-official repositories or branches are for explicit development use only:
 
 ```bash
-cd ~/.openclaw/skill-repos/weex-agent-skills
-git checkout <old-commit>
-openclaw skills check
+WEEX_OPENCLAW_REPO_URL=/path/to/checkout \
+WEEX_OPENCLAW_BRANCH=feature/my-branch \
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh --dev
+```
+
+`WEEX_OPENCLAW_REPO_DIR`, `WEEX_OPENCLAW_SKILLS_DIR`, and `WEEX_OPENCLAW_BIN_LINK` may still select the local installation paths.
+
+To roll back, restore the previous checkout and rerun the updater with the approved release policy; failed validation already leaves the previous checkout and links untouched:
+
+```bash
+bash ~/.openclaw/update-weex-openclaw-skills.sh
 ```
 
 Finally, start a new OpenClaw task and run this read-only smoke test:

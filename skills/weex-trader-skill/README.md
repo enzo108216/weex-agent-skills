@@ -93,7 +93,7 @@ OpenClaw uses a fixed Git checkout plus skill-directory symlinks. From a checkou
 bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
 ```
 
-The script maintains `~/.openclaw/skill-repos/weex-agent-skills`, links all four WEEX skills into `~/.openclaw/skills`, runs the native eligibility checks, and creates the future update command `~/bin/update-weex-openclaw-skills.sh`. See the repository root README for the complete directory layout, environment overrides, validation commands, rollback, and smoke test.
+The script fetches the official repository at its approved pinned commit, stages and integrity-checks it, then refreshes all four links in `~/.openclaw/skills` only after the OpenClaw checks pass. It keeps the updater itself in `~/.openclaw/update-weex-openclaw-skills.sh`; a failed check restores the prior checkout and links. Non-official repositories or branches require an explicit `--dev` invocation. See the repository root README for the complete layout and smoke test.
 
 ## How to Use This Skill in Codex / Openclaw / Claude Code
 
@@ -188,6 +188,8 @@ Use `snapshot-state` only when the user explicitly requests a local authorizatio
 `restore-state` accepts a Trader-generated snapshot ID, not a path. Every syntactically valid attempt engages the persistent kill switch before reading the managed index, including unknown IDs and malformed indexes. It keeps a validated copy of the current database, restores through a temporary database, migrates only through a complete registered schema path, disables restored ACTIVE authorizations, preserves unresolved usage for manual reconciliation, and atomically switches only after validation. Automatic trading remains disabled after restore. A fresh ACTIVE authorization reports `RESOLVE_AUTO_USAGE_AND_ENABLE_AUTO_TRADING_AFTER_RESTORE` while unresolved usage remains, then `ENABLE_AUTO_TRADING_AFTER_RESTORE` until the latch is explicitly cleared; only then does it report `SUBMIT_ALLOWED`. A submission-uncertain latch instead reports `INSPECT_AND_RECONCILE_MANUALLY`. Create post-switch authorizations for the strategies that should resume, resolve every restored `RESERVED`/`REVIEW_REQUIRED` usage with verified evidence through `resolve-auto-usage`, then explicitly run `enable-auto-trading-after-restore --confirm-live`; pre-switch and expired ACTIVE rows do not satisfy the gate. Restore never merges quota ledgers or queries, retries, cancels, amends, or recreates WEEX orders.
 
 Automated-authorization state currently fails closed on Windows because V1 does not yet create and verify owner-only DACLs. This limitation does not remove the separate Windows support documented for profile, Vault, GUI, and ordinary REST workflows.
+
+`resolve-auto-usage` performs the official read-only order query itself. Its JSON request contains only `profile`, `strategy_id`, and `usage_id`; caller-supplied `outcome`, `evidence_source`, or `weex_order_id` fields are rejected. Only complete, unambiguous evidence bound to the local usage and order identities can transition the usage; query timeout, ambiguity, mismatch, or an unqueryable Futures client ID leaves it `REVIEW_REQUIRED`.
 
 ## Saved Profile Setup
 

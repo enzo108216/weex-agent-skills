@@ -60,6 +60,123 @@ EXPECTED_TABLES = frozenset(
         "authorization_events",
     }
 )
+_OFFICIAL_USAGE_EVIDENCE_SOURCES = frozenset(
+    {
+        "WEEX_SPOT_ORDER_ACCEPTED",
+        "WEEX_SPOT_ORDER_NOT_FOUND",
+        "WEEX_FUTURES_ORDER_ACCEPTED",
+        "WEEX_FUTURES_ORDER_NOT_FOUND",
+    }
+)
+
+
+_VERIFIED_EVIDENCE_TOKEN = object()
+
+
+class VerifiedUsageEvidence:
+    """Evidence issued by the official read-only reconciliation boundary."""
+
+    __slots__ = (
+        "outcome", "evidence_source", "weex_order_id", "usage_id", "strategy_id",
+        "authorization_id", "submission_group_id", "leg_id", "client_order_id",
+        "module", "symbol", "side", "order_type", "quantity", "price", "_token",
+    )
+
+    def __init__(
+        self,
+        *,
+        outcome: str,
+        evidence_source: str,
+        weex_order_id: str | None,
+        usage_id: str,
+        strategy_id: str,
+        authorization_id: str,
+        submission_group_id: str,
+        leg_id: str,
+        client_order_id: str,
+        module: str,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: str,
+        price: str | None,
+        _token: object,
+    ) -> None:
+        if _token is not _VERIFIED_EVIDENCE_TOKEN:
+            raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+        values = locals()
+        for field_name in self.__slots__:
+            if field_name != "_token":
+                object.__setattr__(self, field_name, values[field_name])
+        object.__setattr__(self, "_token", _token)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if hasattr(self, name):
+            raise AttributeError("verified usage evidence is immutable")
+        object.__setattr__(self, name, value)
+
+
+def build_verified_usage_evidence(facts: dict[str, Any]) -> VerifiedUsageEvidence:
+    """Create an opaque evidence value from a trusted provider's exact result."""
+    if not isinstance(facts, dict):
+        raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    required = {
+        "outcome",
+        "evidence_source",
+        "weex_order_id",
+        "usage_id",
+        "strategy_id",
+        "authorization_id",
+        "submission_group_id",
+        "leg_id",
+        "client_order_id",
+        "module",
+        "symbol",
+        "side",
+        "order_type",
+        "quantity",
+        "price",
+    }
+    if set(facts) != required:
+        raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    outcome = _required_text(facts["outcome"], "outcome").upper()
+    source = _required_text(facts["evidence_source"], "evidence_source")
+    if source not in _OFFICIAL_USAGE_EVIDENCE_SOURCES:
+        raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    module = _required_text(facts["module"], "module").upper()
+    if not source.startswith(f"WEEX_{module}_"):
+        raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    order_id = facts["weex_order_id"]
+    if order_id is not None:
+        order_id = _required_text(order_id, "weex_order_id")
+    if outcome == "ACCEPTED":
+        if order_id is None or not source.endswith("_ORDER_ACCEPTED"):
+            raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    elif outcome == "RELEASED":
+        if order_id is not None or not source.endswith("_ORDER_NOT_FOUND"):
+            raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    else:
+        raise ValueError("UNTRUSTED_USAGE_EVIDENCE")
+    normalized = {
+        key: _required_text(facts[key], key)
+        for key in required
+        if key not in {"outcome", "evidence_source", "weex_order_id", "price"}
+    }
+    normalized["module"] = module
+    normalized["symbol"] = normalized["symbol"].upper()
+    normalized["side"] = normalized["side"].upper()
+    normalized["order_type"] = normalized["order_type"].upper()
+    price = facts["price"]
+    if price is not None:
+        price = _required_text(price, "price")
+    return VerifiedUsageEvidence(
+        outcome=outcome,
+        evidence_source=source,
+        weex_order_id=order_id,
+        price=price,
+        _token=_VERIFIED_EVIDENCE_TOKEN,
+        **normalized,
+    )
 
 
 class StateConflictError(RuntimeError):
@@ -2547,31 +2664,52 @@ class AutoTradeState:
     def resolve_uncertain_usage(
         self,
         *,
-        usage_id: str,
+        verified_evidence: VerifiedUsageEvidence | None = None,
+        usage_id: str | None = None,
         strategy_id: str | None = None,
-        outcome: str,
-        evidence_source: str,
-        weex_order_id: str | None,
+        outcome: str | None = None,
+        evidence_source: str | None = None,
+        weex_order_id: str | None = None,
         confirm_live: bool,
         now: datetime | None = None,
     ) -> dict[str, Any]:
-        """Resolve a RESERVED/REVIEW_REQUIRED record from explicit verified evidence."""
-        usage_id = _required_text(usage_id, "usage_id")
-        normalized_strategy_id = (
-            None if strategy_id is None else _required_text(strategy_id, "strategy_id")
-        )
-        evidence_source = _required_text(evidence_source, "evidence_source")
+        """Resolve uncertainty only from an internally issued, bound evidence value."""
+        if (
+            verified_evidence is None
+            or type(verified_evidence).__name__ != "VerifiedUsageEvidence"
+            or not all(
+                hasattr(verified_evidence, field_name)
+                for field_name in (
+                    "outcome",
+                    "evidence_source",
+                    "weex_order_id",
+                    "usage_id",
+                    "strategy_id",
+                    "authorization_id",
+                    "submission_group_id",
+                    "leg_id",
+                    "client_order_id",
+                    "module",
+                    "symbol",
+                    "side",
+                    "order_type",
+                    "quantity",
+                    "price",
+                )
+            )
+        ):
+            raise ValueError("VERIFIED_EVIDENCE_REQUIRED")
+        if any(
+            value is not None
+            for value in (usage_id, strategy_id, outcome, evidence_source, weex_order_id)
+        ):
+            raise ValueError("CALLER_EVIDENCE_NOT_ALLOWED")
+        usage_id = verified_evidence.usage_id
         if confirm_live is not True:
             raise ValueError("LIVE_CONFIRMATION_REQUIRED")
-        if outcome not in {"ACCEPTED", "RELEASED"}:
-            raise ValueError("REVIEW_RESOLUTION_OUTCOME_INVALID")
-        normalized_order_id = (
-            None if weex_order_id is None else _required_text(weex_order_id, "weex_order_id")
-        )
-        if outcome == "ACCEPTED" and normalized_order_id is None:
-            raise ValueError("ACCEPTED_RESOLUTION_REQUIRES_ORDER_ID")
-        if outcome == "RELEASED" and normalized_order_id is not None:
-            raise ValueError("RELEASED_RESOLUTION_MUST_NOT_HAVE_ORDER_ID")
+        evidence = verified_evidence
+        outcome = evidence.outcome
+        normalized_order_id = evidence.weex_order_id
         current_text = _format_time(_coerce_now(now))
 
         try:
@@ -2583,11 +2721,6 @@ class AutoTradeState:
                 ).fetchone()
                 if usage is None:
                     raise ValueError("UNKNOWN_USAGE")
-                if (
-                    normalized_strategy_id is not None
-                    and usage["strategy_id"] != normalized_strategy_id
-                ):
-                    raise ValueError("STRATEGY_AUTHORIZATION_MISMATCH")
                 authorization = connection.execute(
                     "SELECT * FROM authorizations WHERE authorization_id = ?",
                     (usage["authorization_id"],),
@@ -2598,8 +2731,26 @@ class AutoTradeState:
                 ).fetchone()
                 if authorization is None:
                     raise StateConflictError("uncertain usage ownership chain is incomplete")
-                if order is None and outcome == "ACCEPTED":
-                    raise StateConflictError("accepted uncertain usage has no order mapping")
+                if order is None:
+                    raise StateConflictError("uncertain usage has no order mapping")
+                binding_values = {
+                    "strategy_id": usage["strategy_id"],
+                    "authorization_id": usage["authorization_id"],
+                    "submission_group_id": usage["submission_group_id"],
+                    "leg_id": usage["leg_id"],
+                    "client_order_id": order["client_order_id"],
+                    "module": order["module"],
+                    "symbol": order["symbol"],
+                    "side": order["side"],
+                    "order_type": order["order_type"],
+                    "quantity": order["quantity"],
+                    "price": order["price"],
+                }
+                for field_name, expected in binding_values.items():
+                    if getattr(evidence, field_name) != expected:
+                        raise ValueError("USAGE_EVIDENCE_BINDING_MISMATCH")
+                if outcome == "RELEASED" and order["weex_order_id"] is not None:
+                    raise ValueError("ORDER_MAPPING_CONFLICT")
                 if usage["status"] == outcome:
                     result = (
                         _order_result(order, usage, authorization)
@@ -2617,7 +2768,7 @@ class AutoTradeState:
                     ).fetchone()
                     if existing is not None and existing["usage_id"] != usage_id:
                         raise ValueError("ORDER_MAPPING_CONFLICT")
-                    if order is None or order["weex_order_id"] not in (None, normalized_order_id):
+                    if order["weex_order_id"] not in (None, normalized_order_id):
                         raise ValueError("ORDER_MAPPING_CONFLICT")
                     connection.execute(
                         "UPDATE auto_trade_orders SET weex_order_id = ?, updated_at = ? "
@@ -2668,7 +2819,7 @@ class AutoTradeState:
                     payload={
                         "status": outcome,
                         "previous_status": usage["status"],
-                        "evidence_source": evidence_source,
+                        "evidence_source": evidence.evidence_source,
                         "weex_order_id_recorded": normalized_order_id is not None,
                     },
                     severity="EXCEPTION",
@@ -2837,6 +2988,56 @@ class AutoTradeState:
             raise
         except (OSError, sqlite3.Error) as exc:
             raise StateConflictError("unable to read automated-trading order") from exc
+        if usage is None or authorization is None:
+            raise StateConflictError("order ownership chain is incomplete")
+        return _order_result(order, usage, authorization)
+
+    def get_usage(self, *, usage_id: str) -> dict[str, Any]:
+        """Read a usage row for diagnostics without exposing mutable state access."""
+        usage_id = _required_text(usage_id, "usage_id")
+        try:
+            with closing(self._connect()) as connection:
+                usage = connection.execute(
+                    "SELECT * FROM authorization_usage WHERE usage_id = ?",
+                    (usage_id,),
+                ).fetchone()
+                if usage is None:
+                    raise ValueError("UNKNOWN_USAGE")
+                authorization = connection.execute(
+                    "SELECT * FROM authorizations WHERE authorization_id = ?",
+                    (usage["authorization_id"],),
+                ).fetchone()
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise StateConflictError("unable to read automated-trading usage") from exc
+        if authorization is None:
+            raise StateConflictError("usage ownership chain is incomplete")
+        return _usage_result(usage, authorization)
+
+    def get_order_for_usage(self, *, usage_id: str) -> dict[str, Any]:
+        """Read the canonical local order mapping for a usage record."""
+        usage_id = _required_text(usage_id, "usage_id")
+        try:
+            with closing(self._connect()) as connection:
+                order = connection.execute(
+                    "SELECT * FROM auto_trade_orders WHERE usage_id = ?",
+                    (usage_id,),
+                ).fetchone()
+                if order is None:
+                    raise ValueError("UNKNOWN_AUTO_TRADE_ORDER")
+                usage = connection.execute(
+                    "SELECT * FROM authorization_usage WHERE usage_id = ?",
+                    (usage_id,),
+                ).fetchone()
+                authorization = connection.execute(
+                    "SELECT * FROM authorizations WHERE authorization_id = ?",
+                    (order["authorization_id"],),
+                ).fetchone()
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise StateConflictError("unable to read automated-trading order mapping") from exc
         if usage is None or authorization is None:
             raise StateConflictError("order ownership chain is incomplete")
         return _order_result(order, usage, authorization)
@@ -4358,4 +4559,6 @@ __all__ = [
     "CURRENT_SCHEMA_VERSION",
     "EVENT_SCHEMA_VERSION",
     "StateConflictError",
+    "VerifiedUsageEvidence",
+    "build_verified_usage_evidence",
 ]
