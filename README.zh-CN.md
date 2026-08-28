@@ -225,6 +225,8 @@ npm --prefix evals run eval
 
 评测层位于 `evals/`，只调用仓库现有本地脚本和文档契约；`skills/` 仍然是唯一 Skill 事实源。详情见 [`evals/README.md`](evals/README.md)。
 
+可选的 Codex 模型评测从本机 shell 环境读取非秘密目标变量（`WEEX_CODEX_EVAL_MODEL`、`WEEX_CODEX_EVAL_MODEL_PROVIDER`、`WEEX_CODEX_EVAL_REASONING_EFFORT` 和 `WEEX_CODEX_EVAL_REPEAT`）。认证继续由 Codex 管理的登录态处理，不复制到仓库或命令行。
+
 如需使用当前 Codex 会话做真实模型路由评测，请按 [`evals/README.md`](evals/README.md) 的“当前 Codex 模型评测”流程执行；该流程只在本地使用 Codex SDK，不把认证值写入仓库、命令行或报告。
 
 ## 使用前请注意

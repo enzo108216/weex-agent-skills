@@ -225,6 +225,8 @@ npm --prefix evals run eval
 
 The evaluation layer lives under `evals/` and calls only the repository's local scripts and documentation contracts. `skills/` remains the only Skill source of truth. See [`evals/README.md`](evals/README.md) for details.
 
+The optional Codex model evaluation reads its non-secret target (`WEEX_CODEX_EVAL_MODEL`, `WEEX_CODEX_EVAL_MODEL_PROVIDER`, `WEEX_CODEX_EVAL_REASONING_EFFORT`, and `WEEX_CODEX_EVAL_REPEAT`) from the local shell environment. Authentication remains in the Codex-managed login state and is never copied into the repository or command line.
+
 To run real model routing evaluations with the current Codex session, follow the “当前 Codex 模型评测” section in [`evals/README.md`](evals/README.md). It uses the local Codex SDK session only and never writes credentials to the repository, command line, or reports.
 
 ## User Safety Notes

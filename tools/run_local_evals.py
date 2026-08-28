@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,8 @@ from typing import Any, Callable, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 CASE_CATALOG = ROOT / "evals" / "cases" / "promptfoo-tests.json"
+sys.path.insert(0, str(ROOT))
+from tools.weex_eval_offline_guard import network_blocked  # noqa: E402
 EXPECTED_DISCLAIMER = (
     "Disclaimer: This result is generated solely from the current input data and is for reference only. "
     "It does not constitute any investment or trading advice. Please make your own independent judgment "
@@ -26,6 +29,19 @@ EXPECTED_DISCLAIMER = (
 )
 
 CaseHandler = Callable[[], dict[str, Any]]
+SAFE_EVAL_ENV_KEYS = {
+    "PATH",
+    "Path",
+    "USER",
+    "USERNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+}
 
 
 def load_case_catalog() -> list[dict[str, Any]]:
@@ -33,6 +49,7 @@ def load_case_catalog() -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise ValueError("eval case catalog must be a JSON array")
     cases: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
     for item in payload:
         if not isinstance(item, dict):
             raise ValueError("eval case must be an object")
@@ -40,6 +57,9 @@ def load_case_catalog() -> list[dict[str, Any]]:
         if not isinstance(variables, dict) or not variables.get("case_id"):
             raise ValueError("eval case must contain vars.case_id")
         case_id = str(variables["case_id"])
+        if case_id in seen_case_ids:
+            raise ValueError(f"duplicate eval case id: {case_id}")
+        seen_case_ids.add(case_id)
         cases.append(
             {
                 "case_id": case_id,
@@ -80,25 +100,13 @@ def _fail(case_id: str, message: str, *, details: dict[str, Any] | None = None) 
 
 
 def _clean_eval_environment(monitor_home: Path) -> dict[str, str]:
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("WEEX_")
-        and key
-        not in {
-            "API_KEY",
-            "API_SECRET",
-            "API_PASSPHRASE",
-            "WEEX_API_KEY",
-            "WEEX_API_SECRET",
-            "WEEX_API_PASSPHRASE",
-        }
-    }
+    env = {key: os.environ[key] for key in SAFE_EVAL_ENV_KEYS if key in os.environ}
     env.update(
         {
             "PYTHONDONTWRITEBYTECODE": "1",
             "WEEX_EVAL_OFFLINE": "1",
             "WEEX_MONITOR_SKILL_HOME": str(monitor_home),
+            "HOME": str(monitor_home),
         }
     )
     return env
@@ -127,7 +135,12 @@ def _run_json_cli(
     monitor_home: Path,
 ) -> tuple[int, Any, str]:
     completed = subprocess.run(
-        [sys.executable, str(script), *args],
+        [
+            sys.executable,
+            str(ROOT / "evals" / "offline_guard" / "python_runner.py"),
+            str(script),
+            *args,
+        ],
         cwd=ROOT,
         input=json.dumps(payload, ensure_ascii=False),
         text=True,
@@ -473,23 +486,63 @@ def _case_partner_read_only_catalog() -> dict[str, Any]:
 def _case_partner_natural_language_fixture() -> dict[str, Any]:
     fixture_path = ROOT / "skills" / "weex-partner-skill" / "references" / "natural-language-regression.json"
     payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    validate_partner_natural_language_fixture(payload)
     scenarios = payload.get("scenarios")
-    if not isinstance(scenarios, list) or not scenarios:
-        raise AssertionError("Partner natural-language fixture is empty")
-    ids = [item.get("id") for item in scenarios]
-    if len(ids) != len(set(ids)) or any(not item for item in ids):
-        raise AssertionError("Partner natural-language fixture ids are not unique")
     route_operations = {
-        item.get("expected", {}).get("operation")
+        item["expected"]["operation"]
         for item in scenarios
-        if item.get("expected", {}).get("disposition") == "route"
+        if item["expected"]["disposition"] == "route"
     }
-    if len(route_operations) != 7:
-        raise AssertionError(f"fixture does not cover seven Partner routes: {route_operations}")
     return _ok(
         "partner.natural_language_fixture",
         {"scenario_count": len(scenarios), "route_operations": sorted(route_operations)},
     )
+
+
+PARTNER_OPERATIONS = {
+    "list-referral-uids",
+    "get-direct-trade-asset",
+    "get-commission",
+    "get-sub-agent-stats",
+    "verify-referrals",
+    "get-referral-assets",
+    "get-referral-deal-data",
+}
+PARTNER_DISPOSITIONS = {"route", "clarify", "reject", "delegate"}
+
+
+def validate_partner_natural_language_fixture(payload: dict[str, Any]) -> None:
+    if payload.get("schema_version") != 1:
+        raise ValueError("Partner natural-language fixture schema_version must be 1")
+    scenarios = payload.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        raise ValueError("Partner natural-language fixture is empty")
+    ids: list[str] = []
+    route_operations: set[str] = set()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict) or not str(scenario.get("id") or "").strip():
+            raise ValueError("Partner fixture scenario id is required")
+        if not str(scenario.get("prompt") or "").strip():
+            raise ValueError("Partner fixture scenario prompt is required")
+        expected = scenario.get("expected")
+        if not isinstance(expected, dict) or expected.get("disposition") not in PARTNER_DISPOSITIONS:
+            raise ValueError("Partner fixture disposition is invalid")
+        disposition = expected["disposition"]
+        if disposition == "route":
+            operation = expected.get("operation")
+            if operation not in PARTNER_OPERATIONS:
+                raise ValueError(f"Partner fixture operation is not allowlisted: {operation}")
+            route_operations.add(operation)
+        else:
+            if "operation" in expected:
+                raise ValueError("non-route Partner fixture must not contain operation")
+            if expected.get("partner_rest_request_sent") is not False:
+                raise ValueError("non-route Partner fixture must set partner_rest_request_sent=false")
+        ids.append(str(scenario["id"]))
+    if len(ids) != len(set(ids)):
+        raise ValueError("Partner natural-language fixture ids are not unique")
+    if route_operations != PARTNER_OPERATIONS:
+        raise ValueError(f"Partner fixture routes must equal the seven allowlisted operations: {route_operations}")
 
 
 def _case_partner_missing_uid() -> dict[str, Any]:
@@ -518,6 +571,32 @@ def _read_text(*relative_paths: str) -> str:
 
 
 def _case_trader_confirmation_boundary() -> dict[str, Any]:
+    trader_scripts_dir = ROOT / "skills" / "weex-trader-skill" / "scripts"
+    if str(trader_scripts_dir) not in sys.path:
+        sys.path.insert(0, str(trader_scripts_dir))
+    contract = _load_module(
+        trader_scripts_dir / "weex_contract_api.py",
+        "weex_local_eval_contract",
+    )
+    endpoint = contract.ENDPOINTS["transaction.place_order"]
+    for mode, confirm_live, confirm_demo, expected in (
+        ("live", False, False, "--confirm-live"),
+        ("demo", False, False, "--confirm-demo"),
+        ("live", False, True, "confirm_flag_mode_mismatch"),
+    ):
+        try:
+            contract.validate_confirm_flags(
+                endpoint,
+                mode,
+                dry_run=False,
+                confirm_live=confirm_live,
+                confirm_demo=confirm_demo,
+            )
+        except SystemExit as exc:
+            if expected not in str(exc):
+                raise AssertionError(f"unexpected confirmation failure: {exc}")
+        else:
+            raise AssertionError(f"trader accepted unconfirmed {mode} mutation")
     text = _read_text(
         "skills/weex-trader-skill/SKILL.md",
         "skills/weex-trader-skill/scripts/weex_contract_api.py",
@@ -528,7 +607,10 @@ def _case_trader_confirmation_boundary() -> dict[str, Any]:
     missing = sorted(value for value in required if value not in text)
     if missing:
         raise AssertionError(f"Trader confirmation boundary is undocumented or absent: {missing}")
-    return _ok("trader.confirmation_boundary", {"required_tokens": sorted(required)})
+    return _ok(
+        "trader.confirmation_boundary",
+        {"required_tokens": sorted(required), "behavioral_gate": "verified"},
+    )
 
 
 def _case_trader_secret_transport() -> dict[str, Any]:
@@ -550,10 +632,10 @@ def _case_repository_offline_safety() -> dict[str, Any]:
     paths = [
         ROOT / "evals" / "providers" / "local_provider.cjs",
         ROOT / "evals" / "graders" / "local_assertion.cjs",
+        ROOT / "evals" / "offline_guard" / "python_runner.py",
     ]
     forbidden_patterns = {
-        r"\brequests\b": "direct requests import",
-        r"\burllib\b": "direct urllib import",
+        r"(?:from|require\()\s*[\"']?(?:requests|urllib|httpx|axios)": "direct network client import",
         r"https?://": "network URL",
         r"--confirm-live": "live mutation confirmation",
         r"--confirm-demo": "demo mutation confirmation",
@@ -574,14 +656,70 @@ def _case_repository_offline_safety() -> dict[str, Any]:
     )
 
 
+def _case_repository_offline_network_guard() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="weex-offline-guard-") as directory:
+        script = Path(directory) / "network_probe.py"
+        script.write_text(
+            "import socket\n"
+            "socket.create_connection(('example.com', 443), timeout=1)\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "evals" / "offline_guard" / "python_runner.py"),
+                str(script),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+            env=_clean_eval_environment(Path(directory)),
+        )
+    combined = f"{completed.stdout}\n{completed.stderr}"
+    if completed.returncode == 0 or "WEEX_EVAL_OFFLINE blocked network access" not in combined:
+        raise AssertionError(f"offline network guard did not block socket egress: {combined}")
+    return _ok(
+        "repository.offline_network_guard",
+        {"returncode": completed.returncode, "blocked": True},
+    )
+
+
+def _case_repository_offline_udp_guard() -> dict[str, Any]:
+    with network_blocked():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(b"probe", ("8.8.8.8", 53))
+        except RuntimeError as exc:
+            if str(exc) != "WEEX_EVAL_OFFLINE blocked network access":
+                raise AssertionError(f"unexpected UDP guard error: {exc}")
+            return _ok(
+                "repository.offline_udp_guard",
+                {"blocked": True},
+            )
+        finally:
+            sock.close()
+    raise AssertionError("offline network guard allowed UDP sendto")
+
+
 def _case_repository_source_of_truth() -> dict[str, Any]:
     skill_dirs = [
         path
         for path in sorted((ROOT / "skills").iterdir())
         if path.is_dir() and (path / "SKILL.md").exists()
     ]
-    if len(skill_dirs) != 4:
-        raise AssertionError(f"expected four installable Skills, found {len(skill_dirs)}")
+    required_skill_names = {
+        "weex-analysis-skill",
+        "weex-monitor-skill",
+        "weex-partner-skill",
+        "weex-trader-skill",
+    }
+    skill_names = {path.name for path in skill_dirs}
+    if not required_skill_names <= skill_names:
+        raise AssertionError(
+            f"required installable Skills are missing: {sorted(required_skill_names - skill_names)}"
+        )
     missing = [
         str(path.relative_to(ROOT))
         for path in skill_dirs
@@ -595,6 +733,7 @@ def _case_repository_source_of_truth() -> dict[str, Any]:
         ROOT / "evals" / "providers",
         ROOT / "evals" / "graders",
         ROOT / "evals" / "scripts",
+        ROOT / "evals" / "offline_guard",
         ROOT / "evals" / "tests",
     ):
         if directory.exists():
@@ -623,15 +762,33 @@ HANDLERS: dict[str, CaseHandler] = {
     "trader.confirmation_boundary": _case_trader_confirmation_boundary,
     "trader.secret_transport": _case_trader_secret_transport,
     "repository.offline_safety": _case_repository_offline_safety,
+    "repository.offline_network_guard": _case_repository_offline_network_guard,
+    "repository.offline_udp_guard": _case_repository_offline_udp_guard,
     "repository.source_of_truth": _case_repository_source_of_truth,
 }
 
 
 def run_case(case_id: str) -> dict[str, Any]:
     if case_id not in HANDLERS:
-        return _fail(case_id, "case handler is missing")
+        return {
+            "case_id": case_id,
+            "group": "unknown",
+            "ok": False,
+            "summary": "case handler is missing",
+            "details": {"error_type": "UnknownEvalCase"},
+        }
     try:
-        result = HANDLERS[case_id]()
+        catalog = load_case_catalog()
+        catalog_ids = {item["case_id"] for item in catalog}
+        handler_ids = set(HANDLERS)
+        if catalog_ids != handler_ids:
+            raise ValueError(
+                "case catalog/handler mismatch: "
+                f"missing_handlers={sorted(catalog_ids - handler_ids)}, "
+                f"orphan_handlers={sorted(handler_ids - catalog_ids)}"
+            )
+        with network_blocked():
+            result = HANDLERS[case_id]()
         if not result.get("ok"):
             return result
         return result
@@ -644,7 +801,28 @@ def run_case(case_id: str) -> dict[str, Any]:
 
 
 def run_all() -> dict[str, Any]:
-    cases = [run_case(item["case_id"]) for item in load_case_catalog()]
+    try:
+        catalog = load_case_catalog()
+        catalog_ids = {item["case_id"] for item in catalog}
+        handler_ids = set(HANDLERS)
+        if catalog_ids != handler_ids:
+            missing_handlers = sorted(catalog_ids - handler_ids)
+            orphan_handlers = sorted(handler_ids - catalog_ids)
+            raise ValueError(
+                f"case catalog/handler mismatch: missing_handlers={missing_handlers}, "
+                f"orphan_handlers={orphan_handlers}"
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "suite": "weex-local-deterministic-evals",
+            "case_count": 0,
+            "passed": 0,
+            "failed": ["catalog"],
+            "cases": [],
+            "error": {"error_type": type(exc).__name__, "message": str(exc)},
+        }
+    cases = [run_case(item["case_id"]) for item in catalog]
     failed = [item["case_id"] for item in cases if not item.get("ok")]
     return {
         "ok": not failed,

@@ -1,5 +1,8 @@
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { buildSafeEnvironment } = require("../scripts/eval_environment.cjs");
 
 class WeexLocalProvider {
   constructor(options) {
@@ -15,23 +18,27 @@ class WeexLocalProvider {
     const caseId = String(prompt || "").trim();
     const repositoryRoot = path.resolve(__dirname, "..", "..");
     const python = this.config.python || process.env.PYTHON || "python3";
-    const safeEnv = Object.fromEntries(
-      Object.entries(process.env).filter(([key]) => !key.startsWith("WEEX_")),
-    );
+    const temporaryHome = fs.mkdtempSync(path.join(os.tmpdir(), "weex-local-provider-home-"));
+    const safeEnv = buildSafeEnvironment(process.env, { home: temporaryHome });
     safeEnv.PYTHONDONTWRITEBYTECODE = "1";
     safeEnv.WEEX_EVAL_OFFLINE = "1";
 
-    const completed = spawnSync(
-      python,
-      [path.join(repositoryRoot, "tools", "run_local_evals.py"), "--case-id", caseId, "--json"],
-      {
-        cwd: repositoryRoot,
-        encoding: "utf8",
-        env: safeEnv,
-        shell: false,
-        timeout: 30000,
-      },
-    );
+    let completed;
+    try {
+      completed = spawnSync(
+        python,
+        [path.join(repositoryRoot, "tools", "run_local_evals.py"), "--case-id", caseId, "--json"],
+        {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          env: safeEnv,
+          shell: false,
+          timeout: 30000,
+        },
+      );
+    } finally {
+      fs.rmSync(temporaryHome, { recursive: true, force: true });
+    }
 
     if (completed.error) {
       return {

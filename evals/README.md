@@ -44,7 +44,18 @@ Promptfoo 只负责 case 编排、provider 调用和报告；真正的行为断�
 
 ## 当前 Codex 模型评测
 
-这是本地显式模型评测，不进入公共 CI。Provider 使用当前 Codex CLI/SDK 会话读取本机 Codex 登录态；仓库不读取或输出密钥，不把密钥放入 argv，也不把密钥写入报告。
+这是本地显式模型评测，不进入公共 CI。评测目标由本机环境变量指定，认证由 Codex CLI/SDK 登录态处理；评测器不会解析 `auth.json`，不会把认证值写入 argv 或报告。
+
+首次使用时，在 `~/.zshrc`（或当前 shell 的等价启动文件）保存非秘密目标变量：
+
+```bash
+export WEEX_CODEX_EVAL_MODEL="gpt-5.6-sol"
+export WEEX_CODEX_EVAL_MODEL_PROVIDER="custom"
+export WEEX_CODEX_EVAL_REASONING_EFFORT="xhigh"
+export WEEX_CODEX_EVAL_REPEAT="3"
+```
+
+这些变量必须与当前 `~/.codex/config.toml` 的 model/provider 一致；不一致时预检会 fail-closed。自定义 provider 所需的认证环境变量只由受信 Codex 进程使用，模型控制的 shell 会启用 Codex 默认 secret 名称过滤。生成 HTML/JSON 后，wrapper 会再次扫描敏感标记和已配置的 provider secret，命中即返回非零。
 
 先检查当前 Codex provider/model：
 
@@ -52,13 +63,13 @@ Promptfoo 只负责 case 编排、provider 调用和报告；真正的行为断�
 node evals/scripts/run_codex_promptfoo.cjs check-auth --json
 ```
 
-生成完整 Promptfoo HTML：
+生成同一次 eval 的完整 Promptfoo HTML 和 JSON：
 
 ```bash
 npm --prefix evals run eval:codex:html
 ```
 
-命令输出的 eval ID 例如 `eval-ep8-2026-08-21T07:13:39`。使用 Promptfoo 官方 export 从同一个 eval ID 生成配套 JSON：
+命令输出的 eval ID 例如 `eval-ep8-2026-08-21T07:13:39`。如需单独导出，可使用 Promptfoo 官方 export 从同一个 eval ID 生成配套 JSON：
 
 ```bash
 node evals/scripts/run_codex_promptfoo.cjs export eval \
@@ -71,14 +82,15 @@ node evals/scripts/run_codex_promptfoo.cjs export eval \
 - `evals/artifacts/codex-model-eval.html`：可直接在浏览器打开的完整 Promptfoo 报告。
 - `evals/artifacts/codex-model-eval.json`：同一 eval ID 的机器可读结果。
 
-模型评测使用只读工作区、禁用网络、`approval_policy=never`、最大并发 2、`--no-cache`、`--no-share` 和关闭 telemetry。13 个 case 覆盖 Analysis、Monitor、Partner、Trader 的路由、前置条件、确认门禁、只读边界和 secret transport。它不访问 WEEX REST、不读取 Profile/Vault、不执行真实或模拟盘 mutation。
+模型评测使用只读工作区、禁用网络、`approval_policy=never`、最大并发 2、默认重复 3 次、`--no-cache`、`--no-share` 和关闭 telemetry。16 个 case 覆盖 Analysis、Monitor、Partner、Trader 的路由、前置条件、确认门禁、只读边界和 secret transport。它不访问 WEEX REST、不读取 Profile/Vault、不执行真实或模拟盘 mutation。
 
 ## 评测范围
 
+- 本地确定性 suite：18 个 case；Codex 模型 suite：16 个 case。
 - Analysis：缺字段降级、空风险输入、Replay scope 继承。
 - Monitor：显式交易模式、价格条件拒绝、token 绑定、dry-run 触发、订单基准数量。
 - Partner：七项只读目录、自然语言 regression fixture、缺 UID fail-closed。
 - Trader：确认 flag、intent/risk signature、secret transport 文档契约。
-- Repository：`skills/` 唯一事实源和离线安全。
+- Repository：`skills/` 唯一事实源、离线网络阻断和评测 catalog 完整性。
 
 本地确定性评测通过不代表 Codex、Claude、Cursor、GitHub Copilot 或 OpenClaw 的真实宿主自然语言路由已经完成验收；宿主评测需要单独的隔离 provider 和无 mutation 工具边界。

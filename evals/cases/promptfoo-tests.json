@@ -84,9 +84,21 @@
     }
   },
   {
-    "description": "repository evaluation layer has no network or mutation path",
+    "description": "repository deterministic evaluation layer has no network or mutation path",
     "vars": {
       "case_id": "repository.offline_safety"
+    }
+  },
+  {
+    "description": "repository deterministic runner blocks network egress",
+    "vars": {
+      "case_id": "repository.offline_network_guard"
+    }
+  },
+  {
+    "description": "repository deterministic runner blocks UDP egress",
+    "vars": {
+      "case_id": "repository.offline_udp_guard"
     }
   },
   {
