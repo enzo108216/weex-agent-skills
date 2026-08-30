@@ -482,6 +482,230 @@ def query_official_order_facts(
     )
 
 
+def query_official_usage_resolution(
+    *,
+    order: dict[str, Any],
+    profile_name: str,
+    api: Any | None = None,
+) -> dict[str, Any]:
+    """Resolve an uncertain submission using a bound, read-only WEEX order lookup.
+
+    A missing futures order ID cannot be queried by client ID through the official
+    API, so that case deliberately raises and remains REVIEW_REQUIRED at the
+    facade.  Spot supports ``origClientOrderId`` and can prove a missing order
+    only after the detail and complete history queries return no match.
+    """
+    module = _required_module(order.get("module"))
+    symbol = _required_text(order.get("symbol"), "symbol").upper()
+    local_order_id = _optional_text(order.get("weex_order_id"))
+    client_order_id = _required_text(order.get("client_order_id"), "client_order_id")
+    boundary = api or OfficialApiBoundary(profile_name=profile_name)
+    leg_type = str(order.get("leg_type") or "PRIMARY").upper()
+
+    detail: dict[str, Any] | None = None
+    if module == "SPOT":
+        try:
+            query: dict[str, Any] = {"orderId": local_order_id} if local_order_id else {
+                "origClientOrderId": client_order_id
+            }
+            detail = _unwrap_mapping(
+                boundary.call(
+                    module="SPOT",
+                    endpoint_key="spot.order.order_details",
+                    query=query,
+                )
+            )
+        except OfficialReadRequestFailed as exc:
+            if exc.error_code != "-2200":
+                raise
+            detail = _query_spot_resolution_history(
+                boundary=boundary,
+                symbol=symbol,
+                order_id=local_order_id,
+                client_order_id=client_order_id,
+            )
+    elif local_order_id and leg_type in {"CONDITIONAL", "TAKE_PROFIT", "STOP_LOSS"}:
+        # The plan-order list API does not provide a stable not-found error;
+        # absence or malformed pagination is therefore kept unresolved.
+        detail = _query_futures_plan_order(
+            boundary=boundary,
+            symbol=symbol,
+            plan_order_id=local_order_id,
+        )
+    elif local_order_id:
+        try:
+            detail = _unwrap_mapping(
+                boundary.call(
+                    module="FUTURES",
+                    endpoint_key="transaction.get_single_order_info",
+                    query={"orderId": local_order_id},
+                )
+            )
+        except OfficialReadRequestFailed as exc:
+            if exc.error_code != "-2200":
+                raise
+            detail = None
+    else:
+        raise ValueError("OFFICIAL_FUTURES_CLIENT_ID_QUERY_UNSUPPORTED")
+
+    if detail is None:
+        return _resolution_facts(order, outcome="RELEASED", source=f"WEEX_{module}_ORDER_NOT_FOUND")
+
+    order_id_keys = (
+        ("algoId", "orderId", "order_id")
+        if module == "FUTURES" and leg_type in {"CONDITIONAL", "TAKE_PROFIT", "STOP_LOSS"}
+        else ("orderId", "order_id", "algoId")
+    )
+    returned_order_id = _optional_text(_pick(detail, *order_id_keys))
+    if local_order_id is not None and returned_order_id != local_order_id:
+        raise ValueError("official order query returned a different order")
+    returned_client_id = _optional_text(
+        _pick(detail, "clientOrderId", "client_order_id", "clientAlgoId", "origClientOrderId")
+    )
+    if returned_client_id != client_order_id:
+        raise ValueError("official order query returned a different client order")
+    returned_symbol = _optional_text(_pick(detail, "symbol"))
+    if returned_symbol is None or returned_symbol.upper() != symbol:
+        raise ValueError("official order query returned a different symbol")
+    _validate_resolution_order_fields(detail, order, leg_type=leg_type)
+    resolved_order_id = returned_order_id or local_order_id
+    if resolved_order_id is None:
+        raise ValueError("official order query did not return an order ID")
+    return _resolution_facts(
+        order,
+        outcome="ACCEPTED",
+        source=f"WEEX_{module}_ORDER_ACCEPTED",
+        weex_order_id=resolved_order_id,
+    )
+
+
+def _validate_resolution_order_fields(
+    detail: dict[str, Any],
+    order: dict[str, Any],
+    *,
+    leg_type: str,
+) -> None:
+    """Require the official response to describe the locally recorded order."""
+    returned_side = _optional_text(_pick(detail, "side"))
+    if returned_side is None or returned_side.upper() != str(order.get("side") or "").upper():
+        raise ValueError("official order query returned a different side")
+    returned_quantity = _pick(detail, "origQty", "quantity", "qty", "executedQty")
+    if not _same_decimal_value(returned_quantity, order.get("quantity")):
+        raise ValueError("official order query returned a different quantity")
+    returned_type = _optional_text(_pick(detail, "type", "orderType", "order_type"))
+    expected_type = str(order.get("order_type") or "").upper()
+    if returned_type is None and leg_type not in {"CONDITIONAL", "TAKE_PROFIT", "STOP_LOSS"}:
+        raise ValueError("official order query did not return an order type")
+    if returned_type is not None and returned_type.upper() != expected_type:
+        raise ValueError("official order query returned a different order type")
+    expected_price = order.get("price")
+    returned_price = _pick(detail, "price", "executePrice")
+    if expected_price is not None and not _same_decimal_value(returned_price, expected_price):
+        raise ValueError("official order query returned a different price")
+
+
+def _same_decimal_value(left: Any, right: Any) -> bool:
+    left_value = _decimal(left)
+    right_value = _decimal(right)
+    return left_value is not None and right_value is not None and left_value == right_value
+
+
+def _resolution_facts(
+    order: dict[str, Any],
+    *,
+    outcome: str,
+    source: str,
+    weex_order_id: str | None = None,
+) -> dict[str, Any]:
+    fields = (
+        "usage_id",
+        "strategy_id",
+        "authorization_id",
+        "submission_group_id",
+        "leg_id",
+        "client_order_id",
+        "module",
+        "symbol",
+        "side",
+        "order_type",
+        "quantity",
+        "price",
+    )
+    facts = {key: order.get(key) for key in fields}
+    facts.update(
+        {
+            "outcome": outcome,
+            "evidence_source": source,
+            "weex_order_id": weex_order_id,
+        }
+    )
+    return facts
+
+
+def _query_spot_resolution_history(
+    *,
+    boundary: Any,
+    symbol: str,
+    order_id: str | None,
+    client_order_id: str,
+) -> dict[str, Any] | None:
+    page = 1
+    limit = 1000
+    seen_order_ids: set[str] = set()
+    matches: list[dict[str, Any]] = []
+    while True:
+        history_payload = boundary.call(
+            module="SPOT",
+            endpoint_key="spot.order.history_orders",
+            query={"symbol": symbol, "limit": limit, "page": page},
+        )
+        if not _has_rows_container(history_payload, "items", "orders"):
+            raise ValueError("official spot history query is incomplete")
+        rows = _extract_rows(
+            history_payload,
+            "items",
+            "orders",
+        )
+        for item in rows:
+            item_order_id = str(_pick(item, "orderId", "order_id") or "")
+            item_client_id = str(_pick(item, "clientOrderId", "client_order_id") or "")
+            is_target = (
+                (order_id is not None and item_order_id == order_id)
+                or (order_id is None and item_client_id == client_order_id)
+            )
+            if not is_target:
+                continue
+            if item_client_id != client_order_id:
+                raise ValueError("official order query returned a different client order")
+            if str(_pick(item, "symbol") or "").upper() != symbol:
+                raise ValueError("official order query returned a different symbol")
+            matches.append(dict(item))
+        page_order_ids = {
+            str(_pick(item, "orderId", "order_id") or "")
+            for item in rows
+            if _pick(item, "orderId", "order_id") not in (None, "")
+        }
+        if rows and not page_order_ids:
+            raise ValueError("official spot history query is incomplete")
+        new_order_ids = page_order_ids - seen_order_ids
+        seen_order_ids.update(page_order_ids)
+        if len(rows) < limit:
+            break
+        if not new_order_ids:
+            raise ValueError("official spot history query pagination did not advance")
+        page += 1
+    if len(matches) > 1:
+        raise ValueError("official spot history query returned non-unique order")
+    return matches[0] if matches else None
+
+
+def _has_rows_container(payload: Any, *keys: str) -> bool:
+    raw = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+    if isinstance(raw, list):
+        return True
+    return isinstance(raw, dict) and any(isinstance(raw.get(key), list) for key in keys)
+
+
 def _query_spot_order_facts(
     *,
     boundary: Any,
@@ -1033,4 +1257,5 @@ __all__ = [
     "OfficialRequestRejected",
     "OfficialRequestUncertain",
     "query_official_order_facts",
+    "query_official_usage_resolution",
 ]

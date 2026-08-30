@@ -325,7 +325,8 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn(PUBLISHED_REPO_URL, readme_text)
         self.assertIn(PUBLISHED_REPO_URL, repo_readme_text)
         self.assertIn(PUBLISHED_REPO_URL, zh_readme_text)
-        self.assertIn(f'{PUBLISHED_REPO_URL}.git', openclaw_script_text)
+        self.assertIn(PUBLISHED_REPO_URL, openclaw_script_text)
+        self.assertIn('readonly APPROVED_COMMIT="', openclaw_script_text)
         self.assertIn('readonly DEFAULT_BRANCH="main"', openclaw_script_text)
         self.assertNotIn("https://github.com/drgnchan/weex-trader-skill", readme_text)
         self.assertNotIn("https://github.com/drgnchan/weex-trader-skill", repo_readme_text)
@@ -351,6 +352,33 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("out-of-range or stale number", skill_text)
         self.assertIn("show the current choices again", skill_text)
         self.assertIn("reuse that saved profile for later turns in the same conversation", skill_text)
+
+    def test_automated_authorization_requires_explicit_quota_and_bounded_activation(self) -> None:
+        skill_text = SKILL.read_text(encoding="utf-8")
+        readme_text = README.read_text(encoding="utf-8")
+        root_readme_text = REPO_README.read_text(encoding="utf-8")
+        zh_readme_text = ZH_REPO_README.read_text(encoding="utf-8")
+
+        for text in (skill_text, readme_text, root_readme_text):
+            self.assertIn(
+                "Never derive `max_total_amount` from frequency, validity, target amount, "
+                "max_single_amount, balance, or expected order count.",
+                text,
+            )
+            self.assertIn(
+                "A real-trading automation may become `ACTIVE` only in the same atomic "
+                "update that includes an `UNTIL` no later than the authorization expiry",
+                text,
+            )
+            self.assertIn(
+                "If the runtime cannot update status and expiry atomically, keep the "
+                "automation `PAUSED`.",
+                text,
+            )
+
+        self.assertIn("不得根据频率、有效期、目标金额、单笔上限、余额或预计笔数推算", zh_readme_text)
+        self.assertIn("`ACTIVE` 和不晚于授权到期时间的 `UNTIL`", zh_readme_text)
+        self.assertIn("同一次原子更新中同时写入", zh_readme_text)
 
     def test_skill_documents_localized_user_facing_trading_mode_labels(self) -> None:
         skill_text = SKILL.read_text(encoding="utf-8")

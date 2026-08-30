@@ -63,7 +63,9 @@ OpenClaw 用户不要使用上面的 `npx` 命令，请改用下方的 [Git 仓�
 
 ### 自动策略授权
 
-正式版 Trader 支持用户自己维护的 Python/量化策略显式接入，不会自动识别或包装任意脚本；自动交易授权只支持 saved profile 的真实盘，不支持模拟盘。策略需要先注册稳定身份，在首次下单前请求自己的授权。重启或改名后继续复用该身份；复制策略会得到新身份，并拥有独立的授权和额度。授权范围只有五个维度：现货/合约模块、指定交易对或全部交易对、单个 leg 的保守 U 估算上限、有效期内累计 U 估算上限，以及明确的有效期；不额外限制买卖方向、订单类型、最小下单金额或订单次数。自然语言请求缺少有效期时必须先向用户确认；JSON CLI 的 `valid_hours` 为必填项，必须大于 0 且不能超过 720 小时（30 天）。授权必须绑定原始申请并使用 `--confirm-live` 才能生效。待确认申请本身没有交易权限，并会在 15 分钟后失效；授权有效期从批准成功时开始计算。修改任一授权维度都需要重新申请并明确授权，新授权生效后会替换该策略原有的活动授权。
+正式版 Trader 支持用户自己维护的 Python/量化策略显式接入，不会自动识别或包装任意脚本；自动交易授权只支持 saved profile 的真实盘，不支持模拟盘。策略需要先注册稳定身份，在首次下单前请求自己的授权。重启或改名后继续复用该身份；复制策略会得到新身份，并拥有独立的授权和额度。授权范围只有五个维度：现货/合约模块、指定交易对或全部交易对、单个 leg 的保守 U 估算上限、有效期内累计 U 估算上限，以及明确的有效期；不额外限制买卖方向、订单类型、最小下单金额或订单次数。自然语言请求缺少有效期时必须先向用户确认；累计额度未明确时也必须暂停并单独询问，不得根据频率、有效期、目标金额、单笔上限、余额或预计笔数推算 `max_total_amount`；最终确认中的累计额度必须与用户输入一致。JSON CLI 的 `valid_hours` 为必填项，必须大于 0 且不能超过 720 小时（30 天）。授权必须绑定原始申请并使用 `--confirm-live` 才能生效。待确认申请本身没有交易权限，并会在 15 分钟后失效；授权有效期从批准成功时开始计算。修改任一授权维度都需要重新申请并明确授权，新授权生效后会替换该策略原有的活动授权。
+
+真实盘自动任务只有在同一次原子更新中同时写入 `ACTIVE` 和不晚于授权到期时间的 `UNTIL` 后才能运行；不得先激活无到期时间的循环。如果运行时不能原子更新状态和到期时间，必须保持 `PAUSED`。
 
 用户确认授权时需要理解：
 
@@ -174,7 +176,7 @@ OpenClaw 统一保留一个固定 Git 仓库，并通过软链接暴露每个 sk
 bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
 ```
 
-固定仓库不存在时，脚本会先 clone。默认使用公开仓库的 `main` 分支；如果确实要使用其他来源，可设置 `WEEX_OPENCLAW_REPO_URL` 或 `WEEX_OPENCLAW_BRANCH`。已存在时，脚本会 fetch 并切换到所选分支，再执行 `git pull --ff-only`。随后脚本会创建或刷新四个 skill 软链接，把稳定更新入口安装为 `~/bin/update-weex-openclaw-skills.sh`，并运行：
+脚本会从官方仓库取得批准的固定 release commit `e10c2089550159afb7247271d1041d9b415145cd`，生产模式不会跟随可变分支。它先在临时目录校验 Git 对象完整性、四个 skill 和无 submodule，再切换软链接并运行 OpenClaw 检查；稳定更新副本保存在 `~/.openclaw/update-weex-openclaw-skills.sh`，拉取的 checkout 不能覆盖更新入口。任一步失败都会恢复旧 checkout 和旧链接。
 
 ```bash
 openclaw skills list --eligible
@@ -188,14 +190,20 @@ openclaw skills check
 ~/bin/update-weex-openclaw-skills.sh
 ```
 
-如果链接目标位置已经存在真实文件或目录，脚本会停止，不会覆盖用户数据；请人工处理冲突后重试。如需使用其他仓库、分支或本地目录，可在本次调用中设置 `WEEX_OPENCLAW_REPO_URL`、`WEEX_OPENCLAW_BRANCH` 或 `WEEX_OPENCLAW_REPO_DIR`。
-
-需要回滚时，直接在固定仓库切换到已知可用的旧 commit，软链接无需重建：
+如果链接目标位置已经存在真实文件或目录，脚本会停止，不会覆盖用户数据；请人工处理冲突后重试。其他仓库或分支只允许显式开发模式：
 
 ```bash
-cd ~/.openclaw/skill-repos/weex-agent-skills
-git checkout <旧commit>
-openclaw skills check
+WEEX_OPENCLAW_REPO_URL=/path/to/checkout \
+WEEX_OPENCLAW_BRANCH=feature/my-branch \
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh --dev
+```
+
+`WEEX_OPENCLAW_REPO_DIR`、`WEEX_OPENCLAW_SKILLS_DIR` 和 `WEEX_OPENCLAW_BIN_LINK` 仍可用于选择本地安装目录。
+
+校验失败时脚本已经自动保留旧 checkout 和旧链接；需要再次回滚或恢复时，重新运行稳定更新入口：
+
+```bash
+bash ~/.openclaw/update-weex-openclaw-skills.sh
 ```
 
 最后新建一个 OpenClaw 任务，执行只读 smoke test：

@@ -612,6 +612,15 @@ class AutoTradeSnapshotTests(unittest.TestCase):
                 valuation_source="fixture",
                 now=now,
             )
+            state.record_order(
+                usage_id=reserved["usage_id"],
+                weex_order_id=None,
+                side="BUY",
+                order_type="LIMIT",
+                quantity="1",
+                price="10",
+                now=now,
+            )
             review = state.reserve_usage(
                 strategy_id=strategy["strategy_id"],
                 authorization_id=authorization["authorization_id"],
@@ -620,6 +629,15 @@ class AutoTradeSnapshotTests(unittest.TestCase):
                 module="SPOT",
                 symbol="BTCUSDT",
                 valuation_source="fixture",
+                now=now,
+            )
+            state.record_order(
+                usage_id=review["usage_id"],
+                weex_order_id=None,
+                side="BUY",
+                order_type="LIMIT",
+                quantity="1",
+                price="10",
                 now=now,
             )
             state.settle_usage(
@@ -715,19 +733,28 @@ class AutoTradeSnapshotTests(unittest.TestCase):
                     confirm_live=True,
                     now=datetime(2026, 8, 16, 17, 6, tzinfo=UTC),
                 )
+            def release_evidence(usage_id):
+                order = state.get_order_for_usage(usage_id=usage_id)
+                return state_module.build_verified_usage_evidence(
+                    {
+                        "outcome": "RELEASED",
+                        "evidence_source": "WEEX_SPOT_ORDER_NOT_FOUND",
+                        "weex_order_id": None,
+                        **{key: order[key] for key in (
+                            "usage_id", "strategy_id", "authorization_id", "submission_group_id",
+                            "leg_id", "client_order_id", "module", "symbol", "side", "order_type",
+                            "quantity", "price",
+                        )},
+                    }
+                )
+
             resolved_reserved = state.resolve_uncertain_usage(
-                usage_id=reserved["usage_id"],
-                outcome="RELEASED",
-                evidence_source="manual-official-order-query:no-order",
-                weex_order_id=None,
+                verified_evidence=release_evidence(reserved["usage_id"]),
                 confirm_live=True,
                 now=datetime(2026, 8, 16, 17, 7, tzinfo=UTC),
             )
             resolved_review = state.resolve_uncertain_usage(
-                usage_id=review["usage_id"],
-                outcome="RELEASED",
-                evidence_source="manual-official-order-query:no-order",
-                weex_order_id=None,
+                verified_evidence=release_evidence(review["usage_id"]),
                 confirm_live=True,
                 now=datetime(2026, 8, 16, 17, 7, tzinfo=UTC),
             )
@@ -3595,9 +3622,28 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
                 price="10",
             )
             state.settle_usage(usage_id=usage["usage_id"], outcome="REVIEW_REQUIRED")
+            def provider(order, _profile):
+                return {
+                    "outcome": "RELEASED",
+                    "evidence_source": "WEEX_SPOT_ORDER_NOT_FOUND",
+                    "weex_order_id": None,
+                    "usage_id": order["usage_id"],
+                    "strategy_id": order["strategy_id"],
+                    "authorization_id": order["authorization_id"],
+                    "submission_group_id": order["submission_group_id"],
+                    "leg_id": order["leg_id"],
+                    "client_order_id": order["client_order_id"],
+                    "module": order["module"],
+                    "symbol": order["symbol"],
+                    "side": order["side"],
+                    "order_type": order["order_type"],
+                    "quantity": order["quantity"],
+                    "price": order["price"],
+                }
             facade = cli_module.AutoTradeFacade(
                 state,
                 profile_resolver=lambda name: profile,
+                usage_resolution_provider=provider,
             )
 
             resolved = facade.execute(
@@ -3606,8 +3652,6 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
                     "profile": profile.name,
                     "strategy_id": strategy["strategy_id"],
                     "usage_id": usage["usage_id"],
-                    "outcome": "RELEASED",
-                    "evidence_source": "WEEX_READ_ONLY_ORDER_NOT_FOUND",
                 },
                 confirm_live=True,
             )
@@ -3618,6 +3662,150 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
                 confirm_live=True,
             )
             self.assertEqual(enabled["status"], "AUTOMATIC_TRADING_ALREADY_ENABLED")
+
+    def test_resolve_auto_usage_rejects_caller_supplied_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, _authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            usage = state.reserve_usage(
+                strategy_id=strategy["strategy_id"],
+                authorization_id=_authorization["authorization_id"],
+                idempotency_key="forged-evidence",
+                estimated_amount_u="10",
+                module="SPOT",
+                symbol="BTCUSDT",
+                valuation_source="TEST",
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+            )
+            with self.assertRaisesRegex(cli_module.FacadeError, "unknown field"):
+                facade.execute(
+                    "resolve-auto-usage",
+                    {
+                        "profile": profile.name,
+                        "strategy_id": strategy["strategy_id"],
+                        "usage_id": usage["usage_id"],
+                        "outcome": "RELEASED",
+                        "evidence_source": "attacker-controlled",
+                    },
+                    confirm_live=True,
+                )
+            self.assertEqual(state.get_usage(usage_id=usage["usage_id"])["status"], "RESERVED")
+
+    def test_verified_usage_evidence_rejects_cross_module_source(self) -> None:
+        state_module = load_state_module()
+        with self.assertRaisesRegex(ValueError, "UNTRUSTED_USAGE_EVIDENCE"):
+            state_module.build_verified_usage_evidence(
+                {
+                    "outcome": "RELEASED",
+                    "evidence_source": "WEEX_FUTURES_ORDER_NOT_FOUND",
+                    "weex_order_id": None,
+                    "usage_id": "use-cross-module",
+                    "strategy_id": "strategy-1",
+                    "authorization_id": "auth-1",
+                    "submission_group_id": "group-1",
+                    "leg_id": "leg-1",
+                    "client_order_id": "client-cross-module",
+                    "module": "SPOT",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "quantity": "1",
+                    "price": "10",
+                }
+            )
+
+    def test_resolve_auto_usage_keeps_review_when_official_query_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            usage = state.reserve_usage(
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="query-timeout",
+                estimated_amount_u="10",
+                module="SPOT",
+                symbol="BTCUSDT",
+                valuation_source="TEST",
+            )
+            state.record_order(
+                usage_id=usage["usage_id"],
+                weex_order_id=None,
+                side="BUY",
+                order_type="LIMIT",
+                quantity="1",
+                price="10",
+            )
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                usage_resolution_provider=Mock(side_effect=TimeoutError("WEEX timeout")),
+            )
+            with self.assertRaisesRegex(cli_module.FacadeError, "official order query"):
+                facade.execute(
+                    "resolve-auto-usage",
+                    {
+                        "profile": profile.name,
+                        "strategy_id": strategy["strategy_id"],
+                        "usage_id": usage["usage_id"],
+                    },
+                    confirm_live=True,
+                )
+            self.assertEqual(state.get_usage(usage_id=usage["usage_id"])["status"], "REVIEW_REQUIRED")
+
+    def test_resolve_auto_usage_rejects_release_when_order_mapping_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                Path(tempdir)
+            )
+            usage = state.reserve_usage(
+                strategy_id=strategy["strategy_id"],
+                authorization_id=authorization["authorization_id"],
+                idempotency_key="mapped-order-release",
+                estimated_amount_u="10",
+                module="SPOT",
+                symbol="BTCUSDT",
+                valuation_source="TEST",
+            )
+            order = state.record_order(
+                usage_id=usage["usage_id"],
+                weex_order_id="weex-known-order",
+                side="BUY",
+                order_type="LIMIT",
+                quantity="1",
+                price="10",
+            )
+            state.settle_usage(usage_id=usage["usage_id"], outcome="REVIEW_REQUIRED")
+            facts = {
+                "outcome": "RELEASED",
+                "evidence_source": "WEEX_SPOT_ORDER_NOT_FOUND",
+                "weex_order_id": None,
+                **{key: order[key] for key in (
+                    "usage_id", "strategy_id", "authorization_id", "submission_group_id",
+                    "leg_id", "client_order_id", "module", "symbol", "side", "order_type",
+                    "quantity", "price",
+                )},
+            }
+            facade = cli_module.AutoTradeFacade(
+                state,
+                profile_resolver=lambda name: profile,
+                usage_resolution_provider=Mock(return_value=facts),
+            )
+            with self.assertRaisesRegex(cli_module.FacadeError, "ORDER_MAPPING_CONFLICT"):
+                facade.execute(
+                    "resolve-auto-usage",
+                    {
+                        "profile": profile.name,
+                        "strategy_id": strategy["strategy_id"],
+                        "usage_id": usage["usage_id"],
+                    },
+                    confirm_live=True,
+                )
+            self.assertEqual(state.get_usage(usage_id=usage["usage_id"])["status"], "REVIEW_REQUIRED")
 
 
 class AutoTradeOfficialRuntimeTests(unittest.TestCase):
@@ -4019,6 +4207,150 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
         self.assertEqual(partial["reconciliation_status"], "PARTIAL")
         self.assertIsNone(partial["fee_amount"])
         self.assertIsNone(partial["fee_asset"])
+
+    def test_official_usage_resolution_binds_spot_order_and_client_identity(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        api = self.FakeApi(
+            {
+                ("SPOT", "spot.order.order_details"): {
+                    "orderId": "s-resolution-1",
+                    "clientOrderId": "client-resolution-1",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "origQty": "1",
+                    "price": "10",
+                    "status": "NEW",
+                }
+            }
+        )
+        order = {
+            "usage_id": "use-resolution-1",
+            "strategy_id": "strategy-1",
+            "authorization_id": "auth-1",
+            "submission_group_id": "group-1",
+            "leg_id": "leg-1",
+            "client_order_id": "client-resolution-1",
+            "weex_order_id": "s-resolution-1",
+            "module": "SPOT",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": "1",
+            "price": "10",
+        }
+        facts = runtime_module.query_official_usage_resolution(
+            order=order,
+            profile_name="strategy-live",
+            api=api,
+        )
+        self.assertEqual(facts["outcome"], "ACCEPTED")
+        self.assertEqual(facts["evidence_source"], "WEEX_SPOT_ORDER_ACCEPTED")
+        self.assertEqual(facts["weex_order_id"], "s-resolution-1")
+        self.assertEqual(api.calls[0]["query"], {"orderId": "s-resolution-1"})
+        self.assertTrue(all(not call["mutating"] for call in api.calls))
+
+    def test_official_usage_resolution_proves_spot_missing_client_order_only_after_history_scan(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        api = self.FakeApi(
+            {
+                ("SPOT", "spot.order.order_details"): runtime_module.OfficialReadRequestFailed(
+                    error_code="-2200", error_message="Order does not exist"
+                ),
+                ("SPOT", "spot.order.history_orders"): [],
+            }
+        )
+        order = {
+            "usage_id": "use-resolution-2",
+            "strategy_id": "strategy-1",
+            "authorization_id": "auth-1",
+            "submission_group_id": "group-1",
+            "leg_id": "leg-1",
+            "client_order_id": "client-resolution-2",
+            "weex_order_id": None,
+            "module": "SPOT",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "quantity": "1",
+            "price": "10",
+        }
+        facts = runtime_module.query_official_usage_resolution(
+            order=order,
+            profile_name="strategy-live",
+            api=api,
+        )
+        self.assertEqual(facts["outcome"], "RELEASED")
+        self.assertEqual(facts["evidence_source"], "WEEX_SPOT_ORDER_NOT_FOUND")
+        self.assertIsNone(facts["weex_order_id"])
+        self.assertEqual(api.calls[1]["query"], {"symbol": "BTCUSDT", "limit": 1000, "page": 1})
+
+    def test_official_usage_resolution_rejects_non_advancing_spot_history_pagination(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        repeated_page = [
+            {
+                "orderId": f"archived-{index}",
+                "clientOrderId": f"other-client-{index}",
+                "symbol": "BTCUSDT",
+            }
+            for index in range(1000)
+        ]
+        api = self.FakeApi(
+            {
+                ("SPOT", "spot.order.order_details"): runtime_module.OfficialReadRequestFailed(
+                    error_code="-2200", error_message="Order does not exist"
+                ),
+                ("SPOT", "spot.order.history_orders"): repeated_page,
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "pagination did not advance"):
+            runtime_module.query_official_usage_resolution(
+                order={
+                    "usage_id": "use-resolution-pagination",
+                    "strategy_id": "strategy-1",
+                    "authorization_id": "auth-1",
+                    "submission_group_id": "group-1",
+                    "leg_id": "leg-1",
+                    "client_order_id": "client-resolution-pagination",
+                    "weex_order_id": None,
+                    "module": "SPOT",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "quantity": "1",
+                    "price": "10",
+                },
+                profile_name="strategy-live",
+                api=api,
+            )
+        self.assertEqual(api.calls[-1]["query"], {"symbol": "BTCUSDT", "limit": 1000, "page": 2})
+
+    def test_official_usage_resolution_keeps_futures_without_order_id_unresolved(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        with self.assertRaisesRegex(ValueError, "CLIENT_ID_QUERY_UNSUPPORTED"):
+            runtime_module.query_official_usage_resolution(
+                order={
+                    "usage_id": "use-resolution-3",
+                    "strategy_id": "strategy-1",
+                    "authorization_id": "auth-1",
+                    "submission_group_id": "group-1",
+                    "leg_id": "leg-1",
+                    "client_order_id": "client-resolution-3",
+                    "weex_order_id": None,
+                    "module": "FUTURES",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "quantity": "1",
+                    "price": "10",
+                },
+                profile_name="strategy-live",
+                api=self.FakeApi({}),
+            )
 
     def test_spot_reconciliation_falls_back_to_history_after_archived_order_error(self) -> None:
         import weex_auto_trade_runtime as runtime_module

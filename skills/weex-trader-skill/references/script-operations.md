@@ -382,17 +382,17 @@ python3 scripts/weex_auto_trade.py restore-state --input @restore-state.json --p
 
 A successful response uses `status=STATE_RESTORED_DISABLED`, reports how many ACTIVE authorizations were revoked, how many pending requests were rejected, how many RESERVED/REVIEW_REQUIRED records need manual reconciliation, and the owner-only pre-restore evidence path. The persistent `auto-trade/automatic-trading.disabled` file blocks both single-leg and submission-group reservations. Do not delete or edit it manually. A newly created authorization does not clear this latch by itself. Before explicit enable, grant/ensure/list still show the truthful authorization `status=ACTIVE`, but `next_action` is `RESOLVE_AUTO_USAGE_AND_ENABLE_AUTO_TRADING_AFTER_RESTORE` while unresolved usage remains and `ENABLE_AUTO_TRADING_AFTER_RESTORE` after it is cleared. Only successful explicit enable changes it to `SUBMIT_ALLOWED`. A `SUBMISSION_STATE_UNCERTAIN` latch instead returns `INSPECT_AND_RECONCILE_MANUALLY`.
 
-For each unresolved usage, first obtain explicit read-only evidence that the order was accepted or was not created. Then resolve it once:
+For each unresolved usage, run `resolve-auto-usage` with only the usage identity below. The facade performs the official read-only WEEX query itself; it rejects caller-supplied outcome, evidence source, and order ID fields. Only a complete, unique result bound to the local usage and order mapping can resolve the record. A timeout, disconnect, ambiguous result, mismatched client/order ID, or unsupported Futures client-ID lookup remains `REVIEW_REQUIRED`.
 
 ```json
-{"profile":"main","strategy_id":"<strategy_id>","usage_id":"<usage_id>","outcome":"RELEASED","evidence_source":"WEEX_READ_ONLY_ORDER_NOT_FOUND"}
+{"profile":"main","strategy_id":"<strategy_id>","usage_id":"<usage_id>"}
 ```
 
 ```bash
 python3 scripts/weex_auto_trade.py resolve-auto-usage --input @resolve-auto-usage.json --confirm-live --pretty
 ```
 
-`ACCEPTED` resolution additionally requires the verified `weex_order_id`; `RELEASED` forbids it. After all unresolved records are handled, at least one post-switch authorization is ACTIVE, and no pre-switch or logically expired authorization remains ACTIVE, explicitly clear the restore latch:
+The official provider chooses `ACCEPTED` only when the matching WEEX order is proven and chooses `RELEASED` only when the matching order is definitively absent; those fields are never accepted from JSON. After all unresolved records are handled, at least one post-switch authorization is ACTIVE, and no pre-switch or logically expired authorization remains ACTIVE, explicitly clear the restore latch:
 
 ```json
 {"profile":"main"}

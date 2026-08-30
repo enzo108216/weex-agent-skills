@@ -63,7 +63,9 @@ Example prompts:
 
 ### Automated strategy authorization
 
-The formal Trader implementation supports explicit integration by user-maintained Python or quantitative strategies. It does not discover or wrap arbitrary scripts, and automated authorization is available only for saved-profile real trading, not demo trading. Each strategy registers a stable identity and requests its own authorization before its first order. Restarts and renames reuse that identity; a copied strategy receives a new identity and an independent authorization and quota. The authorization has five scope dimensions only: Spot/Futures modules, selected symbols or all symbols, the per-leg conservative U maximum, the cumulative U maximum during the validity period, and an explicit validity. It does not add separate restrictions for side, order type, minimum order amount, or order count. Natural-language requests that omit validity must be clarified; the JSON CLI requires `valid_hours`, which must be greater than zero and cannot exceed 720 hours (30 days). Granting requires the exact request and `--confirm-live`. A pending request grants no trading authority and expires after 15 minutes; the authorization validity starts when the grant succeeds. Changing any scope dimension requires a new request and explicit grant, which replaces the strategy's previous active authorization.
+The formal Trader implementation supports explicit integration by user-maintained Python or quantitative strategies. It does not discover or wrap arbitrary scripts, and automated authorization is available only for saved-profile real trading, not demo trading. Each strategy registers a stable identity and requests its own authorization before its first order. Restarts and renames reuse that identity; a copied strategy receives a new identity and an independent authorization and quota. The authorization has five scope dimensions only: Spot/Futures modules, selected symbols or all symbols, the per-leg conservative U maximum, the cumulative U maximum during the validity period, and an explicit validity. It does not add separate restrictions for side, order type, minimum order amount, or order count. Natural-language requests that omit validity must be clarified; the JSON CLI requires `valid_hours`, which must be greater than zero and cannot exceed 720 hours (30 days). Never derive `max_total_amount` from frequency, validity, target amount, max_single_amount, balance, or expected order count. A cumulative quota omitted from a natural-language request requires a separate user choice; the exact value must appear in the final confirmation. Granting requires the exact request and `--confirm-live`. A pending request grants no trading authority and expires after 15 minutes; the authorization validity starts when the grant succeeds. Changing any scope dimension requires a new request and explicit grant, which replaces the strategy's previous active authorization.
+
+A real-trading automation may become `ACTIVE` only in the same atomic update that includes an `UNTIL` no later than the authorization expiry; never activate an unbounded recurrence, even temporarily. If the runtime cannot update status and expiry atomically, keep the automation `PAUSED`.
 
 What approval means:
 
@@ -174,7 +176,7 @@ From a checkout containing this repository version, run:
 bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh
 ```
 
-The script clones the repository when the fixed checkout is absent. By default it uses the published `main` branch; set `WEEX_OPENCLAW_REPO_URL` or `WEEX_OPENCLAW_BRANCH` when you intentionally need another source. For an existing checkout it fetches the selected branch, checks it out, and runs `git pull --ff-only`. It then creates or refreshes all four skill links, installs the stable updater link at `~/bin/update-weex-openclaw-skills.sh`, and runs:
+The script clones the official repository at the pinned approved release commit `e10c2089550159afb7247271d1041d9b415145cd`; it never follows a moving branch in production. It stages and validates the checkout (Git object integrity, expected skills, and no submodules), switches the four links only after validation, runs the OpenClaw checks, and keeps a stable updater copy at `~/.openclaw/update-weex-openclaw-skills.sh` so a fetched checkout cannot replace the updater itself. If any check fails, the previous checkout and links are restored.
 
 ```bash
 openclaw skills list --eligible
@@ -188,14 +190,20 @@ Future updates only need:
 ~/bin/update-weex-openclaw-skills.sh
 ```
 
-The script never replaces a real file or directory at a link destination. Resolve that conflict manually and rerun it. To use another repository, branch, or local directory, set `WEEX_OPENCLAW_REPO_URL`, `WEEX_OPENCLAW_BRANCH`, or `WEEX_OPENCLAW_REPO_DIR` for that invocation.
-
-To roll back, check out a known-good commit in the fixed repository; the links do not need to be recreated:
+The script never replaces a real file or directory at a link destination. Resolve that conflict manually and rerun it. Non-official repositories or branches are for explicit development use only:
 
 ```bash
-cd ~/.openclaw/skill-repos/weex-agent-skills
-git checkout <old-commit>
-openclaw skills check
+WEEX_OPENCLAW_REPO_URL=/path/to/checkout \
+WEEX_OPENCLAW_BRANCH=feature/my-branch \
+bash skills/weex-trader-skill/scripts/update_openclaw_skills.sh --dev
+```
+
+`WEEX_OPENCLAW_REPO_DIR`, `WEEX_OPENCLAW_SKILLS_DIR`, and `WEEX_OPENCLAW_BIN_LINK` may still select the local installation paths.
+
+To roll back, restore the previous checkout and rerun the updater with the approved release policy; failed validation already leaves the previous checkout and links untouched:
+
+```bash
+bash ~/.openclaw/update-weex-openclaw-skills.sh
 ```
 
 Finally, start a new OpenClaw task and run this read-only smoke test:

@@ -32,17 +32,15 @@
   },
   "file_guide": {
     "scripts/update_openclaw_skills.sh": {
-      "role": "Maintain the fixed OpenClaw Git checkout, create fail-closed symlinks for all four WEEX skills, install the stable user update link, and run OpenClaw eligibility checks.",
+      "role": "Maintain the official OpenClaw Git checkout at an approved pinned commit, validate integrity and expected skills, atomically refresh fail-closed symlinks, keep a stable updater copy outside the checkout, and run OpenClaw eligibility checks.",
       "when": [
         "installing WEEX skills for OpenClaw from the maintained Git checkout",
         "updating or repairing OpenClaw WEEX skill symlinks",
         "validating OpenClaw skill eligibility after a Git update"
       ],
       "surface": [
-        "WEEX_OPENCLAW_REPO_URL",
         "WEEX_OPENCLAW_REPO_DIR",
         "WEEX_OPENCLAW_SKILLS_DIR",
-        "WEEX_OPENCLAW_BRANCH",
         "WEEX_OPENCLAW_BIN_LINK"
       ]
     },
