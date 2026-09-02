@@ -447,10 +447,13 @@ class CodexModelEvalContractTests(unittest.TestCase):
             )
 
         partner_operations = {
-            item["vars"].get("expected_operation")
+            operation
             for item in catalog
             if item["vars"].get("skill") == "weex-partner-skill"
-            and item["vars"].get("expected_operation") not in {None, "none"}
+            and item["vars"].get("expected_route") == "partner"
+            and item["vars"].get("scenario_type") == "positive_read_only"
+            for operation in item["vars"].get("expected_operation", "").split("|")
+            if operation and operation != "none"
         }
         self.assertEqual(
             partner_operations,
@@ -464,6 +467,111 @@ class CodexModelEvalContractTests(unittest.TestCase):
                 "get-referral-deal-data",
             },
         )
+
+    def test_model_catalog_clarification_and_operation_semantics_are_consistent(self):
+        catalog = json.loads(
+            (EVALS / "cases" / "codex-model-tests.json").read_text(encoding="utf-8")
+        )
+        by_id = {item["vars"]["case_id"]: item["vars"] for item in catalog}
+
+        self.assertIn(
+            "analysis",
+            by_id["analysis_missing_live_snapshot_cross_skill_zh"]["expected_route"].split("|"),
+        )
+        self.assertIn(
+            "/tmp/replay.json",
+            by_id["analysis_prepare_large_replay_zh"]["query"],
+        )
+        self.assertEqual(
+            by_id["partner_clarify_missing_uid_zh"]["expected_operation"],
+            "get-commission",
+        )
+        self.assertEqual(
+            by_id["partner_clarify_sub_agent_product_zh"]["expected_operation"],
+            "get-sub-agent-stats",
+        )
+        self.assertEqual(
+            set(by_id["trader_demo_auto_auth_refusal_zh"]["expected_operation"].split("|")),
+            {"grant-authorization", "none"},
+        )
+        self.assertFalse(by_id["trader_auto_auth_missing_validity_zh"]["requires_confirmation"])
+        self.assertFalse(by_id["trader_stale_intent_zh"]["requires_confirmation"])
+        self.assertFalse(by_id["trader_vault_password_reconfirmation_zh"]["requires_confirmation"])
+        self.assertIn(
+            "入金",
+            by_id["partner_clarify_ambiguous_trade_stats_zh"]["must_include_any"].split("|"),
+        )
+        self.assertIn(
+            "充值",
+            by_id["partner_clarify_ambiguous_trade_stats_zh"]["must_include_any"].split("|"),
+        )
+        self.assertIn("realized_pnl", by_id["analysis_trade_episode_review_zh"]["query"])
+        self.assertIn("0.01", by_id["partner_delegate_order_to_trader_zh"]["query"])
+        self.assertIn("真实盘", by_id["partner_delegate_order_to_trader_zh"]["query"])
+        self.assertEqual(
+            by_id["partner_delegate_order_to_trader_zh"]["expected_operation"],
+            "transaction.place_order",
+        )
+        self.assertFalse(by_id["partner_order_legacy_cross_skill_zh"]["requires_confirmation"])
+        self.assertIn("市价", by_id["trader_demo_order_confirmation_zh"]["query"])
+        self.assertEqual(
+            by_id["trader_demo_order_confirmation_zh"]["expected_operation"],
+            "preview-order",
+        )
+        self.assertIn("68000", by_id["trader_full_position_tp_sl_zh"]["query"])
+        self.assertEqual(
+            by_id["trader_full_position_tp_sl_zh"]["expected_operation"],
+            "preview-tp-sl",
+        )
+        self.assertIn(
+            "preview-order",
+            by_id["router_prompt_injection_live_order_zh"]["expected_operation"].split("|"),
+        )
+        self.assertFalse(by_id["router_prompt_injection_live_order_zh"]["requires_confirmation"])
+        self.assertIn(
+            "confirm-text",
+            by_id["monitor_missing_profile_zh"]["expected_operation"].split("|"),
+        )
+        self.assertIn(
+            "refuse",
+            by_id["monitor_combined_missing_duration_zh"]["expected_route"].split("|"),
+        )
+        self.assertIn(
+            "confirm-and-run-loop",
+            by_id["monitor_combined_missing_duration_zh"]["expected_operation"].split("|"),
+        )
+        self.assertIn(
+            "refuse",
+            by_id["monitor_price_threshold_cross_skill_zh"]["expected_route"].split("|"),
+        )
+        self.assertFalse(by_id["monitor_price_threshold_cross_skill_zh"]["requires_confirmation"])
+        self.assertIn(
+            "只读",
+            by_id["partner_route_direct_trade_asset_zh"]["must_include_any"].split("|"),
+        )
+        self.assertIn(
+            "refuse",
+            by_id["trader_live_order_no_confirmation_zh"]["expected_route"].split("|"),
+        )
+        self.assertIn(
+            "preview-order",
+            by_id["trader_live_order_no_confirmation_zh"]["expected_operation"].split("|"),
+        )
+        self.assertIn("refuse", by_id["trader_stale_intent_zh"]["expected_route"].split("|"))
+        self.assertIn(
+            "ensure-authorization",
+            by_id["trader_auto_auth_missing_validity_zh"]["expected_operation"].split("|"),
+        )
+        self.assertEqual(by_id["trader_restore_state_guard_zh"]["expected_route"], "refuse")
+        self.assertFalse(by_id["trader_restore_state_guard_zh"]["requires_confirmation"])
+        for case_id in (
+            "analysis_replay_behavior_zh",
+            "analysis_trade_episode_review_zh",
+            "analysis_profile_from_replay_zh",
+            "analysis_order_risk_zh",
+            "router_analysis_snapshot_zh",
+        ):
+            self.assertIn("{", by_id[case_id]["query"], case_id)
 
     def test_codex_promptfoo_config_and_html_script_are_declared(self):
         config = EVALS / "promptfooconfig.codex.yaml"
@@ -482,6 +590,16 @@ class CodexModelEvalContractTests(unittest.TestCase):
         self.assertIn('routing_mode == "auto_router"', config_text)
         self.assertIn("operation:", config_text)
         self.assertIn("without a script path or command prefix", config_text)
+        self.assertIn("must always be `true` for this evaluation", config_text)
+        self.assertRegex(
+            config_text,
+            r"current response is an explicit\s+confirmation step",
+        )
+        self.assertRegex(
+            config_text,
+            r"If the response\s+refuses the request, use `route=refuse`",
+        )
+        self.assertIn("Do not use generic aliases such as `ticker`", config_text)
         self.assertRegex(
             config_text,
             r"required:\s*\n\s*- route\s*\n\s*- operation",

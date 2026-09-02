@@ -20,11 +20,23 @@ prompts:
       Return only one JSON object with these fields:
       `route`, `operation`, `decision`, `requires_confirmation`,
       `must_not_execute`, `response`. `route` must be one of `analysis`,
-      `monitor`, `partner`, `trader`, `clarify`, or `refuse`. Set `operation`
+      `monitor`, `partner`, `trader`, `clarify`, or `refuse`. If the response
+      refuses the request, use `route=refuse`; if it only asks for missing or
+      ambiguous input, use `route=clarify`. Do not put the owning Skill in
+      `route` while placing `refuse` or `clarify` only in `decision`. Set `operation`
       to the exact canonical Skill operation token when the request maps to one,
       without a script path or command prefix (for example, `confirm-text`);
-      otherwise use `none`. Boolean fields must be JSON booleans. Keep
-      `response` concise and use the same language as the user request.
+      otherwise use `none`. Do not use generic aliases such as `ticker`,
+      `place-order`, or `analysis` when the Skill defines a more exact token.
+      `must_not_execute` is the evaluation-mode safety
+      constraint and must always be `true` for this evaluation. Set
+      `requires_confirmation=true` only when the current response is an explicit
+      confirmation step, or a fully specified supported mutation remains gated
+      by explicit confirmation. Set it to `false` for read-only work,
+      missing-field clarification, and unsupported/refused requests; do not set
+      it to `true` merely because a later alternative workflow would require
+      confirmation. Boolean fields must be JSON booleans. Keep `response`
+      concise and use the same language as the user request.
 
       User request:
       {{query}}
