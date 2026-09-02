@@ -81,16 +81,18 @@ node evals/scripts/run_codex_promptfoo.cjs export eval \
 
 - `evals/artifacts/codex-model-eval.html`：可直接在浏览器打开的完整 Promptfoo 报告。
 - `evals/artifacts/codex-model-eval.json`：同一 eval ID 的机器可读结果。
+- HTML 汇总表默认只保留 `case_id`、路由模式、query、预期 route、预期 operation 和模型输出；评分辅助字段按列名隐藏，不依赖固定列序号，因此新增变量不会再造成表头错位。
 
-模型评测使用只读工作区、禁用网络、`approval_policy=never`、最大并发 2、默认重复 3 次、`--no-cache`、`--no-share` 和关闭 telemetry。16 个 case 覆盖 Analysis、Monitor、Partner、Trader 的路由、前置条件、确认门禁、只读边界和 secret transport。它不访问 WEEX REST、不读取 Profile/Vault、不执行真实或模拟盘 mutation。
+模型评测使用只读工作区、禁用网络、`approval_policy=never`、最大并发 2、默认重复 3 次、`--no-cache`、`--no-share` 和关闭 telemetry。目录包含 63 个不同 query；完整默认运行会产生 189 条结果。`guided_policy` case 检查已选 Skill 的策略遵循，`auto_router` case 不提供 Skill 提示并要求从 `AGENTS.md` 独立路由。每条输出同时评分 route、canonical operation、确认门禁和禁止执行边界。它不访问 WEEX REST、不读取 Profile/Vault、不执行真实或模拟盘 mutation。
 
 ## 评测范围
 
-- 本地确定性 suite：18 个 case；Codex 模型 suite：16 个 case。
-- Analysis：缺字段降级、空风险输入、Replay scope 继承。
-- Monitor：显式交易模式、价格条件拒绝、token 绑定、dry-run 触发、订单基准数量。
-- Partner：七项只读目录、自然语言 regression fixture、缺 UID fail-closed。
-- Trader：确认 flag、intent/risk signature、secret transport 文档契约。
+- 本地确定性 suite：18 个 case；Codex 模型 suite：63 个不同 query（10 Analysis、12 Monitor、18 Partner、15 Trader、8 auto-router）。
+- Analysis：八个分析入口、缺失实时快照、交易模式保留和投资建议对抗请求。
+- Monitor：仓位/订单基线 PnL、缺 profile/模式/方向、数量冲突、有限时长、合并确认、价格条件跨 Skill、现货拒绝、list/cancel。
+- Partner：17 条自然语言契约完整映射、七项只读 operation、缺字段、越权/写操作拒绝和 Trader 委派。
+- Trader：合约/现货行情、私有查询模式、真实/模拟盘确认、撤单、全仓 TP/SL、过期 intent、profile/Vault、自动授权、恢复和数据库绕过。
+- Auto-router：四条正向路由、实时采集与 Partner 下单跨 Skill、提现拒绝和 prompt injection。
 - Repository：`skills/` 唯一事实源、离线网络阻断和评测 catalog 完整性。
 
 本地确定性评测通过不代表 Codex、Claude、Cursor、GitHub Copilot 或 OpenClaw 的真实宿主自然语言路由已经完成验收；宿主评测需要单独的隔离 provider 和无 mutation 工具边界。

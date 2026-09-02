@@ -187,7 +187,7 @@ class CodexModelEvalContractTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["caseCount"], 16)
+        self.assertGreaterEqual(payload["caseCount"], 50)
 
     def test_artifact_safety_checker_rejects_secret_values_and_markers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -263,8 +263,30 @@ class CodexModelEvalContractTests(unittest.TestCase):
             content = artifact.read_text(encoding="utf-8")
             self.assertIn('id="weex-report-compact-table"', content)
             self.assertIn("-webkit-line-clamp: 3", content)
+            self.assertIn('data-variable-name="scenario_type"', content)
+            self.assertIn('id="weex-report-column-layout"', content)
+            self.assertNotIn("nth-child(6)", content)
 
-    def test_model_case_catalog_requires_skill_and_query(self):
+    def test_compact_html_artifact_upgrades_legacy_fixed_column_styles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "legacy-report.html"
+            artifact.write_text(
+                '<html><head><style id="weex-report-compact-table">'
+                'th:nth-child(6){display:none}</style></head><body><table></table></body></html>',
+                encoding="utf-8",
+            )
+            result = self.run_node(
+                "const runtime = require('./evals/scripts/run_codex_promptfoo.cjs'); "
+                f"process.stdout.write(String(runtime.compactHtmlArtifact({json.dumps(str(artifact))})));"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "true")
+            content = artifact.read_text(encoding="utf-8")
+            self.assertIn('id="weex-report-column-layout"', content)
+            self.assertIn('data-variable-name="scenario_type"', content)
+            self.assertNotIn("nth-child(6)", content)
+
+    def test_model_case_catalog_requires_skill_and_query_for_guided_cases(self):
         with tempfile.TemporaryDirectory() as directory:
             catalog = Path(directory) / "cases.json"
             catalog.write_text(
@@ -272,7 +294,10 @@ class CodexModelEvalContractTests(unittest.TestCase):
                     [{
                         "description": "bad",
                         "vars": {
+                            "case_id": "bad-guided",
+                            "routing_mode": "guided_policy",
                             "scenario_type": "positive_read_only",
+                            "language": "zh",
                             "expected_route": "trader",
                             "requires_confirmation": False,
                             "must_not_execute": True,
@@ -288,6 +313,36 @@ class CodexModelEvalContractTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertRegex(result.stdout, "skill|query")
+
+    def test_model_case_catalog_accepts_auto_router_without_skill_hint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "cases.json"
+            catalog.write_text(
+                json.dumps(
+                    [{
+                        "description": "auto router",
+                        "vars": {
+                            "case_id": "router-analysis",
+                            "routing_mode": "auto_router",
+                            "scenario_type": "cross_skill_route",
+                            "language": "zh",
+                            "query": "分析这份账户快照",
+                            "expected_route": "analysis",
+                            "expected_operation": "analyze-snapshot",
+                            "requires_confirmation": False,
+                            "must_not_execute": True,
+                            "must_include_any": "分析|快照",
+                        },
+                    }]
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_node(
+                "const runtime = require('./evals/scripts/run_codex_promptfoo.cjs'); "
+                f"process.stdout.write(JSON.stringify(runtime.validateModelCaseCatalog({json.dumps(str(catalog))})));"
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["caseCount"], 1)
 
     def test_model_runner_rejects_a_different_promptfoo_config(self):
         result = self.run_node(
@@ -356,9 +411,59 @@ class CodexModelEvalContractTests(unittest.TestCase):
         catalog = json.loads(
             (EVALS / "cases" / "codex-model-tests.json").read_text(encoding="utf-8")
         )
-        groups = {item["vars"]["skill"] for item in catalog}
+        groups = {item["vars"].get("skill") for item in catalog if item["vars"].get("skill")}
         self.assertTrue({"weex-analysis-skill", "weex-monitor-skill", "weex-partner-skill", "weex-trader-skill"} <= groups)
-        self.assertGreaterEqual(len(catalog), 8)
+        self.assertGreaterEqual(len(catalog), 50)
+
+    def test_model_catalog_has_full_query_coverage_contract(self):
+        catalog = json.loads(
+            (EVALS / "cases" / "codex-model-tests.json").read_text(encoding="utf-8")
+        )
+        case_ids = [item["vars"].get("case_id") for item in catalog]
+        self.assertTrue(all(case_ids))
+        self.assertEqual(len(case_ids), len(set(case_ids)))
+        self.assertTrue(all(item["vars"].get("scenario_type") for item in catalog))
+        self.assertTrue(all(item["vars"].get("language") in {"zh", "en"} for item in catalog))
+        self.assertTrue(all(isinstance(item["vars"].get("requires_confirmation"), bool) for item in catalog))
+        self.assertTrue(all(item["vars"].get("must_not_execute") is True for item in catalog))
+
+        guided_counts = {}
+        for item in catalog:
+            variables = item["vars"]
+            if variables.get("routing_mode") == "guided_policy":
+                guided_counts[variables["skill"]] = guided_counts.get(variables["skill"], 0) + 1
+        self.assertGreaterEqual(guided_counts.get("weex-analysis-skill", 0), 8)
+        self.assertGreaterEqual(guided_counts.get("weex-monitor-skill", 0), 10)
+        self.assertGreaterEqual(guided_counts.get("weex-partner-skill", 0), 17)
+        self.assertGreaterEqual(guided_counts.get("weex-trader-skill", 0), 12)
+
+        auto_router = [item for item in catalog if item["vars"].get("routing_mode") == "auto_router"]
+        self.assertGreaterEqual(len(auto_router), 8)
+        self.assertTrue(all("skill" not in item["vars"] for item in auto_router))
+        for route in ("analysis", "monitor", "partner", "trader"):
+            self.assertTrue(
+                any(item["vars"].get("language") == "en" and route in item["vars"]["expected_route"].split("|") for item in catalog),
+                f"missing English coverage for {route}",
+            )
+
+        partner_operations = {
+            item["vars"].get("expected_operation")
+            for item in catalog
+            if item["vars"].get("skill") == "weex-partner-skill"
+            and item["vars"].get("expected_operation") not in {None, "none"}
+        }
+        self.assertEqual(
+            partner_operations,
+            {
+                "list-referral-uids",
+                "get-direct-trade-asset",
+                "get-commission",
+                "get-sub-agent-stats",
+                "verify-referrals",
+                "get-referral-assets",
+                "get-referral-deal-data",
+            },
+        )
 
     def test_codex_promptfoo_config_and_html_script_are_declared(self):
         config = EVALS / "promptfooconfig.codex.yaml"
@@ -374,6 +479,13 @@ class CodexModelEvalContractTests(unittest.TestCase):
         self.assertIn("{{ env.WEEX_CODEX_EVAL_MODEL_PROVIDER }}", config_text)
         self.assertIn("inherit_process_env: true", config_text)
         self.assertIn("ignore_default_excludes: false", config_text)
+        self.assertIn('routing_mode == "auto_router"', config_text)
+        self.assertIn("operation:", config_text)
+        self.assertIn("without a script path or command prefix", config_text)
+        self.assertRegex(
+            config_text,
+            r"required:\s*\n\s*- route\s*\n\s*- operation",
+        )
 
     def test_codex_runtime_does_not_read_auth_file_or_literal_secret(self):
         provider = (EVALS / "scripts" / "codex_runtime.cjs").read_text(
@@ -421,7 +533,7 @@ class CodexModelEvalContractTests(unittest.TestCase):
         )
         ids = [item["description"] for item in catalog]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertGreaterEqual(len(catalog), 16)
+        self.assertGreaterEqual(len(catalog), 50)
         self.assertTrue(
             any(item["vars"].get("scenario_type") == "positive_read_only" for item in catalog),
             "a successful read-only route must be distinguishable from a blocked mutation",

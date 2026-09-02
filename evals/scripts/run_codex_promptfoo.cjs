@@ -25,6 +25,8 @@ const SAFE_PROCESS_ENVIRONMENT = [
   "WEEX_CODEX_EVAL_REPEAT",
 ];
 const VALID_ROUTES = new Set(["analysis", "monitor", "partner", "trader", "clarify", "refuse"]);
+const VALID_ROUTING_MODES = new Set(["guided_policy", "auto_router"]);
+const VALID_LANGUAGES = new Set(["zh", "en"]);
 const VALID_SKILLS = new Set([
   "weex-analysis-skill",
   "weex-monitor-skill",
@@ -65,7 +67,8 @@ function validateModelCaseCatalog(catalogPath = modelCaseCatalog) {
     throw new Error("Codex model case catalog must be a non-empty array");
   }
   const descriptions = new Set();
-  let positiveReadOnly = false;
+  const caseIds = new Set();
+  const routingModeCounts = { guided_policy: 0, auto_router: 0 };
   for (const item of payload) {
     if (!item || typeof item !== "object" || !item.vars || typeof item.vars !== "object") {
       throw new Error("Codex model case must contain an object vars field");
@@ -75,8 +78,28 @@ function validateModelCaseCatalog(catalogPath = modelCaseCatalog) {
       throw new Error(`Codex model case descriptions must be unique: ${description || "<empty>"}`);
     }
     descriptions.add(description);
-    if (typeof item.vars.skill !== "string" || !VALID_SKILLS.has(item.vars.skill.trim())) {
-      throw new Error(`Codex model case ${description} contains an invalid skill`);
+    const caseId = String(item.vars.case_id || "").trim();
+    if (!caseId || caseIds.has(caseId)) {
+      throw new Error(`Codex model case case_id values must be non-empty and unique: ${caseId || "<empty>"}`);
+    }
+    caseIds.add(caseId);
+    const routingMode = String(item.vars.routing_mode || "").trim();
+    if (!VALID_ROUTING_MODES.has(routingMode)) {
+      throw new Error(`Codex model case ${description} contains an invalid routing_mode`);
+    }
+    routingModeCounts[routingMode] += 1;
+    if (routingMode === "guided_policy") {
+      if (typeof item.vars.skill !== "string" || !VALID_SKILLS.has(item.vars.skill.trim())) {
+        throw new Error(`Codex model case ${description} contains an invalid skill`);
+      }
+    } else if (Object.prototype.hasOwnProperty.call(item.vars, "skill")) {
+      throw new Error(`Codex model case ${description} must omit skill in auto_router mode`);
+    }
+    if (typeof item.vars.scenario_type !== "string" || !item.vars.scenario_type.trim()) {
+      throw new Error(`Codex model case ${description} requires a non-empty scenario_type`);
+    }
+    if (!VALID_LANGUAGES.has(item.vars.language)) {
+      throw new Error(`Codex model case ${description} contains an invalid language`);
     }
     if (typeof item.vars.query !== "string" || !item.vars.query.trim()) {
       throw new Error(`Codex model case ${description} requires a non-empty query`);
@@ -88,11 +111,20 @@ function validateModelCaseCatalog(catalogPath = modelCaseCatalog) {
     if (expectedRoutes.some((route) => !VALID_ROUTES.has(route))) {
       throw new Error(`Codex model case ${description} contains an invalid expected_route`);
     }
-    const confirmation = item.vars.requires_confirmation;
-    if (
-      typeof confirmation !== "boolean" &&
-      (typeof confirmation !== "string" || !/^(?:true|false)(?:\|(?:true|false))*$/.test(confirmation))
-    ) {
+    if (item.vars.expected_operation !== undefined) {
+      if (typeof item.vars.expected_operation !== "string") {
+        throw new Error(`Codex model case ${description} has invalid expected_operation`);
+      }
+      const expectedOperations = item.vars.expected_operation.split("|").map((value) => value.trim());
+      if (
+        expectedOperations.some(
+          (operation) => !operation || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(operation),
+        )
+      ) {
+        throw new Error(`Codex model case ${description} has invalid expected_operation`);
+      }
+    }
+    if (typeof item.vars.requires_confirmation !== "boolean") {
       throw new Error(`Codex model case ${description} has invalid requires_confirmation`);
     }
     if (item.vars.must_not_execute !== true) {
@@ -104,12 +136,13 @@ function validateModelCaseCatalog(catalogPath = modelCaseCatalog) {
         throw new Error(`Codex model case ${description} has invalid ${field}`);
       }
     }
-    if (item.vars.scenario_type === "positive_read_only") positiveReadOnly = true;
   }
-  if (!positiveReadOnly) {
-    throw new Error("Codex model case catalog must contain a positive_read_only scenario");
-  }
-  return { caseCount: payload.length, descriptions: [...descriptions] };
+  return {
+    caseCount: payload.length,
+    caseIds: [...caseIds],
+    descriptions: [...descriptions],
+    routingModeCounts,
+  };
 }
 
 function assertArtifactSafety(filePath, source = process.env) {
@@ -189,27 +222,28 @@ function compactHtmlArtifact(filePath) {
   const content = fs.readFileSync(resolvedPath, "utf8");
   const compactStyles = `
     <style id="weex-report-compact-table">
-      table[data-results-table] { min-width: 0; table-layout: fixed; }
+      table[data-results-table] { width: 100%; min-width: 960px; table-layout: fixed; }
       table[data-results-table] th,
       table[data-results-table] td { min-width: 0; }
-      table[data-results-table] th:nth-child(6),
-      table[data-results-table] td:nth-child(6),
-      table[data-results-table] th:nth-child(7),
-      table[data-results-table] td:nth-child(7),
-      table[data-results-table] th:nth-child(8),
-      table[data-results-table] td:nth-child(8) { display: none; }
-      table[data-results-table] th:nth-child(1),
-      table[data-results-table] td:nth-child(1) { width: 170px; }
-      table[data-results-table] th:nth-child(2),
-      table[data-results-table] td:nth-child(2) { width: 360px; }
-      table[data-results-table] th:nth-child(3),
-      table[data-results-table] td:nth-child(3) { width: 150px; }
-      table[data-results-table] th:nth-child(4),
-      table[data-results-table] td:nth-child(4),
-      table[data-results-table] th:nth-child(5),
-      table[data-results-table] td:nth-child(5) { width: 170px; }
-      table[data-results-table] th:nth-child(9),
-      table[data-results-table] td:nth-child(9) { width: 440px; }
+      table[data-results-table] .weex-hidden-column,
+      table[data-results-table] td[data-variable-name="skill"],
+      table[data-results-table] td[data-variable-name="scenario_type"],
+      table[data-results-table] td[data-variable-name="language"],
+      table[data-results-table] td[data-variable-name="requires_confirmation"],
+      table[data-results-table] td[data-variable-name="must_not_execute"],
+      table[data-results-table] td[data-variable-name="must_include"],
+      table[data-results-table] td[data-variable-name="must_include_all"],
+      table[data-results-table] td[data-variable-name="must_include_any"],
+      table[data-results-table] td[data-variable-name="must_not_include"],
+      table[data-results-table] td[data-variable-name="forbidden_execution_terms"],
+      table[data-results-table] td[data-variable-name="forbidden_no_confirmation_terms"],
+      table[data-results-table] td[data-variable-name="sessionId"] { display: none; }
+      table[data-results-table] .weex-case-column { width: 16%; }
+      table[data-results-table] .weex-mode-column { width: 11%; }
+      table[data-results-table] .weex-query-column { width: 30%; }
+      table[data-results-table] .weex-route-column { width: 12%; }
+      table[data-results-table] .weex-operation-column { width: 17%; }
+      table[data-results-table] .weex-output-column { width: 34%; }
       table[data-results-table] td[data-variable-name="query"] .cell-content,
       table[data-results-table] td[data-output-cell="true"] .output-text,
       table[data-results-table] td[data-output-cell="true"] .output-reason {
@@ -227,9 +261,59 @@ function compactHtmlArtifact(filePath) {
         -webkit-line-clamp: 2;
       }
     </style>`;
-  if (content.includes('id="weex-report-compact-table"')) return false;
-  const compacted = content.replace("</head>", `${compactStyles}\n  </head>`);
-  if (compacted === content) throw new Error(`HTML artifact has no </head> marker: ${filePath}`);
+  const columnLayout = `
+    <script id="weex-report-column-layout">
+      (() => {
+        const hidden = new Set([
+          "skill", "scenario_type", "language", "requires_confirmation",
+          "must_not_execute", "must_include", "must_include_all", "must_include_any",
+          "must_not_include", "forbidden_execution_terms",
+          "forbidden_no_confirmation_terms", "sessionId"
+        ]);
+        const visibleClasses = {
+          case_id: "weex-case-column",
+          routing_mode: "weex-mode-column",
+          query: "weex-query-column",
+          expected_route: "weex-route-column",
+          expected_operation: "weex-operation-column"
+        };
+        const apply = (table) => {
+          const headers = Array.from(table.querySelectorAll("thead th"));
+          const rows = Array.from(table.querySelectorAll("tbody tr"));
+          headers.forEach((header, index) => {
+            const name = header.textContent.trim();
+            const className = hidden.has(name)
+              ? "weex-hidden-column"
+              : (visibleClasses[name] || (index === headers.length - 1 ? "weex-output-column" : ""));
+            if (!className) return;
+            header.classList.add(className);
+            for (const row of rows) row.cells[index]?.classList.add(className);
+          });
+        };
+        const applyAll = () => document.querySelectorAll("table[data-results-table]").forEach(apply);
+        applyAll();
+        new MutationObserver(applyAll).observe(document.body, { childList: true, subtree: true });
+      })();
+    </script>`;
+  const hasCompactStyles = content.includes('id="weex-report-compact-table"');
+  const hasColumnLayout = content.includes('id="weex-report-column-layout"');
+  if (hasCompactStyles && hasColumnLayout) return false;
+  let compacted = content;
+  if (hasCompactStyles) {
+    compacted = compacted.replace(
+      /<style id="weex-report-compact-table">[\s\S]*?<\/style>/,
+      compactStyles.trim(),
+    );
+  } else {
+    const styled = compacted.replace("</head>", `${compactStyles}\n  </head>`);
+    if (styled === compacted) throw new Error(`HTML artifact has no </head> marker: ${filePath}`);
+    compacted = styled;
+  }
+  if (!hasColumnLayout) {
+    const scripted = compacted.replace("</body>", `${columnLayout}\n  </body>`);
+    if (scripted === compacted) throw new Error(`HTML artifact has no </body> marker: ${filePath}`);
+    compacted = scripted;
+  }
   fs.writeFileSync(resolvedPath, compacted, "utf8");
   return true;
 }
