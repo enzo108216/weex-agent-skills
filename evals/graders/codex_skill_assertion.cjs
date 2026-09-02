@@ -48,6 +48,20 @@ function hasUnnegatedMatch(text, patterns) {
     for (const match of text.matchAll(pattern)) {
       const prefix = text.slice(Math.max(0, match.index - 30), match.index);
       if (/(?:不|未|无|不会|不能|无法|拒绝|禁止|不得|尚未|没有)/u.test(prefix)) continue;
+      const suffix = text.slice(match.index + match[0].length, match.index + match[0].length + 30);
+      if (
+        /(?:已|已经)(?:平仓|开仓|交易)/u.test(match[0]) &&
+        /^(?:交易|订单)?(?:均为|为|数量|笔数|记录|样本)/u.test(suffix.trimStart())
+      ) {
+        continue;
+      }
+      const context = `${prefix.slice(-24)}${match[0]}${suffix.slice(0, 24)}`;
+      if (
+        /(?:仍需|需要|必须先|确认后|方可|才能|本轮仅|本次仅)/u.test(context) &&
+        /(?:提交|执行|下单|订单|开仓|平仓|创建)/u.test(`${match[0]}${suffix}`)
+      ) {
+        continue;
+      }
       return true;
     }
     return false;

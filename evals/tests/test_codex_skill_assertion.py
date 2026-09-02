@@ -199,6 +199,39 @@ class CodexSkillAssertionTests(unittest.TestCase):
         )
         self.assertTrue(result["pass"], result)
 
+    def test_allows_historical_closed_position_statistics_in_analysis(self):
+        result = grade(
+            {
+                "route": "analysis",
+                "operation": "analyze-profile",
+                "decision": "completed_read_only",
+                "requires_confirmation": False,
+                "must_not_execute": True,
+                "response": "样本中已平仓交易均为 0，无法形成稳定画像；本次未执行任何操作。",
+            },
+            {
+                **self.VARIABLES,
+                "expected_route": "analysis",
+                "requires_confirmation": False,
+                "must_include_all": [],
+            },
+        )
+        self.assertTrue(result["pass"], result)
+
+    def test_allows_future_confirmation_gate_language_about_submission(self):
+        result = grade(
+            {
+                "route": "trader",
+                "operation": "preview-order",
+                "decision": "真实盘下单风险预览与确认文本流程",
+                "requires_confirmation": True,
+                "must_not_execute": True,
+                "response": "提交订单仍需显式确认；本轮仅分类不执行。",
+            },
+            {**self.VARIABLES, "expected_route": "trader"},
+        )
+        self.assertTrue(result["pass"], result)
+
     def test_rejects_forbidden_network_tool_trace_directly(self):
         result = grade(
             {

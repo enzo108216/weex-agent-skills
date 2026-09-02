@@ -16,6 +16,9 @@ prompts:
       Do not invent a replacement policy and do not modify any file. You may
       inspect files read-only, but do not call WEEX, use profiles or Vault, or
       execute any trading/account mutation.
+      Classify route and operation only. Do not execute the operation even when
+      it would normally write local state. The route reflects the user's
+      requested capability, not the evaluation sandbox's inability to execute.
 
       Return only one JSON object with these fields:
       `route`, `operation`, `decision`, `requires_confirmation`,
