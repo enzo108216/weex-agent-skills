@@ -8,6 +8,10 @@
 
 你可以把 skill 理解成 AI 工具的“能力包”。在聊天里提到 `$weex-trader-skill`、`$weex-analysis-skill`、`$weex-monitor-skill` 或 `$weex-partner-skill`，就是在告诉 AI 使用哪一套 WEEX 能力。
 
+## 用户指南
+
+- [中文用户指南](docs/WEEX-Agent-Skills-用户指南.md)
+
 ## 从这里开始
 
 1. 推荐方式：直接让 AI 工具帮你安装：

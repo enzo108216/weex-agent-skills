@@ -8,6 +8,10 @@ After installing the skills, you can ask your AI tool to check WEEX market data,
 
 A skill is an add-on instruction package for your AI tool. Mentioning `$weex-trader-skill`, `$weex-analysis-skill`, `$weex-monitor-skill`, or `$weex-partner-skill` tells the AI which WEEX workflow to use.
 
+## User Guide
+
+- [English User Guide](docs/WEEX-Agent-Skills-User-Guide.md)
+
 ## Start Here
 
 1. Recommended: ask your AI tool to install the skills for you:

@@ -10,6 +10,14 @@
 !/README.zh-CN.md
 !/test_all_skills.py
 
+# Keep the maintained user guide while leaving other delivery artifacts ignored.
+!/docs/
+/docs/*
+!/docs/WEEX-Agent-Skills-用户指南.md
+!/docs/WEEX-Agent-Skills-User-Guide.md
+!/docs/assets/
+!/docs/assets/**
+
 # Keep tracked catalog structures and their contents.
 !/.agents/
 !/.agents/**
