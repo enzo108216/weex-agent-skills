@@ -5,7 +5,7 @@ description: Use when the user wants WEEX Partner referral, commission, referral
 
 # WEEX Partner Skill
 
-Use this skill as the natural-language entry point for the seven read-only WEEX Partner query capabilities. REST access, profile resolution, Vault credentials, signing, HTTPS, exact-host enforcement, and transport remain owned by `weex-trader-skill` through `scripts/weex_partner_cli.py`.
+Use this skill as the natural-language entry point for the seven read-only WEEX Partner query capabilities. Profile resolution, Vault-backed credential references, exact-host preflight, and the compatibility envelope remain owned by `weex-trader-skill` through `scripts/weex_partner_cli.py`; the verified MCP owns REST routing, signing, HTTPS, and transport behind that Trader entrypoint.
 
 ## Route First
 

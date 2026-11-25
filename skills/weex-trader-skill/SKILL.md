@@ -7,8 +7,8 @@ name: weex-trader-skill
 Compatibility requires Python with `requirements.lock` installed, the verified `weex-mcp` package version and manifest selected by `references/mcp-capability-mapping.json`, network access for live WEEX calls, and Tk through an explicitly prepared managed GUI runtime for Windows/macOS GUI profile and vault flows. `scripts/weex_runtime_setup.py` installs only `requirements.lock`; it does not install an unpublished MCP candidate.
 
 Read `manifest.json` for routing rules. Open `file-index.json` only for file-level guidance.
-For every turn that uses this skill, before routing or UI launch, AI must refresh preflight state. For Partner-only turns with a selected saved profile, run `scripts/weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`; it refreshes `agent-init.json` and `agent-runtime.json` while projecting only Partner-safe fields to the tool transcript. For other turns, run `scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty`.
-Before any private profile, vault, or trading action, inspect the preflight output and stop if `runtime.host.requirements_ready` is `false`, `runtime.host.missing_modules` is non-empty, or `runtime.env_validation.ok` is `false`.
+For every turn that uses this skill, before routing or UI launch, AI must refresh preflight state. For Partner-only turns with a selected saved profile, run `scripts/weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`; it refreshes `agent-init.json` and `agent-runtime.json`, requires a ready `local_user` trade-off MCP manifest, and projects only Partner-safe fields to the tool transcript. For other turns, run `scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty`.
+Before any private profile, vault, or trading action, inspect the preflight output and stop if `runtime.host.requirements_ready` is `false`, `runtime.host.missing_modules` is non-empty, or `runtime.env_validation.ok` is `false`. Before an MCP-backed Market, Account, Partner, or Trade action, also stop if the relevant `runtime.mcp` package/manifest reports an action required. MCP readiness must not block Profile/Vault setup or repair that does not call MCP.
 On Windows and macOS, GUI profile and vault flows must use the managed GUI runtime. AI must not launch GUI entrypoints with the system, miniforge, pyenv, Homebrew, or OS Python even if that interpreter passes Tk or dependency probes. System interpreters may run preflight and the managed-runtime bootstrap only; they are not valid GUI runtimes. Preflight reports whether the managed GUI runtime is ready but must not download or install it implicitly. If `init.host.gui_runtime.action` is `explicit_setup_required`, explain the pinned uv/Python/dependency setup and checksum/hash verification, ask whether AI should install it, and only after clear user approval run `init.host.gui_runtime.setup_command` / `scripts/weex_gui_bootstrap.py ensure --accept-managed-runtime --pretty`. Use `scripts/weex_gui_launcher.py` for detached launch after runtime setup is ready.
 
 ## Core Entry Points
@@ -17,13 +17,13 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 - `scripts/weex_spot_api.py`: MCP-backed spot compatibility CLI
 - `scripts/weex_partner_api.py`: strict read-only compatibility executor for the seven allowlisted Local MCP Partner tools
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
-- `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
+- `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and atomically claim explicit confirmation before live orders
 - `scripts/weex_auto_trade.py`: saved-profile-only JSON facade for strategy registration, authorization requests/grants/revocation, order reconciliation, and event inspection
 - `scripts/weex_auto_trade_state.py`: owner-only six-table SQLite authorization, quota, usage, order, event, and migration state kernel
 - `scripts/weex_auto_trade_amount.py`: deterministic conservative official-fact valuation for Spot and Futures authorization quota checks
 - `scripts/weex_auto_trade_notify.py`: one-shot local notification adapter for claimed authorization events; notification failure never changes trade state
 - `scripts/weex_trade_risk_review.py`: local risk review helpers for standalone trade-guard preview/account-scan flows
-- `scripts/weex_order_intent_state.py`: store and validate pending order intents
+- `scripts/weex_order_intent_state.py`: store, atomically claim, and validate pending order intents with platform file locking
 - `scripts/weex_gui_launcher.py`: detached launcher for GUI profile/vault entrypoints on macOS and Windows; vault launches accept `--requested-action setup|unlock|status|lock`
 - `scripts/weex_profile_manager_zh.py` / `scripts/weex_profile_manager_en.py`: Windows/macOS visual profile manager with a global vault control area
 - `scripts/weex_profiles_zh.py` / `scripts/weex_profiles_en.py`: terminal profile manager

@@ -128,9 +128,9 @@ OpenClaw 用户不要使用上面的 `npx` 命令，请改用下方的 [Git 仓�
 
 查询 WEEX 合伙人直客 UID、直客交易与资金、返佣、子代理统计、直客关系、直客资产或交易统计时，使用 [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md)。
 
-它复用 `weex-trader-skill` 的现有 profile 和 Application Vault，REST、凭据和签名仍由 trader 负责；同一个 profile 仍可通过 trader 的既有预览和明确确认门禁正常下单。
+它复用 `weex-trader-skill` 的现有 profile 和 Application Vault。Trader 继续负责 profile/Vault 选择与兼容外壳，已验证的 MCP 负责 Partner REST 路由、签名与 HTTPS 传输；同一个 profile 仍可通过 trader 的既有预览和明确确认门禁正常下单。
 
-Partner-only 对话使用 trader 的安全 Partner preflight：只返回选定 profile 的非秘密身份与 `partner_production|partner_test` 标签，不把具体测试地址、API key hint 或其他 profile 路由元数据写入工具 transcript。
+Partner-only 对话使用 trader 的安全 Partner preflight：先校验 Local MCP readiness，再只返回安全运行状态、选定 profile 的非秘密身份与 `partner_production|partner_test` 标签，不把具体测试地址、API key hint 或其他 profile 路由元数据写入工具 transcript。
 
 示例：`使用 $weex-partner-skill 查询官方默认时间范围内的返佣，并说明实际 UTC 时间范围。`
 

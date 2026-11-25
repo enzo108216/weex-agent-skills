@@ -49,6 +49,21 @@ EXPECTED_ENDPOINTS = {
 }
 
 
+def ready_mcp_runtime() -> dict[str, object]:
+    return {
+        "installed": True,
+        "version": "0.2.0",
+        "expected_version": "0.2.0",
+        "package_ok": True,
+        "manifest_ok": True,
+        "runtime_profile": "local_user",
+        "trade_enabled": False,
+        "tool_contract_version": "1",
+        "manifest_digest": "sha256:" + ("a" * 64),
+        "action_required": None,
+    }
+
+
 def mcp_partner_success(*, settings, endpoint, data=None, status=200):
     return {
         "ok": True,
@@ -254,6 +269,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
             "runtime": {
                 "host": {"requirements_ready": True, "missing_modules": []},
                 "env_validation": {"ok": True, "issues": []},
+                "mcp": ready_mcp_runtime(),
                 "vault": {
                     "configured": True,
                     "state": "unlocked",
@@ -305,6 +321,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
             "runtime": {
                 "host": {"requirements_ready": True, "missing_modules": []},
                 "env_validation": {"ok": True, "issues": []},
+                "mcp": ready_mcp_runtime(),
                 "vault": {"configured": True, "state": "unlocked", "action_required": None},
             },
         }
@@ -347,6 +364,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
             "runtime": {
                 "host": {"requirements_ready": False, "missing_modules": ["cryptography"]},
                 "env_validation": {"ok": True, "issues": []},
+                "mcp": ready_mcp_runtime(),
                 "vault": {"configured": True, "state": "unlocked", "action_required": None},
             },
         }
@@ -362,6 +380,62 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         self.assertEqual(result["error"]["category"], "runtime_preflight")
         self.assertEqual(result["profile"], {"requested": "partner-main"})
         self.assertNotIn(synthetic_test_origin, json.dumps(result))
+
+    def test_partner_safe_preflight_fails_closed_when_mcp_runtime_is_not_ready(self) -> None:
+        partner = self.require_partner()
+        synthetic_test_origin = "https://partner-safe-fixture.weex.tech"
+        base_records = {
+            "init": {
+                "profiles": {
+                    "summary": [{
+                        "id": "profile-a",
+                        "name": "partner-main",
+                        "spot_base_url": synthetic_test_origin,
+                        "api_key_hint": "***secret-hint",
+                    }],
+                },
+            },
+            "runtime": {
+                "host": {"requirements_ready": True, "missing_modules": []},
+                "env_validation": {"ok": True, "issues": []},
+                "vault": {"configured": True, "state": "unlocked", "action_required": None},
+            },
+        }
+        not_ready_cases = {
+            "missing": None,
+            "not_installed": {**ready_mcp_runtime(), "installed": False},
+            "package_mismatch": {**ready_mcp_runtime(), "package_ok": False},
+            "manifest_mismatch": {**ready_mcp_runtime(), "manifest_ok": False},
+            "wrong_profile": {**ready_mcp_runtime(), "runtime_profile": "broker_server"},
+            "trade_enabled": {**ready_mcp_runtime(), "trade_enabled": True},
+            "action_required": {
+                **ready_mcp_runtime(),
+                "action_required": "repair_mcp_gateway",
+            },
+        }
+
+        for case, mcp_runtime in not_ready_cases.items():
+            with self.subTest(case=case):
+                records = {
+                    **base_records,
+                    "runtime": dict(base_records["runtime"]),
+                }
+                if mcp_runtime is not None:
+                    records["runtime"]["mcp"] = mcp_runtime
+
+                result = partner.build_partner_preflight_envelope(
+                    records,
+                    profile_ref="partner-main",
+                    environ={},
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertFalse(result["request_sent"])
+                self.assertIsNone(result["environment"])
+                self.assertEqual(result["error"]["category"], "runtime_preflight")
+                self.assertEqual(result["error"]["code"], "private_runtime_not_ready")
+                self.assertEqual(result["profile"], {"requested": "partner-main"})
+                self.assertNotIn(synthetic_test_origin, json.dumps(result))
 
     def test_partner_safe_preflight_reports_missing_profile_without_listing_other_profiles(self) -> None:
         partner = self.require_partner()
@@ -379,6 +453,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
             "runtime": {
                 "host": {"requirements_ready": True, "missing_modules": []},
                 "env_validation": {"ok": True, "issues": []},
+                "mcp": ready_mcp_runtime(),
                 "vault": {"configured": True, "state": "unlocked", "action_required": None},
             },
         }
@@ -399,6 +474,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         base_runtime = {
             "host": {"requirements_ready": True, "missing_modules": []},
             "env_validation": {"ok": True, "issues": []},
+            "mcp": ready_mcp_runtime(),
             "vault": {"configured": True, "state": "unlocked", "action_required": None},
         }
         hidden_hint = "***hidden-hint"

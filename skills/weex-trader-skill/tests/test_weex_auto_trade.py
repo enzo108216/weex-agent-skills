@@ -3202,6 +3202,64 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
             self.assertEqual(fallback_event["severity"], "EXCEPTION")
             self.assertEqual(fallback_event["payload"]["error_code"], "SINGLE_LIMIT_EXCEEDED")
 
+    def test_manual_fallback_writer_maps_claimed_intent_conflict_to_facade_error(self) -> None:
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            with patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                pending = intent_state.build_intent(
+                    profile_name="demo",
+                    market="spot",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                )
+                intent_state.save_intent(pending)
+                intent_state.claim_intent_for_confirmation(
+                    expected_intent_id=pending["intent_id"],
+                    expected_risk_signature=pending["risk_signature"],
+                    expected_intent_type="order",
+                    started_at_ms=2000,
+                )
+                replacement = intent_state.build_intent(
+                    profile_name="demo",
+                    market="spot",
+                    order_preview={"symbol": "ETHUSDT"},
+                    raw_order={"symbol": "ETHUSDT"},
+                    analysis_output={"alerts": []},
+                )
+
+                with self.assertRaises(cli_module.FacadeError) as conflict:
+                    cli_module._save_manual_fallback_intent(replacement)
+
+        self.assertEqual(conflict.exception.code, "STATE_CONFLICT")
+        self.assertEqual(
+            conflict.exception.next_action,
+            "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY",
+        )
+
+    def test_manual_fallback_writer_maps_storage_failure_to_state_recovery(self) -> None:
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        with patch.object(
+            intent_state,
+            "save_intent",
+            side_effect=intent_state.IntentStateError(
+                "intent_state_unavailable",
+                "injected storage failure",
+            ),
+        ):
+            with self.assertRaises(cli_module.FacadeError) as conflict:
+                cli_module._save_manual_fallback_intent({"intent_id": "pending"})
+
+        self.assertEqual(conflict.exception.code, "STATE_CONFLICT")
+        self.assertEqual(
+            conflict.exception.next_action,
+            "DISABLE_AUTO_TRADE_AND_INSPECT_STATE",
+        )
+
     def test_submit_auto_unknown_operation_does_not_create_unusable_confirmation_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             state, cli_module, profile, strategy, authorization = self._authorized_fixture(Path(tempdir))

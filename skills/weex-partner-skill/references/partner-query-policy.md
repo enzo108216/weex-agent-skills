@@ -1,6 +1,6 @@
 # WEEX Partner Query Policy
 
-This reference defines deterministic orchestration above the trader-owned REST executor.
+This reference defines deterministic orchestration above the Trader-owned compatibility executor, backed by MCP-owned Partner REST routing, signing, HTTPS, and transport.
 
 ## Operations
 

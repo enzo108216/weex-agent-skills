@@ -52,7 +52,7 @@
         "simulated futures balances or positions",
         "contract order actions",
         "simulated futures order actions",
-        "raw contract endpoint access"
+        "allowlisted contract endpoint-key compatibility access"
       ],
       "depends_on": [
         "references/contract-api-definitions.json",
@@ -76,7 +76,7 @@
         "spot market data",
         "spot balances",
         "spot order placement",
-        "raw spot endpoint access"
+        "allowlisted spot endpoint-key compatibility access"
       ],
       "depends_on": [
         "references/spot-api-definitions.json",
@@ -93,10 +93,10 @@
       ]
     },
     "scripts/weex_partner_api.py": {
-      "role": "Strict read-only compatibility executor for seven typed Local MCP Partner tools plus a transcript-safe Partner profile preflight, using the production default or a saved HTTPS `*.weex.tech` test origin.",
+      "role": "Strict read-only compatibility executor for seven typed Local MCP Partner tools plus a transcript-safe Partner profile preflight that requires a ready trade-off Local MCP runtime, using the production default or a saved HTTPS `*.weex.tech` test origin.",
       "when": [
         "executing structured Partner queries from weex-partner-skill",
-        "validating and classifying the Partner production or test origin before credential loading",
+        "validating Local MCP readiness and classifying the Partner production or test origin before credential loading",
         "normalizing Partner authentication, permission, validation, rate-limit, upstream, and transport errors"
       ],
       "depends_on": [
@@ -383,20 +383,23 @@
       ]
     },
     "scripts/weex_order_intent_state.py": {
-      "role": "Pending-order confirmation state store for preview-before-submit trading flows, including trading_mode and environment in the risk signature.",
+      "role": "Pending-order confirmation state store for preview-before-submit trading flows, including atomic persistence, platform file locking, and a single-use cross-process confirmation claim.",
       "when": [
         "saving the latest pending order intent",
         "loading the latest pending order intent",
+        "atomically claiming an order intent before any confirmation transport attempt",
         "checking whether an order confirmation intent has expired"
       ],
       "depends_on": [
         "scripts/weex_agent_state.py"
       ],
       "surface": [
+        "IntentStateError",
         "intent_path",
         "build_intent",
         "save_intent",
         "load_intent",
+        "claim_intent_for_confirmation",
         "clear_intent",
         "intent_is_expired"
       ]
@@ -441,6 +444,7 @@
         "scripts/weex_auto_trade_state.py",
         "scripts/weex_auto_trade_runtime.py",
         "scripts/weex_trade_guard.py",
+        "scripts/weex_order_intent_state.py",
         "scripts/weex_profile_store.py"
       ],
       "surface": [

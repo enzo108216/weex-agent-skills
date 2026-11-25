@@ -12,7 +12,7 @@ It supports:
 - preview-before-submit order risk checks with a pending confirmation intent
 - finite, revocable, quota-limited automated strategy authorization with durable per-order audit records
 - current account-risk scans without order parameters
-- raw endpoint access through local endpoint catalogs
+- allowlisted endpoint-key compatibility access through typed MCP mappings
 - secure saved-profile management across Windows, macOS, and Linux
 
 ## Contents
@@ -67,7 +67,7 @@ That wrapper exports only the selected skill directory plus small repo metadata 
 
 Saved profiles and vault files are runtime state under the local WEEX config directory. Do not ship, version, or share that state as part of the skill checkout.
 AI helper cache files `agent-init.json` and `agent-runtime.json` may also appear there. They help route later AI actions faster, but they are not secret storage.
-AI agents using this skill should refresh preflight before each routed task. Partner-only tasks with a selected profile use `weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`, which refreshes the same cache while keeping concrete Partner origin and unrelated profile routing metadata out of the tool transcript. Other tasks use `py -3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on Windows or `python3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on macOS/Linux.
+AI agents using this skill should refresh preflight before each routed task. Partner-only tasks with a selected profile use `weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`, which refreshes the same cache, requires a ready `local_user` trade-off MCP manifest, and keeps concrete Partner origin and unrelated profile routing metadata out of the tool transcript. Other tasks use `py -3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on Windows or `python3 scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty` on macOS/Linux.
 On Windows and macOS, GUI profile and vault flows always require the managed GUI runtime. The preflight step reports whether that runtime is ready, but it does not download or install one implicitly; AI should ask for confirmation before running the reported setup command.
 When a GUI must be launched from an AI/tool-managed shell, the detached launcher tries to show only the WEEX window: macOS uses a transient `.app` wrapper, while Windows prefers `pythonw.exe` or another hidden background process instead of a visible console window.
 If `agent-init.json` is missing and the AI is about to use an auto-language wrapper such as `scripts/weex_vault.py`, the AI should refresh the cache first instead of guessing.

@@ -158,7 +158,7 @@ Representative simulated futures order:
 python3 scripts/weex_contract_api.py --profile main place-order --symbol ETHUSDT --side SELL --position-side SHORT --type LIMIT --quantity 0.001 --price 10000 --time-in-force GTC --trading-mode demo --confirm-demo --pretty
 ```
 
-The convenience wrapper accepts normal contract symbols such as `BTCUSDT` or `ETHUSDT` and maps them to the official simulated-order symbol shape before sending `sim.transaction.place_order`. Raw `call --endpoint sim.transaction.place_order` expects you to provide the exact official request body yourself.
+The convenience wrapper accepts normal contract symbols such as `BTCUSDT` or `ETHUSDT` and maps them to the official simulated-order symbol shape before sending `sim.transaction.place_order`. The allowlisted `call --endpoint sim.transaction.place_order` compatibility path expects you to provide the exact official request body yourself.
 
 Simulated futures balance, position, and order-history reads use the `sim.*` endpoints and do not require a confirmation flag:
 
@@ -169,7 +169,7 @@ python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"limit":50}' --pretty
 ```
 
-For raw contract calls, `--profile is a global argument`; place it before `call`, then use `--endpoint <key>` for the official endpoint key. The client uses each endpoint's generated `request_transport` and rejects query fields sent in a documented JSON body or body fields sent in a documented query. `USER_DATA` POST endpoints are read-only queries and do not require a trade confirmation flag; `TRADE` endpoints still require the matching live or demo confirmation flag.
+For allowlisted contract endpoint-key calls, --profile is a global argument; place it before `call`, then use `--endpoint <key>` for the official endpoint key. The client maps that key to a typed MCP tool, uses the generated `request_transport`, and rejects query fields sent in a documented JSON body or body fields sent in a documented query. `USER_DATA` POST endpoints are read-only queries and do not require a trade confirmation flag; `TRADE` endpoints still require the matching live or demo confirmation flag.
 
 For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 
@@ -195,7 +195,7 @@ Current convenience wrappers:
 - Spot: `ticker`, `place-order`
 - Futures: `ticker`, `poll-ticker`, `place-order`, `cancel-order`
 
-For broader spot or futures cancel/query/history flows, use the generic `call` command with the bundled endpoint catalogs.
+For broader spot or futures cancel/query/history flows, use the allowlisted `call` compatibility command with the bundled endpoint catalogs and typed MCP mappings.
 
 ## Aggregation And Trade Guard
 
@@ -218,6 +218,15 @@ python3 scripts/weex_trade_guard.py confirm-order --trading-mode demo --intent-i
 ```
 
 For live order confirmation, use `--trading-mode live --confirm-live`. A live intent cannot be confirmed with `--confirm-demo`, and a demo intent cannot be confirmed with `--confirm-live`.
+
+After a confirm transport returns a known accepted, released, or definitively rejected exchange outcome, that outcome and the command exit code remain authoritative even if local pending-intent cleanup fails. The response then adds `intent_cleanup_warning` with this stable shape:
+
+- `code=INTENT_CLEANUP_FAILED`
+- `message=The exchange result is known, but local pending-intent cleanup did not complete.`
+- `state_error_code=<safe local state code>`
+- `next_action=KEEP_EXCHANGE_RESULT_AND_INSPECT_PENDING_INTENT_BEFORE_ANY_NEW_ORDER`
+
+Do not resubmit the exchange action. Keep the returned exchange outcome and inspect the local pending intent before previewing or confirming another order.
 
 ## Automated Strategy Authorization
 

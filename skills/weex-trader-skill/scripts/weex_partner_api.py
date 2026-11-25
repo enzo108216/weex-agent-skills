@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 from urllib import parse
 
-from weex_agent_state import ensure_private_runtime_ready, refresh_agent_records
+from weex_agent_state import (
+    ensure_private_runtime_ready,
+    project_mcp_status,
+    refresh_agent_records,
+)
 from weex_mcp_partner_compat import (
     LocalMcpPartnerSettings,
     McpPartnerCompatibilityError,
@@ -186,6 +190,7 @@ def _partner_preflight_runtime_summary(records: Mapping[str, Any]) -> Dict[str, 
     missing_modules = missing_modules if isinstance(missing_modules, list) else []
     issues = env_validation.get("issues")
     issues = issues if isinstance(issues, list) else []
+    mcp = project_mcp_status(runtime.get("mcp"))
     return {
         "requirements_ready": bool(host.get("requirements_ready")),
         "missing_modules": [str(value) for value in missing_modules],
@@ -193,6 +198,7 @@ def _partner_preflight_runtime_summary(records: Mapping[str, Any]) -> Dict[str, 
             "ok": bool(env_validation.get("ok")),
             "issue_count": len(issues),
         },
+        "mcp": mcp,
     }
 
 
@@ -262,6 +268,12 @@ def build_partner_preflight_envelope(
         not runtime["requirements_ready"]
         or runtime["missing_modules"]
         or not runtime["env_validation"]["ok"]
+        or runtime["mcp"]["installed"] is not True
+        or runtime["mcp"]["package_ok"] is not True
+        or runtime["mcp"]["manifest_ok"] is not True
+        or runtime["mcp"]["runtime_profile"] != "local_user"
+        or runtime["mcp"]["trade_enabled"] is not False
+        or runtime["mcp"]["action_required"] is not None
     ):
         return _partner_preflight_failure(
             profile_ref=requested_profile,

@@ -30,7 +30,8 @@
       "get-referral-assets",
       "get-referral-deal-data"
     ],
-    "rest_owner": "weex-trader-skill",
+    "executor_owner": "weex-trader-skill",
+    "rest_owner": "weex-mcp",
     "profile_vault_owner": "weex-trader-skill",
     "capability_mode": "read_only_query",
     "origin_policy": {

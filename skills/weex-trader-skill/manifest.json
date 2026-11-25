@@ -78,10 +78,11 @@
         ],
         "commands": [
           "list-endpoints",
+          "preflight",
           "execute"
         ],
         "needs_profile_for_private": true,
-        "operation_class": "read_only_query",
+        "capability_mode": "read_only_query",
         "origin_policy": {
           "production_default": "https://api-spot.weex.com",
           "saved_profile_test_pattern": "https://*.weex.tech",

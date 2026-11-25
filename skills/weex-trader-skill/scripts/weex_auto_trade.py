@@ -530,6 +530,8 @@ class AutoTradeFacade:
                 if isinstance(error, dict)
                 else "HARD_CHECK_FAILED"
             )
+            # This event records the guard's manual-fallback requirement. Intent persistence
+            # may still narrow the immediate next action to inspecting an existing confirmation.
             self.state.record_manual_fallback(
                 strategy_id=strategy_id,
                 authorization_id=authorization_id,
@@ -877,9 +879,22 @@ def _build_manual_fallback_intent(
 
 
 def _save_manual_fallback_intent(intent: dict[str, Any]) -> None:
-    from weex_order_intent_state import save_intent
+    from weex_order_intent_state import IntentStateError, save_intent
 
-    save_intent(intent)
+    try:
+        save_intent(intent)
+    except IntentStateError as exc:
+        if exc.code == "confirmation_started":
+            message = "an existing pending order confirmation must be inspected before creating another"
+            next_action = "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY"
+        else:
+            message = "pending order confirmation state is unavailable"
+            next_action = "DISABLE_AUTO_TRADE_AND_INSPECT_STATE"
+        raise FacadeError(
+            "STATE_CONFLICT",
+            message,
+            next_action,
+        ) from exc
 
 
 def _public_auto_result(

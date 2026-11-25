@@ -4,10 +4,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -97,11 +100,234 @@ class OrderIntentStateTests(unittest.TestCase):
                 intent_state.save_intent(intent)
 
                 loaded = intent_state.load_intent()
+                saved_path = intent_state.intent_path()
+                saved_mode = stat.S_IMODE(saved_path.stat().st_mode)
+                temp_files = list(saved_path.parent.glob("*.tmp"))
 
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded["intent_id"], intent["intent_id"])
+        if os.name != "nt":
+            self.assertEqual(saved_mode, 0o600)
+        self.assertEqual(temp_files, [])
         self.assertFalse(intent_state.intent_is_expired(intent, now_ms=300999))
         self.assertTrue(intent_state.intent_is_expired(intent, now_ms=301001))
+
+    def test_load_intent_treats_file_removed_during_read_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                )
+                intent_state.save_intent(intent)
+                with mock.patch.object(Path, "read_text", side_effect=FileNotFoundError):
+                    try:
+                        loaded = intent_state.load_intent()
+                    except FileNotFoundError as exc:
+                        self.fail(f"concurrent intent cleanup escaped as FileNotFoundError: {exc}")
+
+        self.assertIsNone(loaded)
+
+    def test_load_intent_maps_other_io_failures_to_state_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                )
+                intent_state.save_intent(intent)
+                with mock.patch.object(Path, "read_text", side_effect=PermissionError):
+                    with self.assertRaises(intent_state.IntentStateError) as failure:
+                        intent_state.load_intent()
+
+        self.assertEqual(failure.exception.code, "intent_state_unavailable")
+
+    def test_claim_intent_for_confirmation_is_single_use_and_preserves_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                )
+                intent_state.save_intent(intent)
+
+                claimed = intent_state.claim_intent_for_confirmation(
+                    expected_intent_id=intent["intent_id"],
+                    expected_risk_signature=intent["risk_signature"],
+                    expected_intent_type="order",
+                    started_at_ms=2000,
+                )
+                with self.assertRaises(intent_state.IntentStateError) as second_claim:
+                    intent_state.claim_intent_for_confirmation(
+                        expected_intent_id=intent["intent_id"],
+                        expected_risk_signature=intent["risk_signature"],
+                        expected_intent_type="order",
+                        started_at_ms=3000,
+                    )
+                persisted = intent_state.load_intent()
+
+        self.assertEqual(claimed["mcp_trade_confirmation_started_at"], 2000)
+        self.assertEqual(second_claim.exception.code, "confirmation_started")
+        self.assertEqual(persisted["mcp_trade_confirmation_started_at"], 2000)
+
+    def test_claim_intent_rejects_changed_identity_without_overwriting_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                )
+                intent_state.save_intent(intent)
+
+                with self.assertRaises(intent_state.IntentStateError) as mismatch:
+                    intent_state.claim_intent_for_confirmation(
+                        expected_intent_id="different-intent",
+                        expected_risk_signature=intent["risk_signature"],
+                        expected_intent_type="order",
+                        started_at_ms=2000,
+                    )
+                persisted = intent_state.load_intent()
+
+        self.assertEqual(mismatch.exception.code, "intent_changed")
+        self.assertEqual(persisted, intent)
+
+    def test_claim_intent_rejects_state_that_expired_before_lock_acquisition(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=1,
+                )
+                intent_state.save_intent(intent)
+
+                with self.assertRaises(intent_state.IntentStateError) as expired:
+                    intent_state.claim_intent_for_confirmation(
+                        expected_intent_id=intent["intent_id"],
+                        expected_risk_signature=intent["risk_signature"],
+                        expected_intent_type="order",
+                        started_at_ms=2000,
+                    )
+                persisted = intent_state.load_intent()
+
+        self.assertEqual(expired.exception.code, "intent_expired")
+        self.assertNotIn("mcp_trade_confirmation_started_at", persisted)
+
+    def test_save_intent_cannot_replace_confirmation_in_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                )
+                intent_state.save_intent(intent)
+                intent_state.claim_intent_for_confirmation(
+                    expected_intent_id=intent["intent_id"],
+                    expected_risk_signature=intent["risk_signature"],
+                    expected_intent_type="order",
+                    started_at_ms=2000,
+                )
+                replacement = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "ETHUSDT"},
+                    raw_order={"symbol": "ETHUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=3000,
+                    ttl_seconds=300,
+                )
+
+                with self.assertRaises(intent_state.IntentStateError) as overwrite:
+                    intent_state.save_intent(replacement)
+                persisted = intent_state.load_intent()
+
+        self.assertEqual(overwrite.exception.code, "confirmation_started")
+        self.assertEqual(persisted["intent_id"], intent["intent_id"])
+        self.assertEqual(persisted["mcp_trade_confirmation_started_at"], 2000)
+
+    def test_claim_intent_has_one_winner_across_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                )
+                intent_state.save_intent(intent)
+
+                script = """
+import json
+import sys
+sys.path.insert(0, sys.argv[1])
+import weex_order_intent_state as state
+try:
+    state.claim_intent_for_confirmation(
+        expected_intent_id=sys.argv[2],
+        expected_risk_signature=sys.argv[3],
+        expected_intent_type="order",
+        started_at_ms=2000,
+    )
+except state.IntentStateError as exc:
+    print(json.dumps({"status": exc.code}))
+else:
+    print(json.dumps({"status": "claimed"}))
+"""
+                child_env = dict(os.environ)
+                child_env["WEEX_TRADER_SKILL_HOME"] = tempdir
+                child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+                command = [
+                    sys.executable,
+                    "-c",
+                    script,
+                    str(SCRIPTS),
+                    intent["intent_id"],
+                    intent["risk_signature"],
+                ]
+                processes = [
+                    subprocess.Popen(
+                        command,
+                        env=child_env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    for _ in range(2)
+                ]
+                results = [process.communicate(timeout=10) for process in processes]
+
+        for process, (_stdout, stderr) in zip(processes, results):
+            self.assertEqual(process.returncode, 0, stderr)
+        statuses = sorted(json.loads(stdout)["status"] for stdout, _stderr in results)
+        self.assertEqual(statuses, ["claimed", "confirmation_started"])
 
     def test_risk_signature_binds_trading_mode(self) -> None:
         live_intent = intent_state.build_intent(
@@ -828,6 +1054,158 @@ class TradeGuardTests(unittest.TestCase):
         self.assertIsNone(remaining_intent)
         self.assertIn('"order_id": "9001"', stream.getvalue())
 
+    def test_confirm_order_preserves_accepted_result_when_intent_cleanup_fails(self) -> None:
+        args = mock.Mock(
+            intent_id="intent-cleanup",
+            risk_signature="sig-cleanup",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        accepted = {
+            "ok": True,
+            "data": {"order_id": "9001"},
+            "outcome": {"class": "accepted", "write_attempted": True, "action": "order"},
+            "trade_status": "ACCEPTED",
+            "review_required": False,
+        }
+
+        for failure_point in ("before_unlink", "after_unlink"):
+            with self.subTest(failure_point=failure_point):
+                with tempfile.TemporaryDirectory() as tempdir:
+                    with mock.patch.dict(
+                        os.environ,
+                        {"WEEX_TRADER_SKILL_HOME": tempdir},
+                        clear=False,
+                    ):
+                        intent = intent_state.build_intent(
+                            profile_name="demo",
+                            market="futures",
+                            order_preview={"symbol": "BTCUSDT"},
+                            raw_order={"symbol": "BTCUSDT"},
+                            analysis_output={"alerts": []},
+                            now_ms=1000,
+                            ttl_seconds=300,
+                            mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                        )
+                        intent["intent_id"] = args.intent_id
+                        intent["risk_signature"] = args.risk_signature
+                        intent_state.save_intent(intent)
+
+                        if failure_point == "before_unlink":
+                            cleanup_patch = mock.patch.object(
+                                trade_guard,
+                                "clear_intent",
+                                side_effect=intent_state.IntentStateError(
+                                    "intent_state_unavailable",
+                                    "injected cleanup failure",
+                                ),
+                            )
+                        else:
+                            real_fsync = intent_state._fsync_directory
+                            fsync_calls = 0
+
+                            def fail_second_fsync(path):
+                                nonlocal fsync_calls
+                                fsync_calls += 1
+                                if fsync_calls == 2:
+                                    raise OSError("injected directory fsync failure")
+                                return real_fsync(path)
+
+                            cleanup_patch = mock.patch.object(
+                                intent_state,
+                                "_fsync_directory",
+                                side_effect=fail_second_fsync,
+                            )
+
+                        stream = io.StringIO()
+                        with cleanup_patch, mock.patch.object(
+                            trade_guard,
+                            "_confirm_saved_trade_preview",
+                            return_value=accepted,
+                        ), mock.patch.object(sys, "stdout", stream):
+                            try:
+                                exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+                            except intent_state.IntentStateError as exc:
+                                self.fail(f"known accepted result was replaced by cleanup error: {exc}")
+                        remaining = intent_state.load_intent()
+
+                self.assertEqual(exit_code, 0)
+                payload = json.loads(stream.getvalue())
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["order_id"], "9001")
+                self.assertEqual(
+                    payload["intent_cleanup_warning"]["code"],
+                    "INTENT_CLEANUP_FAILED",
+                )
+                if failure_point == "before_unlink":
+                    self.assertIsNotNone(remaining)
+                else:
+                    self.assertIsNone(remaining)
+
+    def test_concurrent_confirm_order_claims_intent_once(self) -> None:
+        args = mock.Mock(
+            intent_id="intent-concurrent",
+            risk_signature="sig-concurrent",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        accepted = {
+            "ok": True,
+            "data": {"order_id": "9001"},
+            "outcome": {"class": "accepted", "write_attempted": True, "action": "order"},
+            "trade_status": "ACCEPTED",
+            "review_required": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                )
+                intent["intent_id"] = args.intent_id
+                intent["risk_signature"] = args.risk_signature
+                intent_state.save_intent(intent)
+                read_barrier = threading.Barrier(2)
+                real_load = trade_guard.load_intent
+
+                def synchronized_load():
+                    loaded = real_load()
+                    read_barrier.wait(timeout=5)
+                    return loaded
+
+                with mock.patch.object(
+                    trade_guard,
+                    "load_intent",
+                    side_effect=synchronized_load,
+                ), mock.patch.object(
+                    trade_guard,
+                    "_confirm_saved_trade_preview",
+                    return_value=accepted,
+                ) as submit_mock, mock.patch.object(trade_guard, "_output_json"):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        results = list(
+                            executor.map(
+                                lambda _index: trade_guard.cmd_confirm_order(args, now_ms=2000),
+                                range(2),
+                            )
+                        )
+
+        self.assertEqual(sorted(results), [0, 1])
+        submit_mock.assert_called_once()
+
     def test_confirm_order_executes_bound_auto_fallback_once(self) -> None:
         args = mock.Mock(
             intent_id="fallback-intent",
@@ -888,6 +1266,143 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(submit_mock.call_args.args[0]["intent_id"], "fallback-intent")
         self.assertIsNone(remaining_intent)
         self.assertEqual(json.loads(stream.getvalue())["status"], "ACCEPTED")
+
+    def test_concurrent_auto_fallback_claims_intent_once(self) -> None:
+        args = mock.Mock(
+            intent_id="fallback-concurrent",
+            risk_signature="fallback-concurrent-signature",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        order = {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quantity": "0.001",
+        }
+        accepted = {
+            "ok": True,
+            "status": "ACCEPTED",
+            "results": [{"leg_id": "leg-0", "status": "ACCEPTED", "orderId": "9002"}],
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="live-profile",
+                    market="spot",
+                    trading_mode="live",
+                    order_preview={"operation_key": "spot.order.place_order", "orders": [order]},
+                    raw_order=order,
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                )
+                intent.update(
+                    {
+                        "intent_id": args.intent_id,
+                        "risk_signature": args.risk_signature,
+                        "auto_fallback_operation_key": "spot.order.place_order",
+                        "auto_fallback_orders": [order],
+                    }
+                )
+                intent_state.save_intent(intent)
+                read_barrier = threading.Barrier(2)
+                real_load = trade_guard.load_intent
+
+                def synchronized_load():
+                    loaded = real_load()
+                    read_barrier.wait(timeout=5)
+                    return loaded
+
+                with mock.patch.object(
+                    trade_guard,
+                    "load_intent",
+                    side_effect=synchronized_load,
+                ), mock.patch.object(
+                    trade_guard,
+                    "_submit_live_auto_fallback_order",
+                    return_value=accepted,
+                ) as submit_mock, mock.patch.object(trade_guard, "_output_json"):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        results = list(
+                            executor.map(
+                                lambda _index: trade_guard.cmd_confirm_order(args, now_ms=2000),
+                                range(2),
+                            )
+                        )
+
+        self.assertEqual(sorted(results), [0, 1])
+        submit_mock.assert_called_once()
+
+    def test_auto_fallback_review_required_preserves_claimed_intent(self) -> None:
+        args = mock.Mock(
+            intent_id="fallback-review",
+            risk_signature="fallback-review-signature",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        order = {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quantity": "0.001",
+        }
+
+        for status in ("REVIEW_REQUIRED", "SUBMISSION_GROUP_PARTIAL"):
+            with self.subTest(status=status):
+                with tempfile.TemporaryDirectory() as tempdir:
+                    with mock.patch.dict(
+                        os.environ,
+                        {"WEEX_TRADER_SKILL_HOME": tempdir},
+                        clear=False,
+                    ):
+                        intent = intent_state.build_intent(
+                            profile_name="live-profile",
+                            market="spot",
+                            trading_mode="live",
+                            order_preview={
+                                "operation_key": "spot.order.place_order",
+                                "orders": [order],
+                            },
+                            raw_order=order,
+                            analysis_output={"alerts": []},
+                            now_ms=1000,
+                            ttl_seconds=300,
+                            mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                        )
+                        intent.update(
+                            {
+                                "intent_id": args.intent_id,
+                                "risk_signature": args.risk_signature,
+                                "auto_fallback_operation_key": "spot.order.place_order",
+                                "auto_fallback_orders": [order],
+                            }
+                        )
+                        intent_state.save_intent(intent)
+                        with mock.patch.object(
+                            trade_guard,
+                            "_submit_live_auto_fallback_order",
+                            return_value={
+                                "ok": False,
+                                "status": status,
+                                "results": [],
+                                "next_action": "INSPECT_RESULT_BEFORE_ANY_NEW_ORDER",
+                            },
+                        ), mock.patch.object(trade_guard, "_output_json"):
+                            exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+                        remaining = intent_state.load_intent()
+
+                self.assertEqual(exit_code, 0)
+                self.assertIsNotNone(remaining)
+                self.assertEqual(remaining["mcp_trade_confirmation_started_at"], 2000)
 
     def test_confirm_order_unknown_is_review_required_and_cannot_be_replayed(self) -> None:
         args = mock.Mock(
@@ -954,6 +1469,95 @@ class TradeGuardTests(unittest.TestCase):
         self.assertTrue(payload["review_required"])
         self.assertEqual(payload["outcome"]["class"], "unknown")
 
+    def test_expired_confirm_does_not_clear_concurrently_claimed_unknown_intent(self) -> None:
+        args = mock.Mock(
+            intent_id="intent-expiry-race",
+            risk_signature="sig-expiry-race",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        unknown = {
+            "ok": False,
+            "error": {"code": "upstream_error", "message": "uncertain"},
+            "outcome": {
+                "class": "unknown",
+                "write_attempted": True,
+                "action": "order",
+                "client_order_id": "client-1",
+            },
+            "trade_status": "REVIEW_REQUIRED",
+            "review_required": True,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=1,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                )
+                intent["intent_id"] = args.intent_id
+                intent["risk_signature"] = args.risk_signature
+                intent_state.save_intent(intent)
+                read_barrier = threading.Barrier(2)
+                transport_started = threading.Event()
+                real_load = trade_guard.load_intent
+
+                def synchronized_load():
+                    loaded = real_load()
+                    read_barrier.wait(timeout=5)
+                    return loaded
+
+                def controlled_expiry(_payload, *, now_ms):
+                    if now_ms == 2500:
+                        self.assertTrue(transport_started.wait(timeout=5))
+                        return True
+                    return False
+
+                def return_unknown(**_kwargs):
+                    transport_started.set()
+                    return unknown
+
+                with mock.patch.object(
+                    trade_guard,
+                    "load_intent",
+                    side_effect=synchronized_load,
+                ), mock.patch.object(
+                    trade_guard,
+                    "intent_is_expired",
+                    side_effect=controlled_expiry,
+                ), mock.patch.object(
+                    trade_guard,
+                    "_confirm_saved_trade_preview",
+                    side_effect=return_unknown,
+                ) as submit_mock, mock.patch.object(trade_guard, "_output_json"):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        active = executor.submit(
+                            trade_guard.cmd_confirm_order,
+                            args,
+                            now_ms=1500,
+                        )
+                        expired = executor.submit(
+                            trade_guard.cmd_confirm_order,
+                            args,
+                            now_ms=2500,
+                        )
+                        results = [active.result(timeout=5), expired.result(timeout=5)]
+                remaining = intent_state.load_intent()
+
+        self.assertEqual(results, [1, 1])
+        submit_mock.assert_called_once()
+        self.assertIsNotNone(remaining)
+        self.assertEqual(remaining["mcp_trade_confirmation_started_at"], 1500)
+
     def test_unknown_intent_blocks_new_preview_before_risk_or_mcp_calls(self) -> None:
         args = mock.Mock(
             profile="demo",
@@ -995,6 +1599,89 @@ class TradeGuardTests(unittest.TestCase):
                 remaining = intent_state.load_intent()
 
         aggregator_mock.assert_not_called()
+        self.assertEqual(remaining["mcp_trade_confirmation_started_at"], 2000)
+
+    def test_preview_race_with_confirmation_returns_structured_error(self) -> None:
+        risk_payload = {
+            "order_preview": {
+                "symbol": "BTCUSDT",
+                "market": "futures",
+            }
+        }
+        analysis_payload = {
+            "has_risk": False,
+            "alerts": [],
+            "confirmation_required": True,
+            "next_action_hint": "continue order",
+        }
+        aggregator_instance = mock.Mock()
+        aggregator_instance.collect_order_risk_payload.return_value = risk_payload
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                pending = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                )
+                intent_state.save_intent(pending)
+
+                def claim_during_preview(**_kwargs):
+                    intent_state.claim_intent_for_confirmation(
+                        expected_intent_id=pending["intent_id"],
+                        expected_risk_signature=pending["risk_signature"],
+                        expected_intent_type="order",
+                        started_at_ms=2000,
+                    )
+                    return fake_mcp_trade_preview(expires_at=600)
+
+                stream = io.StringIO()
+                with mock.patch.object(
+                    trade_guard,
+                    "TradeDataAggregator",
+                    return_value=aggregator_instance,
+                ), mock.patch.object(
+                    trade_guard,
+                    "_preview_manual_order_trade",
+                    side_effect=claim_during_preview,
+                ), mock.patch.object(
+                    trade_guard.analysis,
+                    "analyze_order_risk",
+                    return_value=analysis_payload,
+                ), mock.patch.object(sys, "stdout", stream):
+                    try:
+                        exit_code = trade_guard.main(
+                            [
+                                "preview-order",
+                                "--profile",
+                                "demo",
+                                "--market",
+                                "futures",
+                                "--order-json",
+                                json.dumps(
+                                    {
+                                        "symbol": "BTCUSDT",
+                                        "side": "BUY",
+                                        "position_side": "LONG",
+                                        "order_type": "MARKET",
+                                        "quantity": "0.001",
+                                    }
+                                ),
+                            ]
+                        )
+                    except intent_state.IntentStateError as exc:
+                        self.fail(f"preview confirmation race escaped the JSON CLI: {exc}")
+                remaining = intent_state.load_intent()
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(stream.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("confirmation already started", payload["error"].lower())
         self.assertEqual(remaining["mcp_trade_confirmation_started_at"], 2000)
 
     def test_rejection_and_not_sent_clear_intent_for_fresh_preview(self) -> None:
@@ -1736,6 +2423,82 @@ class TradeGuardTests(unittest.TestCase):
         self.assertTrue(payload["environment"]["uses_real_funds"])
         self.assertEqual(payload["environment"]["notice"], "custom live TP/SL environment")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
+
+    def test_concurrent_confirm_tp_sl_claims_intent_once(self) -> None:
+        args = mock.Mock(
+            intent_id="intent-tpsl-concurrent",
+            risk_signature="sig-tpsl-concurrent",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        tp_sl_order = {
+            "symbol": "ETHUSDT",
+            "clientAlgoId": "mon_price_demo",
+            "planType": "TAKE_PROFIT",
+            "triggerPrice": "2500",
+            "executePrice": "0",
+            "quantity": "0.2",
+            "positionSide": "SHORT",
+            "triggerPriceType": "CONTRACT_PRICE",
+        }
+        accepted = {
+            "ok": True,
+            "data": {"algoId": "7001", "clientAlgoId": "mon_price_demo"},
+            "outcome": {"class": "accepted", "write_attempted": True, "action": "tp_sl"},
+            "trade_status": "ACCEPTED",
+            "review_required": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview=tp_sl_order,
+                    raw_order=tp_sl_order,
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    intent_type="tp_sl_order",
+                    tp_sl_order=tp_sl_order,
+                    mcp_trade_preview=fake_mcp_trade_preview(
+                        legacy_key="transaction.place_tp_sl_order",
+                        expires_at=600,
+                    ),
+                )
+                intent["intent_id"] = args.intent_id
+                intent["risk_signature"] = args.risk_signature
+                intent_state.save_intent(intent)
+                read_barrier = threading.Barrier(2)
+                real_load = trade_guard.load_intent
+
+                def synchronized_load():
+                    loaded = real_load()
+                    read_barrier.wait(timeout=5)
+                    return loaded
+
+                with mock.patch.object(
+                    trade_guard,
+                    "load_intent",
+                    side_effect=synchronized_load,
+                ), mock.patch.object(
+                    trade_guard,
+                    "_confirm_saved_trade_preview",
+                    return_value=accepted,
+                ) as submit_mock, mock.patch.object(trade_guard, "_output_json"):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        results = list(
+                            executor.map(
+                                lambda _index: trade_guard.cmd_confirm_tp_sl(args, now_ms=2000),
+                                range(2),
+                            )
+                        )
+
+        self.assertEqual(sorted(results), [0, 1])
+        submit_mock.assert_called_once()
 
     def test_confirm_order_requires_intent_id_and_risk_signature(self) -> None:
         args = mock.Mock(intent_id=None, risk_signature=None, confirm_live=True, pretty=False)

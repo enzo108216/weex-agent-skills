@@ -18,7 +18,9 @@ import weex_trade_risk_review as analysis
 from weex_auto_trade_amount import ValuationUnavailable, estimate_order_amount
 from weex_auto_trade_state import StateConflictError
 from weex_order_intent_state import (
+    IntentStateError,
     build_intent,
+    claim_intent_for_confirmation,
     clear_intent,
     intent_is_expired,
     load_intent,
@@ -2258,6 +2260,32 @@ def _confirm_flags_match_mode(args: argparse.Namespace, trading_mode: str) -> bo
     return confirm_live and not confirm_demo
 
 
+def _clear_claimed_intent_after_transport(
+    intent: dict[str, Any],
+    *,
+    expected_intent_type: str,
+) -> dict[str, str] | None:
+    try:
+        cleared = clear_intent(
+            expected_intent_id=str(intent["intent_id"]),
+            expected_risk_signature=str(intent["risk_signature"]),
+            expected_intent_type=expected_intent_type,
+            expected_confirmation_started=True,
+        )
+    except IntentStateError as exc:
+        state_error_code = exc.code
+    else:
+        if cleared:
+            return None
+        state_error_code = "intent_state_changed"
+    return {
+        "code": "INTENT_CLEANUP_FAILED",
+        "message": "The exchange result is known, but local pending-intent cleanup did not complete.",
+        "state_error_code": state_error_code,
+        "next_action": "KEEP_EXCHANGE_RESULT_AND_INSPECT_PENDING_INTENT_BEFORE_ANY_NEW_ORDER",
+    }
+
+
 def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
     intent = load_intent()
     if intent is None:
@@ -2280,8 +2308,18 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         return 1
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     if intent_is_expired(intent, now_ms=current_ms):
-        clear_intent()
-        _output_json({"ok": False, "error": "Pending order intent has expired. Generate a new preview first."}, args.pretty)
+        cleared = clear_intent(
+            expected_intent_id=str(intent.get("intent_id") or ""),
+            expected_risk_signature=str(intent.get("risk_signature") or ""),
+            expected_intent_type="order",
+            expected_confirmation_started=False,
+        )
+        error = (
+            "Pending order intent has expired. Generate a new preview first."
+            if cleared
+            else "Pending order intent was already submitted or became uncertain. Generate a new preview only after inspecting the prior result."
+        )
+        _output_json({"ok": False, "error": error}, args.pretty)
         return 1
     intent_mode = _normalize_trading_mode(intent.get("trading_mode", DEFAULT_TRADING_MODE))
     requested_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", intent_mode))
@@ -2320,9 +2358,46 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         _output_json({"ok": False, "error": "Risk signature does not match the saved pending order."}, args.pretty)
         return 1
 
+    if intent.get("auto_fallback_operation_key") is None:
+        mcp_trade_preview = intent.get("mcp_trade_preview")
+        if not isinstance(mcp_trade_preview, dict):
+            _output_json(
+                {
+                    "ok": False,
+                    "error": "Pending order intent is missing its MCP Trade preview. Generate a new preview first.",
+                },
+                args.pretty,
+            )
+            return 1
+    try:
+        intent = claim_intent_for_confirmation(
+            expected_intent_id=str(intent["intent_id"]),
+            expected_risk_signature=str(intent["risk_signature"]),
+            expected_intent_type="order",
+            started_at_ms=now_ms,
+        )
+    except IntentStateError as exc:
+        if exc.code == "confirmation_started":
+            error = "Pending order intent was already submitted or became uncertain. Generate a new preview only after inspecting the prior result."
+        elif exc.code == "intent_missing":
+            error = "No pending order intent was found."
+        elif exc.code == "intent_changed":
+            error = "Intent id does not match the saved pending order."
+        elif exc.code == "intent_expired":
+            error = "Pending order intent has expired. Generate a new preview first."
+        else:
+            error = "Pending order intent could not be claimed safely. No request was sent."
+        _output_json({"ok": False, "error": error}, args.pretty)
+        return 1
+
+    cleanup_warning = None
     if intent.get("auto_fallback_operation_key") is not None:
         execution_payload = _submit_live_auto_fallback_order(intent)
-        clear_intent()
+        if str(execution_payload.get("status") or "").upper() in {"ACCEPTED", "RELEASED"}:
+            cleanup_warning = _clear_claimed_intent_after_transport(
+                intent,
+                expected_intent_type="order",
+            )
     else:
         mcp_trade_preview = intent.get("mcp_trade_preview")
         if not isinstance(mcp_trade_preview, dict):
@@ -2334,21 +2409,25 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
                 args.pretty,
             )
             return 1
-        intent["mcp_trade_confirmation_started_at"] = current_ms
-        save_intent(intent)
         trade_response = _confirm_saved_trade_preview(
             profile_name=str(intent["profile_name"]),
             preview=dict(mcp_trade_preview),
         )
         if trade_response.get("ok") is True:
-            clear_intent()
+            cleanup_warning = _clear_claimed_intent_after_transport(
+                intent,
+                expected_intent_type="order",
+            )
             execution_payload = _trade_execution_payload(
                 trade_response,
                 operation_label=f"{intent_mode} order",
             )
         else:
             if trade_response.get("review_required") is not True:
-                clear_intent()
+                cleanup_warning = _clear_claimed_intent_after_transport(
+                    intent,
+                    expected_intent_type="order",
+                )
             environment = intent.get("environment")
             if not isinstance(environment, dict):
                 environment = _environment_for_mode(intent_mode, str(intent["market"]))
@@ -2363,6 +2442,8 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
             }
             if "data" in trade_response:
                 response["result"] = trade_response["data"]
+            if cleanup_warning is not None:
+                response["intent_cleanup_warning"] = cleanup_warning
             response["user_environment_prefix"] = _query_environment_prefix(
                 environment,
                 language=_arg_value(args, "language", None),
@@ -2373,6 +2454,8 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
     if not isinstance(environment, dict):
         environment = _environment_for_mode(intent_mode, str(intent["market"]))
     response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
+    if cleanup_warning is not None:
+        response["intent_cleanup_warning"] = cleanup_warning
     response["user_environment_prefix"] = _query_environment_prefix(
         environment,
         language=_arg_value(args, "language", None),
@@ -2403,8 +2486,18 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         return 1
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     if intent_is_expired(intent, now_ms=current_ms):
-        clear_intent()
-        _output_json({"ok": False, "error": "Pending TP/SL intent has expired. Generate a new preview first."}, args.pretty)
+        cleared = clear_intent(
+            expected_intent_id=str(intent.get("intent_id") or ""),
+            expected_risk_signature=str(intent.get("risk_signature") or ""),
+            expected_intent_type="tp_sl_order",
+            expected_confirmation_started=False,
+        )
+        error = (
+            "Pending TP/SL intent has expired. Generate a new preview first."
+            if cleared
+            else "Pending TP/SL intent was already submitted or became uncertain. Inspect the prior result before creating another preview."
+        )
+        _output_json({"ok": False, "error": error}, args.pretty)
         return 1
     intent_mode = _normalize_trading_mode(intent.get("trading_mode", DEFAULT_TRADING_MODE))
     requested_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", intent_mode))
@@ -2442,8 +2535,36 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
             args.pretty,
         )
         return 1
-    intent["mcp_trade_confirmation_started_at"] = current_ms
-    save_intent(intent)
+    try:
+        intent = claim_intent_for_confirmation(
+            expected_intent_id=str(intent["intent_id"]),
+            expected_risk_signature=str(intent["risk_signature"]),
+            expected_intent_type="tp_sl_order",
+            started_at_ms=now_ms,
+        )
+    except IntentStateError as exc:
+        if exc.code == "confirmation_started":
+            error = "Pending TP/SL intent was already submitted or became uncertain. Inspect the prior result before creating another preview."
+        elif exc.code == "intent_missing":
+            error = "No pending TP/SL intent was found."
+        elif exc.code == "intent_changed":
+            error = "Intent id does not match the saved pending TP/SL order."
+        elif exc.code == "intent_expired":
+            error = "Pending TP/SL intent has expired. Generate a new preview first."
+        else:
+            error = "Pending TP/SL intent could not be claimed safely. No request was sent."
+        _output_json({"ok": False, "error": error}, args.pretty)
+        return 1
+    mcp_trade_preview = intent.get("mcp_trade_preview")
+    if not isinstance(mcp_trade_preview, dict):
+        _output_json(
+            {
+                "ok": False,
+                "error": "Pending TP/SL intent is missing its MCP Trade preview. Generate a new preview first.",
+            },
+            args.pretty,
+        )
+        return 1
     trade_response = _confirm_saved_trade_preview(
         profile_name=str(intent["profile_name"]),
         preview=dict(mcp_trade_preview),
@@ -2452,8 +2573,12 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
     if not isinstance(environment, dict):
         environment = _environment_for_mode(intent_mode, "futures")
     if trade_response.get("ok") is not True:
+        cleanup_warning = None
         if trade_response.get("review_required") is not True:
-            clear_intent()
+            cleanup_warning = _clear_claimed_intent_after_transport(
+                intent,
+                expected_intent_type="tp_sl_order",
+            )
         response = {
             "ok": False,
             "status": trade_response.get("trade_status") or "NOT_SENT",
@@ -2465,18 +2590,25 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         }
         if "data" in trade_response:
             response["result"] = trade_response["data"]
+        if cleanup_warning is not None:
+            response["intent_cleanup_warning"] = cleanup_warning
         response["user_environment_prefix"] = _query_environment_prefix(
             environment,
             language=_arg_value(args, "language", None),
         )
         _output_json(response, args.pretty)
         return 1
-    clear_intent()
+    cleanup_warning = _clear_claimed_intent_after_transport(
+        intent,
+        expected_intent_type="tp_sl_order",
+    )
     execution_payload = _trade_execution_payload(
         trade_response,
         operation_label="Live TP/SL",
     )
     response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
+    if cleanup_warning is not None:
+        response["intent_cleanup_warning"] = cleanup_warning
     response["user_environment_prefix"] = _query_environment_prefix(
         environment,
         language=_arg_value(args, "language", None),
@@ -2580,7 +2712,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "account-scan":
             return cmd_account_scan(args)
         raise SystemExit(f"Unsupported command: {args.command}")
-    except AggregationInputError as exc:
+    except (AggregationInputError, IntentStateError) as exc:
         _output_error(str(exc), bool(getattr(args, "pretty", False)))
         return 1
 

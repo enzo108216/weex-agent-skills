@@ -128,9 +128,9 @@ Example prompts:
 
 Use [`weex-partner-skill`](skills/weex-partner-skill/SKILL.md) for read-only WEEX Partner referral, commission, direct-user asset/trade, sub-agent, relationship, asset, and deal-data queries.
 
-It reuses the same saved profile and Application Vault as `weex-trader-skill`; REST access and credentials remain in trader. A Partner-capable profile can still place normal orders through trader's existing preview and explicit confirmation gates.
+It reuses the same saved profile and Application Vault as `weex-trader-skill`. Trader retains profile/Vault selection and the compatibility envelope, while the verified MCP owns Partner REST routing, signing, and HTTPS transport. A Partner-capable profile can still place normal orders through trader's existing preview and explicit confirmation gates.
 
-Partner-only turns use trader's safe Partner preflight, which reports the selected profile identity and `partner_production|partner_test` label without placing the concrete test origin, API-key hint, or unrelated profile routing metadata in the tool transcript.
+Partner-only turns use trader's safe Partner preflight, which verifies Local MCP readiness and reports only safe runtime state, the selected profile identity, and the `partner_production|partner_test` label without placing the concrete test origin, API-key hint, or unrelated profile routing metadata in the tool transcript.
 
 Example: `"Use $weex-partner-skill to query my commission for the official default time range and explain the actual UTC range."`
 
