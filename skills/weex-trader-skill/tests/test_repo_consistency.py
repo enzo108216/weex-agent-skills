@@ -47,6 +47,7 @@ CONTRACT_API_DEFINITIONS_REFERENCE = ROOT / "references" / "contract-api-definit
 PARTNER_API_DEFINITIONS = ROOT / "references" / "partner-api-definitions.json"
 MCP_CAPABILITY_MAPPING = ROOT / "references" / "mcp-capability-mapping.json"
 MCP_GATEWAY = ROOT / "scripts" / "weex_mcp_gateway.py"
+MCP_READ_FACADE = ROOT / "scripts" / "weex_mcp_read_compat.py"
 SPOT_API_DEFINITIONS = ROOT / "references" / "spot-api-definitions.json"
 SPOT_API_DEFINITIONS_MD = ROOT / "references" / "spot-api-definitions.md"
 CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
@@ -182,16 +183,23 @@ class RepoConsistencyTests(unittest.TestCase):
 
     def test_manifest_and_file_index_register_local_mcp_readiness_without_lockfile_dependency(self) -> None:
         self.assertTrue(MCP_GATEWAY.exists())
+        self.assertTrue(MCP_READ_FACADE.exists())
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
         gateway_path = "scripts/weex_mcp_gateway.py"
+        read_facade_path = "scripts/weex_mcp_read_compat.py"
 
         self.assertEqual(
             manifest["routing"]["compatibility"]["local_mcp_gateway"],
             gateway_path,
         )
+        self.assertEqual(
+            manifest["routing"]["compatibility"]["mcp_read_facade"],
+            read_facade_path,
+        )
         for path in (
             gateway_path,
+            read_facade_path,
             "scripts/weex_profile_store.py",
             "scripts/weex_agent_state.py",
             "scripts/weex_runtime_setup.py",

@@ -331,7 +331,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(payload["mapping_version"], "trader-mcp-capability-v2")
 
         candidate = payload["verified_mcp_candidate"]
-        source_commit = "f3e9d22195936fc07760542ced2584692c637abd"
+        source_commit = "913b30e0343ddcdb83d74379d98b3a072b354e3e"
         self.assertEqual(
             {
                 key: candidate[key]
@@ -355,8 +355,8 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             candidate["distribution_sha256"],
             {
-                "wheel": "1d28a9541b05dcec242b62c526e9e46c31b1f24a62d09791f1b6ae0746dcc69b",
-                "sdist": "c504244bdfc3c63864612a96c0156b722f8e1ecfaa9602071510b9889e5e274d",
+                "wheel": "757c9ec8278139e70a28ffbef738f21f30eab0ebaa6ea42c037657b178dd782d",
+                "sdist": "32f1da83eaf1f3421e1f341704514b150a8621c760233e8b8701b3b3aa62d8bf",
             },
         )
         for digest in candidate["distribution_sha256"].values():
@@ -367,26 +367,26 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
             ("broker_server", False): {
                 "tool_count": 26,
                 "tool_set_digest": "sha256:1abdc9a2ad78310de4c450f32310c9f985004733ba094c7370a28afc024d767f",
-                "schema_digest": "sha256:5717e75476cdf57b0256129ab312dc7628c1ae8b226dd92f12922c8353223e85",
-                "manifest_digest": "sha256:e9f9b7bdde47aa13cc0bfbb99aed108893868e83c9c52ae32cffac8ac95fec1b",
+                "schema_digest": "sha256:45146531a09ffa99fa5e57b696341d90541274660e5689fe9aaecced06cd3ed5",
+                "manifest_digest": "sha256:91c5e6049046ebe8ac0000f278d922af2dfaa1e337e19e435c943883ae9497af",
             },
             ("broker_server", True): {
                 "tool_count": 52,
                 "tool_set_digest": "sha256:e4b7b026283486499cc4ced31c1abdf29a703f910936b0be26158e492e42d9cf",
-                "schema_digest": "sha256:e0ef06d268c730b4dddfce42249db1e81f2476045a7429a5f10e7129d1241903",
-                "manifest_digest": "sha256:95076586d3b6815471fdebaeb372847819a5653d0422d6e6c368c2aa1419a0a2",
+                "schema_digest": "sha256:81a4ba853969fbdaf3767df9f8938f531977a8d68b90593f9a78f2646b3da3da",
+                "manifest_digest": "sha256:06ef9b0c41e7acd62cb1db42810341491a9c4b2838070ccbe393d5ca0e4e2115",
             },
             ("local_user", False): {
                 "tool_count": 31,
                 "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
-                "schema_digest": "sha256:421f6c3a8cea15157db03230594896a83de2d51b66551cbf17bb949aa646cbe1",
-                "manifest_digest": "sha256:3f1ba1d9ad7be37744808c753995108e457758fca50cc95ebe9948abd9d23719",
+                "schema_digest": "sha256:10fa8579693a221251874fd65145a3d49f50d76ceb31516ce5f2a16cd7a6d50d",
+                "manifest_digest": "sha256:a30ddae053088dff1d462f4a2d2c3914790548b8d7dba4ac6f75f1e81d9c1c74",
             },
             ("local_user", True): {
                 "tool_count": 57,
                 "tool_set_digest": "sha256:6479ec2cb74a21a45266dd44455b4a44610dc5d9c8bc3d98e1df6d8e37ce8728",
-                "schema_digest": "sha256:f06dcb743415693457c161de7a723068f02bfaf9f40780d0df038cf8d41c666f",
-                "manifest_digest": "sha256:7bb0d06590f3ebd97671df5fd1fa2981f107fe8fd86bf4d6f2c359f710048ec8",
+                "schema_digest": "sha256:458e41b3fc601bc484b568e38329bd714ba6b28870cbffe86fa55bb36617e917",
+                "manifest_digest": "sha256:36682513ae0951c866e851433f7cb20167416fe4a0ea9d582f5379ffab04dbd7",
             },
         }
         profiles = candidate["compatibility_profiles"]

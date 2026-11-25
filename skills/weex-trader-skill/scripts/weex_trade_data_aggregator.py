@@ -6,11 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import time
 from dataclasses import dataclass
 from typing import Any
 
+from weex_mcp_read_compat import resolve_local_mcp_read_settings
 from weex_profile_language import resolve_language
 
 
@@ -2266,40 +2266,38 @@ class WeexApiFetcher:
             allow_invalid_default=False,
         )
         contract_api.require_private_profile(profile)
-        env_base_url = os.getenv("WEEX_CONTRACT_API_BASE") or os.getenv("WEEX_API_BASE")
-        base_url = (
-            (profile.contract_base_url if profile else "")
-            or env_base_url
-            or contract_api.DEFAULT_BASE_URL
+        read_settings = resolve_local_mcp_read_settings(
+            profile=profile,
+            active_product="contract",
         )
-        locale = os.getenv("WEEX_LOCALE") or contract_api.DEFAULT_LOCALE
-        timeout = float(os.getenv("WEEX_API_TIMEOUT", contract_api.DEFAULT_TIMEOUT))
         client = contract_api.WeexContractClient(
-            base_url=base_url,
-            timeout=timeout,
-            locale=locale,
+            base_url=read_settings.futures_base_url,
+            timeout=read_settings.timeout_seconds,
+            locale=read_settings.locale,
             api_key=None,
             api_secret=None,
             api_passphrase=None,
             profile_name=profile.name if profile else None,
+            mcp_read_settings=read_settings,
         )
         return contract_api, client
 
     def _build_public_contract_client(self) -> tuple[Any, Any]:
         contract_api = self._contract_module()
         contract_api.refresh_agent_records(command="trade-aggregator.contract.public")
-        env_base_url = os.getenv("WEEX_CONTRACT_API_BASE") or os.getenv("WEEX_API_BASE")
-        base_url = env_base_url or contract_api.DEFAULT_BASE_URL
-        locale = os.getenv("WEEX_LOCALE") or contract_api.DEFAULT_LOCALE
-        timeout = float(os.getenv("WEEX_API_TIMEOUT", contract_api.DEFAULT_TIMEOUT))
+        read_settings = resolve_local_mcp_read_settings(
+            profile=None,
+            active_product="contract",
+        )
         client = contract_api.WeexContractClient(
-            base_url=base_url,
-            timeout=timeout,
-            locale=locale,
+            base_url=read_settings.futures_base_url,
+            timeout=read_settings.timeout_seconds,
+            locale=read_settings.locale,
             api_key=None,
             api_secret=None,
             api_passphrase=None,
             profile_name=None,
+            mcp_read_settings=read_settings,
         )
         return contract_api, client
 
@@ -2316,22 +2314,19 @@ class WeexApiFetcher:
             allow_invalid_default=False,
         )
         spot_api.require_private_profile(profile)
-        env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
-        base_url = (
-            (profile.spot_base_url if profile else "")
-            or env_base_url
-            or spot_api.DEFAULT_BASE_URL
+        read_settings = resolve_local_mcp_read_settings(
+            profile=profile,
+            active_product="spot",
         )
-        locale = os.getenv("WEEX_LOCALE") or spot_api.DEFAULT_LOCALE
-        timeout = float(os.getenv("WEEX_API_TIMEOUT", spot_api.DEFAULT_TIMEOUT))
         client = spot_api.WeexSpotClient(
-            base_url=base_url,
-            timeout=timeout,
-            locale=locale,
+            base_url=read_settings.spot_base_url,
+            timeout=read_settings.timeout_seconds,
+            locale=read_settings.locale,
             api_key=None,
             api_secret=None,
             api_passphrase=None,
             profile_name=profile.name if profile else None,
+            mcp_read_settings=read_settings,
         )
         return spot_api, client
 
@@ -2342,22 +2337,19 @@ class WeexApiFetcher:
             requested_profile=profile_name,
             allow_invalid_default=False,
         )
-        env_base_url = os.getenv("WEEX_SPOT_API_BASE") or os.getenv("WEEX_API_BASE")
-        base_url = (
-            (profile.spot_base_url if profile else "")
-            or env_base_url
-            or spot_api.DEFAULT_BASE_URL
+        read_settings = resolve_local_mcp_read_settings(
+            profile=profile,
+            active_product="spot",
         )
-        locale = os.getenv("WEEX_LOCALE") or spot_api.DEFAULT_LOCALE
-        timeout = float(os.getenv("WEEX_API_TIMEOUT", spot_api.DEFAULT_TIMEOUT))
         client = spot_api.WeexSpotClient(
-            base_url=base_url,
-            timeout=timeout,
-            locale=locale,
+            base_url=read_settings.spot_base_url,
+            timeout=read_settings.timeout_seconds,
+            locale=read_settings.locale,
             api_key=None,
             api_secret=None,
             api_passphrase=None,
             profile_name=None,
+            mcp_read_settings=read_settings,
         )
         return spot_api, client
 
@@ -2377,8 +2369,11 @@ class WeexApiFetcher:
             contract_api, client = self._build_contract_client(profile_name)
         endpoint = contract_api.ENDPOINTS[endpoint_key]
         contract_api.validate_endpoint_trading_mode(endpoint, trading_mode)
-        prepared = client.prepare_request(endpoint, query=query, body=body or {})
-        response = client.send(prepared)
+        response = client.read_endpoint(
+            endpoint=endpoint,
+            query=query,
+            body=body or {},
+        )
         if not response.get("ok"):
             raise AggregationInputError(
                 f"Contract request failed for {endpoint_key}: {response.get('error')}"
@@ -2399,8 +2394,11 @@ class WeexApiFetcher:
         else:
             spot_api, client = self._build_spot_client(profile_name)
         endpoint = spot_api.ENDPOINTS[endpoint_key]
-        prepared = client.prepare_request(endpoint, query=query, body=body or {})
-        response = client.send(prepared)
+        response = client.read_endpoint(
+            endpoint=endpoint,
+            query=query,
+            body=body or {},
+        )
         if not response.get("ok"):
             raise AggregationInputError(
                 f"Spot request failed for {endpoint_key}: {response.get('error')}"

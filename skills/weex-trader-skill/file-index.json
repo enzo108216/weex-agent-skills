@@ -56,7 +56,8 @@
       ],
       "depends_on": [
         "references/contract-api-definitions.json",
-        "scripts/weex_profile_store.py"
+        "scripts/weex_profile_store.py",
+        "scripts/weex_mcp_read_compat.py"
       ],
       "surface": [
         "list-endpoints",
@@ -77,7 +78,8 @@
       ],
       "depends_on": [
         "references/spot-api-definitions.json",
-        "scripts/weex_profile_store.py"
+        "scripts/weex_profile_store.py",
+        "scripts/weex_mcp_read_compat.py"
       ],
       "surface": [
         "list-endpoints",
@@ -143,6 +145,24 @@
         "McpGatewayError and strict structuredContent return",
         "runtime_status",
         "probe_local_mcp_runtime"
+      ]
+    },
+    "scripts/weex_mcp_read_compat.py": {
+      "role": "Mapping-driven Contract/Spot read compatibility facade that preserves legacy routing precedence and JSON envelopes while calling verified Local MCP typed tools.",
+      "when": [
+        "mapping a legacy Contract or Spot read endpoint to a typed MCP tool",
+        "resolving effective Spot/Futures origins, timeout, and locale for Local MCP reads",
+        "restoring safe MCP raw/status/error metadata to the existing Trader response envelope"
+      ],
+      "depends_on": [
+        "references/mcp-capability-mapping.json",
+        "scripts/weex_mcp_gateway.py",
+        "scripts/weex_url_policy.py"
+      ],
+      "surface": [
+        "LocalMcpReadSettings",
+        "resolve_local_mcp_read_settings",
+        "McpReadFacade"
       ]
     },
     "scripts/weex_profile_store.py": {

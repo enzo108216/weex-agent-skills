@@ -402,6 +402,7 @@ class LocalMcpGateway:
         effective_futures_base_url: str,
         trade_enabled: bool,
         timeout_seconds: float,
+        request_locale: str = "en-US",
         runtime_loader: Callable[[str], Any] | None = None,
         mapping_loader: Callable[[], dict[str, Any]] | None = None,
         profile_loader: Callable[[str], Any] | None = None,
@@ -424,6 +425,8 @@ class LocalMcpGateway:
             or timeout_seconds <= 0
         ):
             raise ValueError("timeout_seconds must be a positive finite number.")
+        if not isinstance(request_locale, str) or not request_locale:
+            raise ValueError("request_locale must be a non-empty string.")
         if trade_enabled and profile_id is None:
             raise McpGatewayError("profile_required", "A saved profile is required for private MCP tools.")
 
@@ -524,7 +527,10 @@ class LocalMcpGateway:
                 spot_base_url=effective_spot_base_url,
                 futures_base_url=effective_futures_base_url,
                 market_timeout_seconds=self.timeout_seconds,
+                market_max_attempts=1,
+                market_retry_base_delay_seconds=0.0,
                 account_timeout_seconds=self.timeout_seconds,
+                request_locale=request_locale,
             )
             self._service = runtime.build_local_user_service(
                 settings=settings,

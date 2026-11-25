@@ -646,13 +646,11 @@ runpy.run_path(script_path, run_name="__main__")
         import weex_contract_api as contract
 
         client = mock.Mock()
-        client.prepare_request.return_value = {
-            "method": "GET",
-            "url": "https://api-contract.weex.com/capi/v3/order/history",
-            "headers": {},
-            "data": None,
+        client.read_endpoint.return_value = {
+            "ok": True,
+            "status": 200,
+            "data": {"orders": []},
         }
-        client.send.return_value = {"ok": True, "status": 200, "data": {"orders": []}}
 
         stdout = io.StringIO()
         with mock.patch.object(contract, "resolve_language", return_value="zh", create=True):
@@ -673,6 +671,87 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["environment"]["trading_mode"], "live")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+
+    def test_contract_read_uses_explicit_mcp_facade_without_prepare_or_send(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        client.read_endpoint.return_value = {
+            "ok": True,
+            "status": 200,
+            "data": {"serverTime": 123},
+        }
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = contract.execute_endpoint(
+                client=client,
+                endpoint_key="market.get_server_time",
+                query={},
+                body={},
+                dry_run=False,
+                confirm_live=False,
+                confirm_demo=False,
+                trading_mode="live",
+                pretty=False,
+            )
+
+        self.assertEqual(exit_code, 0)
+        client.read_endpoint.assert_called_once_with(
+            endpoint=contract.ENDPOINTS["market.get_server_time"],
+            query={},
+            body={},
+        )
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "endpoint": "market.get_server_time",
+                "method": "GET",
+                "path": "/capi/v3/market/time",
+                "status": 200,
+                "ok": True,
+                "result": {"serverTime": 123},
+            },
+        )
+
+    def test_contract_lazy_mcp_mapping_failure_returns_stable_legacy_error(self) -> None:
+        import weex_contract_api as contract
+
+        client = contract.WeexContractClient(
+            base_url=contract.DEFAULT_BASE_URL,
+            timeout=contract.DEFAULT_TIMEOUT,
+            locale=contract.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            mcp_read_settings_factory=lambda: (_ for _ in ()).throw(
+                contract.McpReadCompatibilityError(
+                    "mapping_invalid",
+                    "The Trader MCP mapping is invalid.",
+                )
+            ),
+        )
+
+        response = client.read_endpoint(
+            endpoint=contract.ENDPOINTS["market.get_server_time"],
+            query={},
+            body={},
+        )
+
+        self.assertEqual(
+            response,
+            {
+                "ok": False,
+                "status": None,
+                "error": {
+                    "code": "mapping_invalid",
+                    "message": "The Trader MCP mapping is invalid.",
+                },
+            },
+        )
 
     def test_contract_demo_endpoint_rejects_live_mode_before_preparing_request(self) -> None:
         import weex_contract_api as contract
@@ -1038,10 +1117,87 @@ runpy.run_path(script_path, run_name="__main__")
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
+        client.read_endpoint.assert_not_called()
         self.assertEqual(payload["environment"]["trading_mode"], "live")
         self.assertEqual(payload["environment"]["market"], "spot")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
 
+    def test_spot_read_uses_explicit_mcp_facade_without_prepare_or_send(self) -> None:
+        import weex_spot_api as spot
+
+        client = mock.Mock()
+        client.read_endpoint.return_value = {
+            "ok": True,
+            "status": 200,
+            "data": {"symbol": "BTCUSDT", "price": "100"},
+        }
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = spot.execute_endpoint(
+                client=client,
+                endpoint_key="spot.market.get_ticker_info",
+                query={"symbol": "BTCUSDT"},
+                body={},
+                dry_run=False,
+                confirm_live=False,
+                pretty=False,
+            )
+
+        self.assertEqual(exit_code, 0)
+        client.read_endpoint.assert_called_once_with(
+            endpoint=spot.ENDPOINTS["spot.market.get_ticker_info"],
+            query={"symbol": "BTCUSDT"},
+            body={},
+        )
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "endpoint": "spot.market.get_ticker_info",
+                "method": "GET",
+                "path": "/api/v3/market/ticker/price",
+                "status": 200,
+                "ok": True,
+                "result": {"symbol": "BTCUSDT", "price": "100"},
+            },
+        )
+
+    def test_spot_lazy_mcp_mapping_failure_returns_stable_legacy_error(self) -> None:
+        import weex_spot_api as spot
+
+        client = spot.WeexSpotClient(
+            base_url=spot.DEFAULT_BASE_URL,
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            mcp_read_settings_factory=lambda: (_ for _ in ()).throw(
+                spot.McpReadCompatibilityError(
+                    "mapping_invalid",
+                    "The Trader MCP mapping is invalid.",
+                )
+            ),
+        )
+
+        response = client.read_endpoint(
+            endpoint=spot.ENDPOINTS["spot.config.get_server_time"],
+            query={},
+            body={},
+        )
+
+        self.assertEqual(
+            response,
+            {
+                "ok": False,
+                "status": None,
+                "error": {
+                    "code": "mapping_invalid",
+                    "message": "The Trader MCP mapping is invalid.",
+                },
+            },
+        )
     def test_contract_client_rejects_non_weex_base_url(self) -> None:
         import weex_contract_api as contract
 
@@ -1263,7 +1419,35 @@ runpy.run_path(script_path, run_name="__main__")
             api_secret=None,
             api_passphrase=None,
             profile_name=None,
+            mcp_read_settings_factory=mock.ANY,
         )
+
+    def test_list_endpoints_does_not_construct_or_validate_mcp_read_facade(self) -> None:
+        import weex_contract_api as contract
+
+        args = types.SimpleNamespace(
+            command="list-endpoints",
+            profile=None,
+            base_url=None,
+            timeout=None,
+        )
+        parser = mock.Mock()
+        parser.parse_args.return_value = args
+        with mock.patch.object(contract, "build_parser", return_value=parser):
+            with mock.patch.object(contract, "refresh_agent_records"):
+                with mock.patch.object(contract, "resolve_runtime_profile", return_value=None):
+                    with mock.patch.object(contract, "McpReadFacade") as facade_mock:
+                        with mock.patch.object(contract, "WeexContractClient", return_value=object()):
+                            with mock.patch.object(contract, "cmd_list_endpoints", return_value=0):
+                                with mock.patch.dict(
+                                    os.environ,
+                                    {"WEEX_SPOT_API_BASE": "https://attacker.example.com"},
+                                    clear=False,
+                                ):
+                                    exit_code = contract.main()
+
+        self.assertEqual(exit_code, 0)
+        facade_mock.assert_not_called()
 
     def test_spot_cli_uses_generic_env_base_url_and_locale(self) -> None:
         import weex_spot_api as spot
@@ -1296,6 +1480,7 @@ runpy.run_path(script_path, run_name="__main__")
             api_secret=None,
             api_passphrase=None,
             profile_name=None,
+            mcp_read_settings_factory=mock.ANY,
         )
 
     def test_vault_cli_launches_gui_for_windows_unlock_by_default(self) -> None:

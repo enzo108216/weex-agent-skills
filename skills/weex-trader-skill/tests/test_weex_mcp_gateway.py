@@ -769,6 +769,34 @@ class LocalMcpGatewayTests(GatewayFixture):
             "https://effective-futures.weex.tech",
         )
 
+    def test_read_gateway_preserves_locale_and_disables_market_retries(self) -> None:
+        tools = tool_catalog(trade_enabled=False)
+        manifest = build_manifest(tools, trade_enabled=False)
+        manifests = {
+            False: manifest,
+            True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
+        }
+        service = FakeService(tools=tools, manifest=manifest, secret_provider=None)
+
+        self.gateway.LocalMcpGateway(
+            profile_id="profile-a",
+            effective_spot_base_url="https://api-spot.weex.com",
+            effective_futures_base_url="https://api-contract.weex.com",
+            trade_enabled=False,
+            timeout_seconds=7.5,
+            request_locale="zh-CN",
+            runtime_loader=lambda _expected: fake_runtime(service),
+            mapping_loader=lambda: mapping_for(manifests),
+            profile_loader=self.profile_loader,
+            credential_loader=self.credential_loader,
+        )
+
+        self.assertEqual(service.settings.request_locale, "zh-CN")
+        self.assertEqual(service.settings.market_timeout_seconds, 7.5)
+        self.assertEqual(service.settings.account_timeout_seconds, 7.5)
+        self.assertEqual(service.settings.market_max_attempts, 1)
+        self.assertEqual(service.settings.market_retry_base_delay_seconds, 0.0)
+
     def test_public_gateway_needs_no_profile_or_vault_but_private_tool_requires_profile(self) -> None:
         public_gateway, service = self.make_gateway(trade_enabled=False, profile_id=None)
         public = public_gateway.call_typed_tool(

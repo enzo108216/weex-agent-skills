@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -28,6 +29,74 @@ class WindowSplitTests(unittest.TestCase):
         self.assertEqual(windows[0].end_ms, (90 * aggregator.DAY_MS) - 1)
         self.assertEqual(windows[1].start_ms, 90 * aggregator.DAY_MS)
         self.assertEqual(windows[1].end_ms, end_ms)
+
+
+class McpReadBoundaryTests(unittest.TestCase):
+    def test_contract_fetcher_uses_explicit_read_endpoint_without_prepare_or_send(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        endpoint = object()
+        contract_api = mock.Mock()
+        contract_api.ENDPOINTS = {"market.get_server_time": endpoint}
+        client = mock.Mock()
+        client.read_endpoint.return_value = {
+            "ok": True,
+            "status": 200,
+            "data": {"serverTime": 123},
+        }
+
+        with mock.patch.object(
+            fetcher,
+            "_build_public_contract_client",
+            return_value=(contract_api, client),
+        ):
+            payload = fetcher._send_contract_request(
+                profile_name="",
+                endpoint_key="market.get_server_time",
+                query={},
+                public=True,
+            )
+
+        self.assertEqual(payload, {"serverTime": 123})
+        client.read_endpoint.assert_called_once_with(
+            endpoint=endpoint,
+            query={},
+            body={},
+        )
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+
+    def test_spot_fetcher_uses_explicit_read_endpoint_without_prepare_or_send(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        endpoint = object()
+        spot_api = mock.Mock()
+        spot_api.ENDPOINTS = {"spot.market.get_ticker_info": endpoint}
+        client = mock.Mock()
+        client.read_endpoint.return_value = {
+            "ok": True,
+            "status": 200,
+            "data": {"symbol": "BTCUSDT", "price": "100"},
+        }
+
+        with mock.patch.object(
+            fetcher,
+            "_build_public_spot_client",
+            return_value=(spot_api, client),
+        ):
+            payload = fetcher._send_spot_request(
+                profile_name="",
+                endpoint_key="spot.market.get_ticker_info",
+                query={"symbol": "BTCUSDT"},
+                public=True,
+            )
+
+        self.assertEqual(payload, {"symbol": "BTCUSDT", "price": "100"})
+        client.read_endpoint.assert_called_once_with(
+            endpoint=endpoint,
+            query={"symbol": "BTCUSDT"},
+            body={},
+        )
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
 
 
 class ReplayCollectionTests(unittest.TestCase):
@@ -2351,7 +2420,9 @@ class ApiFetcherTests(unittest.TestCase):
         spot_api.DEFAULT_LOCALE = "en-US"
         spot_api.DEFAULT_TIMEOUT = 15
         profile = mock.Mock()
+        profile.profile_id = "profile-staging"
         profile.name = "staging-profile"
+        profile.contract_base_url = ""
         profile.spot_base_url = "https://stg-spotpro-openapi.weex.tech"
         spot_api.resolve_runtime_profile.return_value = profile
         public_client = object()
@@ -2360,7 +2431,7 @@ class ApiFetcherTests(unittest.TestCase):
         with (
             mock.patch.object(fetcher, "_spot_module", return_value=spot_api),
             mock.patch.dict(
-                aggregator.os.environ,
+                os.environ,
                 {"WEEX_SPOT_API_BASE": "", "WEEX_API_BASE": ""},
             ),
         ):
@@ -2382,6 +2453,7 @@ class ApiFetcherTests(unittest.TestCase):
             api_secret=None,
             api_passphrase=None,
             profile_name=None,
+            mcp_read_settings=mock.ANY,
         )
 
     def test_fetch_spot_latest_price_uses_selected_profile_ticker_endpoint(self) -> None:

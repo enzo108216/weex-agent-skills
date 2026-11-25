@@ -22,6 +22,11 @@ from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
 from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
+from weex_mcp_read_compat import (
+    McpReadCompatibilityError,
+    McpReadFacade,
+    resolve_local_mcp_read_settings,
+)
 from weex_profile_language import resolve_language
 from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
@@ -159,6 +164,9 @@ class WeexContractClient:
         api_passphrase: Optional[str],
         profile_name: Optional[str] = None,
         user_agent: str = "weex-trader-skill-contract/1.0",
+        mcp_read_settings: Any | None = None,
+        mcp_read_settings_factory: Any | None = None,
+        mcp_read_facade: Any | None = None,
     ) -> None:
         try:
             self.base_url = validate_weex_base_url(base_url, label="contract base URL")
@@ -171,6 +179,45 @@ class WeexContractClient:
         self.api_passphrase = api_passphrase
         self.profile_name = profile_name
         self.user_agent = user_agent
+        self.mcp_read_settings = mcp_read_settings
+        self.mcp_read_settings_factory = mcp_read_settings_factory
+        self.mcp_read_facade = mcp_read_facade
+
+    def read_endpoint(
+        self,
+        *,
+        endpoint: Endpoint,
+        query: Dict[str, Any],
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if endpoint.mutating:
+            raise SystemExit("Trade endpoints are not available through the read-only MCP facade.")
+        try:
+            if self.mcp_read_settings is None and self.mcp_read_settings_factory is not None:
+                self.mcp_read_settings = self.mcp_read_settings_factory()
+            if self.mcp_read_facade is None and self.mcp_read_settings is not None:
+                self.mcp_read_facade = McpReadFacade(settings=self.mcp_read_settings)
+            if self.mcp_read_facade is None:
+                return {
+                    "ok": False,
+                    "status": None,
+                    "error": {
+                        "code": "mcp_read_unavailable",
+                        "message": "The verified MCP read facade is not configured.",
+                    },
+                }
+            return self.mcp_read_facade.execute(
+                product="contract",
+                endpoint=endpoint,
+                query=query,
+                body=body,
+            )
+        except McpReadCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+            }
 
     def _require_auth(self) -> None:
         _load_profile_runtime_dependencies()
@@ -501,13 +548,13 @@ def execute_endpoint(
     validate_pending_order_routing(endpoint, body)
     validate_endpoint_constraints(endpoint, query, body)
 
-    prepared = client.prepare_request(
-        endpoint,
-        query=query,
-        body=body,
-    )
     environment = environment_for_mode(mode) if endpoint.auth else None
     if dry_run:
+        prepared = client.prepare_request(
+            endpoint,
+            query=query,
+            body=body,
+        )
         preview = {
             "dry_run": True,
             "endpoint": endpoint.key,
@@ -522,7 +569,19 @@ def execute_endpoint(
         output_json(preview, pretty)
         return 0
 
-    response = client.send(prepared)
+    if endpoint.mutating:
+        prepared = client.prepare_request(
+            endpoint,
+            query=query,
+            body=body,
+        )
+        response = client.send(prepared)
+    else:
+        response = client.read_endpoint(
+            endpoint=endpoint,
+            query=query,
+            body=body,
+        )
     payload = {
         "endpoint": endpoint.key,
         "method": endpoint.method,
@@ -921,7 +980,6 @@ def main() -> int:
     )
     locale = os.getenv("WEEX_LOCALE") or DEFAULT_LOCALE
     timeout = args.timeout if args.timeout is not None else float(os.getenv("WEEX_API_TIMEOUT", DEFAULT_TIMEOUT))
-
     client = WeexContractClient(
         base_url=base_url,
         timeout=timeout,
@@ -930,6 +988,12 @@ def main() -> int:
         api_secret=None,
         api_passphrase=None,
         profile_name=profile.name if profile else None,
+        mcp_read_settings_factory=lambda: resolve_local_mcp_read_settings(
+            profile=profile,
+            explicit_futures_base_url=args.base_url,
+            explicit_timeout=args.timeout,
+            active_product="contract",
+        ),
     )
 
     if args.command == "list-endpoints":
