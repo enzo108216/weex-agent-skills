@@ -1687,6 +1687,10 @@ def _build_contract_client(profile_name: str) -> tuple[Any, Any]:
         api_secret=None,
         api_passphrase=None,
         profile_name=profile.name if profile else None,
+        mcp_trade_settings_factory=lambda: contract_api.resolve_local_mcp_trade_settings(
+            profile=profile,
+            active_product="contract",
+        ),
     )
     return contract_api, client
 
@@ -1714,6 +1718,10 @@ def _build_spot_client(profile_name: str) -> tuple[Any, Any]:
         api_secret=None,
         api_passphrase=None,
         profile_name=profile.name if profile else None,
+        mcp_trade_settings_factory=lambda: spot_api.resolve_local_mcp_trade_settings(
+            profile=profile,
+            active_product="spot",
+        ),
     )
     return spot_api, client
 
@@ -1800,6 +1808,29 @@ def _submit_order(
     trading_mode: str,
     raw_order: dict[str, Any],
 ) -> dict[str, Any]:
+    _api, client, endpoint, body = _prepare_order_trade_request(
+        market=market,
+        profile_name=profile_name,
+        trading_mode=trading_mode,
+        raw_order=raw_order,
+    )
+    preview = client.preview_trade_endpoint(endpoint=endpoint, query={}, body=body)
+    if preview.get("ok") is not True or not isinstance(preview.get("preview"), dict):
+        raise AggregationInputError(
+            f"{trading_mode} order preview failed: {preview.get('error')}"
+        )
+    response = client.confirm_trade_preview(dict(preview["preview"]))
+    return _trade_execution_payload(response, operation_label=f"{trading_mode} order")
+
+
+def _prepare_order_trade_request(
+    *,
+    market: str,
+    profile_name: str,
+    trading_mode: str,
+    raw_order: dict[str, Any],
+    risk_payload: dict[str, Any] | None = None,
+) -> tuple[Any, Any, Any, dict[str, Any]]:
     normalized_market = str(market).strip().lower()
     mode = _normalize_trading_mode(trading_mode)
     if mode == "demo" and normalized_market != "futures":
@@ -1815,28 +1846,20 @@ def _submit_order(
         if requested_position_id is not None:
             if mode != "live":
                 raise AggregationInputError("exact position close is only supported for live futures")
-            fresh_account = TradeDataAggregator().collect_account_risk_payload(
-                profile_name=profile_name,
-                market="futures",
-                trading_mode=mode,
-                symbol=str(raw_order.get("symbol") or ""),
-            )
+            fresh_account = risk_payload
+            if fresh_account is None:
+                fresh_account = TradeDataAggregator().collect_account_risk_payload(
+                    profile_name=profile_name,
+                    market="futures",
+                    trading_mode=mode,
+                    symbol=str(raw_order.get("symbol") or ""),
+                )
             position_id = _validate_exact_position_close(raw_order, fresh_account)
             contract_api, client = _build_contract_client(profile_name)
             endpoint_key = contract_api.find_endpoint_key_by_doc_suffix("ClosePositions")
             normalized_symbol = contract_api.normalize_contract_trade_symbol(str(raw_order["symbol"]))
             body = {"symbol": normalized_symbol, "positionId": position_id}
-            _, payload = contract_api.execute_endpoint_payload(
-                client=client,
-                endpoint_key=endpoint_key,
-                query={},
-                body=body,
-                dry_run=False,
-                confirm_live=True,
-                trading_mode=mode,
-                pretty=False,
-            )
-            return payload
+            return contract_api, client, contract_api.ENDPOINTS[endpoint_key], body
         contract_api, client = _build_contract_client(profile_name)
         endpoint_key = (
             "sim.transaction.place_order"
@@ -1867,8 +1890,7 @@ def _submit_order(
         }
         body = {key: value for key, value in body.items() if value not in (None, "")}
         contract_api.validate_endpoint_trading_mode(endpoint, mode)
-        prepared = client.prepare_request(endpoint, query={}, body=body)
-        response = client.send(prepared)
+        return contract_api, client, endpoint, body
     elif normalized_market == "spot":
         if mode != "live":
             raise AggregationInputError("demo_spot_unsupported: demo order submission is only supported for futures")
@@ -1889,14 +1911,69 @@ def _submit_order(
             or spot_api.generate_client_order_id(),
         }
         body = {key: value for key, value in body.items() if value not in (None, "")}
-        prepared = client.prepare_request(endpoint, query={}, body=body)
-        response = client.send(prepared)
+        return spot_api, client, endpoint, body
     else:
         raise AggregationInputError(f"Unsupported market for live order submission: {market}")
 
-    if not response.get("ok"):
-        raise AggregationInputError(f"{mode} order submission failed: {response.get('error')}")
-    return response.get("data") if isinstance(response.get("data"), dict) else {"result": response.get("data")}
+
+def _preview_manual_order_trade(
+    *,
+    market: str,
+    profile_name: str,
+    trading_mode: str,
+    raw_order: dict[str, Any],
+    risk_payload: dict[str, Any],
+) -> dict[str, Any]:
+    _api, client, endpoint, body = _prepare_order_trade_request(
+        market=market,
+        profile_name=profile_name,
+        trading_mode=trading_mode,
+        raw_order=raw_order,
+        risk_payload=risk_payload,
+    )
+    preview = client.preview_trade_endpoint(endpoint=endpoint, query={}, body=body)
+    if preview.get("ok") is not True or not isinstance(preview.get("preview"), dict):
+        raise AggregationInputError(f"MCP Trade preview failed: {preview.get('error')}")
+    return dict(preview["preview"])
+
+
+def _confirm_saved_trade_preview(
+    *,
+    profile_name: str,
+    preview: dict[str, Any],
+) -> dict[str, Any]:
+    product = preview.get("product")
+    if product == "contract":
+        _api, client = _build_contract_client(profile_name)
+    elif product == "spot":
+        _api, client = _build_spot_client(profile_name)
+    else:
+        raise AggregationInputError("Saved MCP Trade preview product is invalid")
+    return client.confirm_trade_preview(preview)
+
+
+def _trade_execution_payload(
+    response: dict[str, Any],
+    *,
+    operation_label: str,
+) -> dict[str, Any]:
+    if response.get("ok") is True:
+        data = response.get("data")
+        return dict(data) if isinstance(data, dict) else {"result": data}
+    if response.get("review_required") is True:
+        payload = {
+            "ok": False,
+            "status": "REVIEW_REQUIRED",
+            "error": response.get("error"),
+            "outcome": response.get("outcome"),
+            "next_action": "INSPECT_RESULT_BEFORE_ANY_NEW_ORDER",
+        }
+        if "data" in response:
+            payload["result"] = response["data"]
+        return payload
+    raise AggregationInputError(
+        f"{operation_label} submission failed: {response.get('error')}"
+    )
 
 
 def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
@@ -1991,18 +2068,54 @@ def _submit_live_auto_fallback_order(intent: dict[str, Any]) -> dict[str, Any]:
 
 
 def _submit_live_tp_sl_order(*, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
+    _api, client, endpoint, normalized = _prepare_tp_sl_trade_request(
+        profile_name=profile_name,
+        raw_order=raw_order,
+    )
+    preview = client.preview_trade_endpoint(endpoint=endpoint, query={}, body=normalized)
+    if preview.get("ok") is not True or not isinstance(preview.get("preview"), dict):
+        raise AggregationInputError(f"Live TP/SL preview failed: {preview.get('error')}")
+    response = client.confirm_trade_preview(dict(preview["preview"]))
+    return _trade_execution_payload(response, operation_label="Live TP/SL")
+
+
+def _prepare_tp_sl_trade_request(
+    *,
+    profile_name: str,
+    raw_order: dict[str, Any],
+) -> tuple[Any, Any, Any, dict[str, Any]]:
     contract_api, client = _build_contract_client(profile_name)
     endpoint = contract_api.ENDPOINTS[contract_api.find_endpoint_key_by_doc_suffix("PlaceTpSlOrder")]
     normalized = _normalize_tp_sl_order(raw_order)
     normalized["symbol"] = contract_api.normalize_contract_trade_symbol(normalized["symbol"])
-    prepared = client.prepare_request(endpoint, query={}, body=normalized)
-    response = client.send(prepared)
-    if not response.get("ok"):
-        raise AggregationInputError(f"Live TP/SL submission failed: {response.get('error')}")
-    return response.get("data") if isinstance(response.get("data"), dict) else {"result": response.get("data")}
+    return contract_api, client, endpoint, normalized
+
+
+def _preview_manual_tp_sl_trade(
+    *,
+    profile_name: str,
+    raw_order: dict[str, Any],
+) -> dict[str, Any]:
+    _api, client, endpoint, normalized = _prepare_tp_sl_trade_request(
+        profile_name=profile_name,
+        raw_order=raw_order,
+    )
+    preview = client.preview_trade_endpoint(endpoint=endpoint, query={}, body=normalized)
+    if preview.get("ok") is not True or not isinstance(preview.get("preview"), dict):
+        raise AggregationInputError(f"MCP TP/SL preview failed: {preview.get('error')}")
+    return dict(preview["preview"])
+
+
+def _ensure_no_unresolved_mcp_trade() -> None:
+    pending = load_intent()
+    if isinstance(pending, dict) and pending.get("mcp_trade_confirmation_started_at") is not None:
+        raise AggregationInputError(
+            "An unresolved MCP Trade result is still pending inspection; do not create a new preview until it is reconciled or manually cleared."
+        )
 
 
 def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
+    _ensure_no_unresolved_mcp_trade()
     raw_order = _parse_order_json(args.order_json)
     trading_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", DEFAULT_TRADING_MODE))
     trade_aggregator = TradeDataAggregator()
@@ -2025,6 +2138,13 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         environment,
         language=_arg_value(args, "language", None),
     )
+    mcp_trade_preview = _preview_manual_order_trade(
+        market=args.market,
+        profile_name=args.profile,
+        trading_mode=trading_mode,
+        raw_order=raw_order,
+        risk_payload=risk_payload,
+    )
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     intent = build_intent(
         profile_name=args.profile,
@@ -2036,6 +2156,7 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         analysis_output=analysis_output,
         now_ms=current_ms,
         ttl_seconds=args.ttl_seconds,
+        mcp_trade_preview=mcp_trade_preview,
     )
     save_intent(intent)
     response = dict(analysis_output)
@@ -2056,6 +2177,7 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
 
 
 def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
+    _ensure_no_unresolved_mcp_trade()
     trading_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", DEFAULT_TRADING_MODE))
     if trading_mode != "live":
         _output_json({"ok": False, "error": "demo_tp_sl_unsupported: demo TP/SL preview is not supported."}, args.pretty)
@@ -2079,6 +2201,10 @@ def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         environment,
         language=_arg_value(args, "language", None),
     )
+    mcp_trade_preview = _preview_manual_tp_sl_trade(
+        profile_name=args.profile,
+        raw_order=tp_sl_order,
+    )
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     intent = build_intent(
         profile_name=args.profile,
@@ -2092,6 +2218,7 @@ def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         ttl_seconds=args.ttl_seconds,
         intent_type="tp_sl_order",
         tp_sl_order=tp_sl_order,
+        mcp_trade_preview=mcp_trade_preview,
     )
     save_intent(intent)
     response = dict(analysis_output)
@@ -2128,6 +2255,15 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         return 1
     if args.intent_id and args.intent_id != intent.get("intent_id"):
         _output_json({"ok": False, "error": "Intent id does not match the saved pending order."}, args.pretty)
+        return 1
+    if intent.get("mcp_trade_confirmation_started_at") is not None:
+        _output_json(
+            {
+                "ok": False,
+                "error": "Pending order intent was already submitted or became uncertain. Generate a new preview only after inspecting the prior result.",
+            },
+            args.pretty,
+        )
         return 1
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     if intent_is_expired(intent, now_ms=current_ms):
@@ -2171,23 +2307,55 @@ def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         _output_json({"ok": False, "error": "Risk signature does not match the saved pending order."}, args.pretty)
         return 1
 
-    if intent_mode == "live":
-        if intent.get("auto_fallback_operation_key") is not None:
-            execution_payload = _submit_live_auto_fallback_order(intent)
-        else:
-            execution_payload = _submit_live_order(
-                market=str(intent["market"]),
-                profile_name=str(intent["profile_name"]),
-                raw_order=dict(intent["raw_order"]),
-            )
+    if intent.get("auto_fallback_operation_key") is not None:
+        execution_payload = _submit_live_auto_fallback_order(intent)
+        clear_intent()
     else:
-        execution_payload = _submit_order(
-            market=str(intent["market"]),
+        mcp_trade_preview = intent.get("mcp_trade_preview")
+        if not isinstance(mcp_trade_preview, dict):
+            _output_json(
+                {
+                    "ok": False,
+                    "error": "Pending order intent is missing its MCP Trade preview. Generate a new preview first.",
+                },
+                args.pretty,
+            )
+            return 1
+        intent["mcp_trade_confirmation_started_at"] = current_ms
+        save_intent(intent)
+        trade_response = _confirm_saved_trade_preview(
             profile_name=str(intent["profile_name"]),
-            trading_mode=intent_mode,
-            raw_order=dict(intent["raw_order"]),
+            preview=dict(mcp_trade_preview),
         )
-    clear_intent()
+        if trade_response.get("ok") is True:
+            clear_intent()
+            execution_payload = _trade_execution_payload(
+                trade_response,
+                operation_label=f"{intent_mode} order",
+            )
+        else:
+            if trade_response.get("review_required") is not True:
+                clear_intent()
+            environment = intent.get("environment")
+            if not isinstance(environment, dict):
+                environment = _environment_for_mode(intent_mode, str(intent["market"]))
+            response = {
+                "ok": False,
+                "status": trade_response.get("trade_status") or "NOT_SENT",
+                "error": trade_response.get("error"),
+                "outcome": trade_response.get("outcome"),
+                "review_required": bool(trade_response.get("review_required")),
+                "environment": environment,
+                "trading_mode": intent_mode,
+            }
+            if "data" in trade_response:
+                response["result"] = trade_response["data"]
+            response["user_environment_prefix"] = _query_environment_prefix(
+                environment,
+                language=_arg_value(args, "language", None),
+            )
+            _output_json(response, args.pretty)
+            return 1
     environment = intent.get("environment")
     if not isinstance(environment, dict):
         environment = _environment_for_mode(intent_mode, str(intent["market"]))
@@ -2210,6 +2378,15 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         return 1
     if args.intent_id and args.intent_id != intent.get("intent_id"):
         _output_json({"ok": False, "error": "Intent id does not match the saved pending TP/SL order."}, args.pretty)
+        return 1
+    if intent.get("mcp_trade_confirmation_started_at") is not None:
+        _output_json(
+            {
+                "ok": False,
+                "error": "Pending TP/SL intent was already submitted or became uncertain. Inspect the prior result before creating another preview.",
+            },
+            args.pretty,
+        )
         return 1
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     if intent_is_expired(intent, now_ms=current_ms):
@@ -2242,14 +2419,50 @@ def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         _output_json({"ok": False, "error": "Pending TP/SL intent is missing tp_sl_order."}, args.pretty)
         return 1
 
-    execution_payload = _submit_live_tp_sl_order(
+    mcp_trade_preview = intent.get("mcp_trade_preview")
+    if not isinstance(mcp_trade_preview, dict):
+        _output_json(
+            {
+                "ok": False,
+                "error": "Pending TP/SL intent is missing its MCP Trade preview. Generate a new preview first.",
+            },
+            args.pretty,
+        )
+        return 1
+    intent["mcp_trade_confirmation_started_at"] = current_ms
+    save_intent(intent)
+    trade_response = _confirm_saved_trade_preview(
         profile_name=str(intent["profile_name"]),
-        raw_order=dict(tp_sl_order),
+        preview=dict(mcp_trade_preview),
     )
-    clear_intent()
     environment = intent.get("environment")
     if not isinstance(environment, dict):
         environment = _environment_for_mode(intent_mode, "futures")
+    if trade_response.get("ok") is not True:
+        if trade_response.get("review_required") is not True:
+            clear_intent()
+        response = {
+            "ok": False,
+            "status": trade_response.get("trade_status") or "NOT_SENT",
+            "error": trade_response.get("error"),
+            "outcome": trade_response.get("outcome"),
+            "review_required": bool(trade_response.get("review_required")),
+            "environment": environment,
+            "trading_mode": intent_mode,
+        }
+        if "data" in trade_response:
+            response["result"] = trade_response["data"]
+        response["user_environment_prefix"] = _query_environment_prefix(
+            environment,
+            language=_arg_value(args, "language", None),
+        )
+        _output_json(response, args.pretty)
+        return 1
+    clear_intent()
+    execution_payload = _trade_execution_payload(
+        trade_response,
+        operation_label="Live TP/SL",
+    )
     response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
     response["user_environment_prefix"] = _query_environment_prefix(
         environment,

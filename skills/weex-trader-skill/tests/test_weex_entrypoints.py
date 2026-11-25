@@ -717,6 +717,57 @@ runpy.run_path(script_path, run_name="__main__")
             },
         )
 
+    def test_contract_write_uses_mcp_preview_confirm_without_legacy_send(self) -> None:
+        import weex_contract_api as contract
+
+        client = mock.Mock()
+        client.trade_endpoint.return_value = {
+            "ok": True,
+            "status": None,
+            "data": {"orderId": "f-1"},
+            "outcome": {
+                "class": "accepted",
+                "write_attempted": True,
+                "action": "order",
+            },
+            "trade_status": "ACCEPTED",
+            "review_required": False,
+        }
+        body = {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "positionSide": "LONG",
+            "type": "MARKET",
+            "quantity": "1",
+            "newClientOrderId": "client-1",
+        }
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = contract.execute_endpoint(
+                client=client,
+                endpoint_key="transaction.place_order",
+                query={},
+                body=body,
+                dry_run=False,
+                confirm_live=True,
+                confirm_demo=False,
+                trading_mode="live",
+                pretty=False,
+            )
+
+        self.assertEqual(exit_code, 0)
+        client.trade_endpoint.assert_called_once_with(
+            endpoint=contract.ENDPOINTS["transaction.place_order"],
+            query={},
+            body=body,
+        )
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["result"], {"orderId": "f-1"})
+        self.assertEqual(payload["outcome"]["class"], "accepted")
+        self.assertEqual(payload["trade_status"], "ACCEPTED")
+
     def test_contract_lazy_mcp_mapping_failure_returns_stable_legacy_error(self) -> None:
         import weex_contract_api as contract
 
@@ -1094,13 +1145,18 @@ runpy.run_path(script_path, run_name="__main__")
         import weex_spot_api as spot
 
         client = mock.Mock()
-        client.prepare_request.return_value = {
-            "method": "POST",
-            "url": "https://api-spot.weex.com/api/v3/order",
-            "headers": {},
-            "data": b"{}",
+        client.trade_endpoint.return_value = {
+            "ok": True,
+            "status": None,
+            "data": {"orderId": "spot-1"},
+            "outcome": {
+                "class": "accepted",
+                "write_attempted": True,
+                "action": "order",
+            },
+            "trade_status": "ACCEPTED",
+            "review_required": False,
         }
-        client.send.return_value = {"ok": True, "status": 200, "data": {"orderId": "spot-1"}}
 
         stdout = io.StringIO()
         with mock.patch.object(spot, "resolve_language", return_value="zh", create=True):
@@ -1118,6 +1174,8 @@ runpy.run_path(script_path, run_name="__main__")
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         client.read_endpoint.assert_not_called()
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
         self.assertEqual(payload["environment"]["trading_mode"], "live")
         self.assertEqual(payload["environment"]["market"], "spot")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
@@ -1162,6 +1220,56 @@ runpy.run_path(script_path, run_name="__main__")
                 "result": {"symbol": "BTCUSDT", "price": "100"},
             },
         )
+
+    def test_spot_write_unknown_is_review_required_without_legacy_send(self) -> None:
+        import weex_spot_api as spot
+
+        endpoint_key = spot.find_endpoint_key_by_doc_suffix("PlaceOrder")
+        client = mock.Mock()
+        client.trade_endpoint.return_value = {
+            "ok": False,
+            "status": None,
+            "error": {"code": "upstream_error", "message": "uncertain"},
+            "outcome": {
+                "class": "unknown",
+                "write_attempted": True,
+                "action": "order",
+                "client_order_id": "client-1",
+            },
+            "trade_status": "REVIEW_REQUIRED",
+            "review_required": True,
+        }
+        body = {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quantity": "1",
+            "newClientOrderId": "client-1",
+        }
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = spot.execute_endpoint(
+                client=client,
+                endpoint_key=endpoint_key,
+                query={},
+                body=body,
+                dry_run=False,
+                confirm_live=True,
+                pretty=False,
+            )
+
+        self.assertEqual(exit_code, 1)
+        client.trade_endpoint.assert_called_once_with(
+            endpoint=spot.ENDPOINTS[endpoint_key],
+            query={},
+            body=body,
+        )
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["outcome"]["class"], "unknown")
+        self.assertEqual(payload["trade_status"], "REVIEW_REQUIRED")
+        self.assertTrue(payload["review_required"])
 
     def test_spot_lazy_mcp_mapping_failure_returns_stable_legacy_error(self) -> None:
         import weex_spot_api as spot
@@ -1420,6 +1528,7 @@ runpy.run_path(script_path, run_name="__main__")
             api_passphrase=None,
             profile_name=None,
             mcp_read_settings_factory=mock.ANY,
+            mcp_trade_settings_factory=mock.ANY,
         )
 
     def test_list_endpoints_does_not_construct_or_validate_mcp_read_facade(self) -> None:
@@ -1481,6 +1590,7 @@ runpy.run_path(script_path, run_name="__main__")
             api_passphrase=None,
             profile_name=None,
             mcp_read_settings_factory=mock.ANY,
+            mcp_trade_settings_factory=mock.ANY,
         )
 
     def test_vault_cli_launches_gui_for_windows_unlock_by_default(self) -> None:

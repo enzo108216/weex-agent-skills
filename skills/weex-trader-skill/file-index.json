@@ -165,6 +165,24 @@
         "McpReadFacade"
       ]
     },
+    "scripts/weex_mcp_trade_compat.py": {
+      "role": "Mapping-driven manual Trade preview/confirm facade that binds canonical legacy arguments, opaque MCP previews, stable profile/origin settings, and conservative mutation outcomes.",
+      "when": [
+        "mapping a legacy Contract or Spot write endpoint to an MCP preview/confirm tool pair",
+        "persisting a credential-free manual Trade preview for later confirmation",
+        "projecting accepted, rejected, partial, unknown, and not-sent outcomes without direct REST fallback"
+      ],
+      "depends_on": [
+        "references/mcp-capability-mapping.json",
+        "scripts/weex_mcp_gateway.py",
+        "scripts/weex_mcp_read_compat.py"
+      ],
+      "surface": [
+        "LocalMcpTradeSettings",
+        "resolve_local_mcp_trade_settings",
+        "McpTradeFacade"
+      ]
+    },
     "scripts/weex_profile_store.py": {
       "role": "Shared profile metadata and application-vault backend, including the encrypted Local MCP approval key lifecycle.",
       "when": [

@@ -61,6 +61,7 @@ def build_intent(
     ttl_seconds: int = 300,
     intent_type: str = "order",
     tp_sl_order: dict[str, Any] | None = None,
+    mcp_trade_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     expires_at = current_ms + (ttl_seconds * 1000)
@@ -88,6 +89,28 @@ def build_intent(
         payload["environment"] = environment
     if tp_sl_order is not None:
         payload["tp_sl_order"] = tp_sl_order
+    if mcp_trade_preview is not None:
+        if not isinstance(mcp_trade_preview, dict):
+            raise ValueError("mcp_trade_preview must be an object")
+        mcp_expires_at = mcp_trade_preview.get("expires_at")
+        if (
+            isinstance(mcp_expires_at, bool)
+            or not isinstance(mcp_expires_at, int)
+            or mcp_expires_at <= 0
+        ):
+            raise ValueError("mcp_trade_preview expires_at must be a positive integer")
+        serialized_preview = json.dumps(
+            mcp_trade_preview,
+            ensure_ascii=False,
+            sort_keys=True,
+        ).lower()
+        if any(
+            forbidden in serialized_preview
+            for forbidden in ('"credential"', '"api_secret"', '"api_passphrase"')
+        ):
+            raise ValueError("mcp_trade_preview must not contain credentials")
+        payload["mcp_trade_preview"] = mcp_trade_preview
+        payload["expires_at"] = min(payload["expires_at"], mcp_expires_at * 1000)
     return payload
 
 

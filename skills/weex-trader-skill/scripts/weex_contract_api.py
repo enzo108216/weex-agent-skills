@@ -27,6 +27,11 @@ from weex_mcp_read_compat import (
     McpReadFacade,
     resolve_local_mcp_read_settings,
 )
+from weex_mcp_trade_compat import (
+    McpTradeCompatibilityError,
+    McpTradeFacade,
+    resolve_local_mcp_trade_settings,
+)
 from weex_profile_language import resolve_language
 from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
@@ -167,6 +172,8 @@ class WeexContractClient:
         mcp_read_settings: Any | None = None,
         mcp_read_settings_factory: Any | None = None,
         mcp_read_facade: Any | None = None,
+        mcp_trade_settings_factory: Any | None = None,
+        mcp_trade_facade: Any | None = None,
     ) -> None:
         try:
             self.base_url = validate_weex_base_url(base_url, label="contract base URL")
@@ -182,6 +189,8 @@ class WeexContractClient:
         self.mcp_read_settings = mcp_read_settings
         self.mcp_read_settings_factory = mcp_read_settings_factory
         self.mcp_read_facade = mcp_read_facade
+        self.mcp_trade_settings_factory = mcp_trade_settings_factory
+        self.mcp_trade_facade = mcp_trade_facade
 
     def read_endpoint(
         self,
@@ -246,6 +255,91 @@ class WeexContractClient:
                 )
             raise SystemExit(PRIVATE_PROFILE_REQUIRED_MESSAGE)
 
+    def trade_endpoint(
+        self,
+        *,
+        endpoint: Endpoint,
+        query: Dict[str, Any],
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not endpoint.mutating:
+            raise SystemExit("Read endpoints are not available through the MCP Trade facade.")
+        preview = self.preview_trade_endpoint(endpoint=endpoint, query=query, body=body)
+        if preview.get("ok") is not True:
+            return preview
+        return self.confirm_trade_preview(preview["preview"])
+
+    def preview_trade_endpoint(
+        self,
+        *,
+        endpoint: Endpoint,
+        query: Dict[str, Any],
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not endpoint.mutating:
+            raise SystemExit("Read endpoints are not available through the MCP Trade facade.")
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                return {
+                    "ok": False,
+                    "status": None,
+                    "error": {
+                        "code": "mcp_trade_unavailable",
+                        "message": "The verified MCP Trade facade is not configured.",
+                    },
+                    "trade_status": "NOT_SENT",
+                    "review_required": False,
+                }
+            return self.mcp_trade_facade.preview(
+                product="contract",
+                endpoint=endpoint,
+                query=query,
+                body=body,
+            )
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
+
+    def confirm_trade_preview(self, preview: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                return {
+                    "ok": False,
+                    "status": None,
+                    "error": {
+                        "code": "mcp_trade_unavailable",
+                        "message": "The verified MCP Trade facade is not configured.",
+                    },
+                    "trade_status": "NOT_SENT",
+                    "review_required": False,
+                }
+            if preview.get("product") != "contract":
+                raise McpTradeCompatibilityError(
+                    "preview_binding_mismatch",
+                    "The saved MCP Trade preview product does not match Contract.",
+                )
+            return self.mcp_trade_facade.confirm(preview)
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
     def _sign(self, timestamp_ms: str, method: str, path: str, query_string: str, body_str: str) -> str:
         # Per WEEX docs, message = timestamp + method + requestPath + (?queryString) + body
         message = f"{timestamp_ms}{method}{path}"
@@ -570,12 +664,11 @@ def execute_endpoint(
         return 0
 
     if endpoint.mutating:
-        prepared = client.prepare_request(
-            endpoint,
+        response = client.trade_endpoint(
+            endpoint=endpoint,
             query=query,
             body=body,
         )
-        response = client.send(prepared)
     else:
         response = client.read_endpoint(
             endpoint=endpoint,
@@ -592,6 +685,11 @@ def execute_endpoint(
     }
     if environment is not None:
         add_environment_context(payload, environment)
+    for field in ("outcome", "trade_status", "review_required"):
+        if field in response:
+            payload[field] = response[field]
+    if response.get("review_required") is True and "data" in response:
+        payload["mutation_result"] = response["data"]
     output_json(payload, pretty)
     return 0 if response.get("ok") else 1
 
@@ -989,6 +1087,12 @@ def main() -> int:
         api_passphrase=None,
         profile_name=profile.name if profile else None,
         mcp_read_settings_factory=lambda: resolve_local_mcp_read_settings(
+            profile=profile,
+            explicit_futures_base_url=args.base_url,
+            explicit_timeout=args.timeout,
+            active_product="contract",
+        ),
+        mcp_trade_settings_factory=lambda: resolve_local_mcp_trade_settings(
             profile=profile,
             explicit_futures_base_url=args.base_url,
             explicit_timeout=args.timeout,

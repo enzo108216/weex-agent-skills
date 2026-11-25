@@ -27,6 +27,11 @@ from weex_mcp_read_compat import (
     McpReadFacade,
     resolve_local_mcp_read_settings,
 )
+from weex_mcp_trade_compat import (
+    McpTradeCompatibilityError,
+    McpTradeFacade,
+    resolve_local_mcp_trade_settings,
+)
 from weex_profile_language import resolve_language
 from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
 
@@ -168,6 +173,8 @@ class WeexSpotClient:
         mcp_read_settings: Any | None = None,
         mcp_read_settings_factory: Any | None = None,
         mcp_read_facade: Any | None = None,
+        mcp_trade_settings_factory: Any | None = None,
+        mcp_trade_facade: Any | None = None,
     ) -> None:
         try:
             self.base_url = validate_weex_base_url(base_url, label="spot base URL")
@@ -183,6 +190,8 @@ class WeexSpotClient:
         self.mcp_read_settings = mcp_read_settings
         self.mcp_read_settings_factory = mcp_read_settings_factory
         self.mcp_read_facade = mcp_read_facade
+        self.mcp_trade_settings_factory = mcp_trade_settings_factory
+        self.mcp_trade_facade = mcp_trade_facade
 
     def read_endpoint(
         self,
@@ -247,6 +256,91 @@ class WeexSpotClient:
                 )
             raise SystemExit(PRIVATE_PROFILE_REQUIRED_MESSAGE)
 
+    def trade_endpoint(
+        self,
+        *,
+        endpoint: Endpoint,
+        query: Dict[str, Any],
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not is_mutating(endpoint):
+            raise SystemExit("Read endpoints are not available through the MCP Trade facade.")
+        preview = self.preview_trade_endpoint(endpoint=endpoint, query=query, body=body)
+        if preview.get("ok") is not True:
+            return preview
+        return self.confirm_trade_preview(preview["preview"])
+
+    def preview_trade_endpoint(
+        self,
+        *,
+        endpoint: Endpoint,
+        query: Dict[str, Any],
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not is_mutating(endpoint):
+            raise SystemExit("Read endpoints are not available through the MCP Trade facade.")
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                return {
+                    "ok": False,
+                    "status": None,
+                    "error": {
+                        "code": "mcp_trade_unavailable",
+                        "message": "The verified MCP Trade facade is not configured.",
+                    },
+                    "trade_status": "NOT_SENT",
+                    "review_required": False,
+                }
+            return self.mcp_trade_facade.preview(
+                product="spot",
+                endpoint=endpoint,
+                query=query,
+                body=body,
+            )
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
+
+    def confirm_trade_preview(self, preview: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                return {
+                    "ok": False,
+                    "status": None,
+                    "error": {
+                        "code": "mcp_trade_unavailable",
+                        "message": "The verified MCP Trade facade is not configured.",
+                    },
+                    "trade_status": "NOT_SENT",
+                    "review_required": False,
+                }
+            if preview.get("product") != "spot":
+                raise McpTradeCompatibilityError(
+                    "preview_binding_mismatch",
+                    "The saved MCP Trade preview product does not match Spot.",
+                )
+            return self.mcp_trade_facade.confirm(preview)
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
     def _sign(self, timestamp_ms: str, method: str, path: str, query_string: str, body_str: str) -> str:
         message = f"{timestamp_ms}{method}{path}"
         if query_string:
@@ -419,8 +513,7 @@ def execute_endpoint(
         return 0
 
     if is_mutating(endpoint):
-        prepared = client.prepare_request(endpoint, query=query, body=body)
-        resp = client.send(prepared)
+        resp = client.trade_endpoint(endpoint=endpoint, query=query, body=body)
     else:
         resp = client.read_endpoint(endpoint=endpoint, query=query, body=body)
     payload = {
@@ -433,6 +526,11 @@ def execute_endpoint(
     }
     if environment is not None:
         add_environment_context(payload, environment)
+    for field in ("outcome", "trade_status", "review_required"):
+        if field in resp:
+            payload[field] = resp[field]
+    if resp.get("review_required") is True and "data" in resp:
+        payload["mutation_result"] = resp["data"]
     output_json(payload, pretty)
     return 0 if resp.get("ok") else 1
 
@@ -679,6 +777,12 @@ def main() -> int:
         api_passphrase=None,
         profile_name=profile.name if profile else None,
         mcp_read_settings_factory=lambda: resolve_local_mcp_read_settings(
+            profile=profile,
+            explicit_spot_base_url=args.base_url,
+            explicit_timeout=args.timeout,
+            active_product="spot",
+        ),
+        mcp_trade_settings_factory=lambda: resolve_local_mcp_trade_settings(
             profile=profile,
             explicit_spot_base_url=args.base_url,
             explicit_timeout=args.timeout,

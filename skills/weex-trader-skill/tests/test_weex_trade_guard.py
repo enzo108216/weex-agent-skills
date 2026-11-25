@@ -33,6 +33,53 @@ EXPECTED_STANDARD_DISCLAIMER = (
 )
 
 
+def fake_mcp_trade_preview(
+    *,
+    product: str = "contract",
+    legacy_key: str = "transaction.place_order",
+    expires_at: int = 10_000,
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "product": product,
+        "legacy_key": legacy_key,
+        "preview_tool": "trade_preview_order",
+        "confirm_tool": "trade_confirm_order",
+        "arguments": {"client_order_id": "client-1"},
+        "preview_id": "opaque-preview",
+        "expires_at": expires_at,
+        "profile_id": "profile-id",
+        "spot_base_url": "https://api-spot.weex.com",
+        "futures_base_url": "https://api-contract.weex.com",
+    }
+
+
+def configure_fake_trade_client(
+    client: mock.Mock,
+    *,
+    data: object,
+    on_preview: object | None = None,
+) -> None:
+    def preview(*, endpoint: object, query: dict[str, object], body: dict[str, object]):
+        if callable(on_preview):
+            on_preview(endpoint, query, body)
+        return {"ok": True, "preview": fake_mcp_trade_preview()}
+
+    client.preview_trade_endpoint.side_effect = preview
+    client.confirm_trade_preview.return_value = {
+        "ok": True,
+        "status": None,
+        "data": data,
+        "outcome": {
+            "class": "accepted",
+            "write_attempted": True,
+            "action": "order",
+        },
+        "trade_status": "ACCEPTED",
+        "review_required": False,
+    }
+
+
 class OrderIntentStateTests(unittest.TestCase):
     def test_save_load_and_expiry_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -45,6 +92,7 @@ class OrderIntentStateTests(unittest.TestCase):
                     analysis_output={"alerts": []},
                     now_ms=1000,
                     ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
                 )
                 intent_state.save_intent(intent)
 
@@ -81,21 +129,59 @@ class OrderIntentStateTests(unittest.TestCase):
         self.assertEqual(demo_intent["trading_mode"], "demo")
         self.assertNotEqual(live_intent["risk_signature"], demo_intent["risk_signature"])
 
+    def test_mcp_preview_is_persisted_without_credentials_and_limits_intent_expiry(self) -> None:
+        preview = {
+            "version": 1,
+            "product": "contract",
+            "legacy_key": "transaction.place_order",
+            "preview_tool": "trade_preview_order",
+            "confirm_tool": "trade_confirm_order",
+            "arguments": {"client_order_id": "stable-id"},
+            "preview_id": "opaque-preview",
+            "expires_at": 200,
+            "profile_id": "profile-id",
+            "spot_base_url": "https://api-spot.weex.com",
+            "futures_base_url": "https://api-contract.weex.com",
+        }
+        intent = intent_state.build_intent(
+            profile_name="demo",
+            market="futures",
+            order_preview={"symbol": "BTCUSDT"},
+            raw_order={"symbol": "BTCUSDT"},
+            analysis_output={"alerts": []},
+            now_ms=1000,
+            ttl_seconds=300,
+            mcp_trade_preview=preview,
+        )
+
+        self.assertEqual(intent["mcp_trade_preview"], preview)
+        self.assertEqual(intent["expires_at"], 200000)
+        serialized = json.dumps(intent)
+        for forbidden in ("api_secret", "api_passphrase", "credential"):
+            self.assertNotIn(forbidden, serialized)
+
 
 class TradeGuardTests(unittest.TestCase):
     def test_submit_order_routes_exact_position_close_to_close_positions(self) -> None:
         fake_contract_api = mock.Mock()
         fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "transaction.close_positions"
-        fake_contract_api.ENDPOINTS = {"transaction.place_order": mock.Mock()}
+        close_endpoint = mock.Mock()
+        fake_contract_api.ENDPOINTS = {
+            "transaction.place_order": mock.Mock(),
+            "transaction.close_positions": close_endpoint,
+        }
         fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
-        fake_contract_api.execute_endpoint_payload.return_value = (
-            0,
-            {
+        captured_body: dict[str, object] = {}
+        fake_client = mock.Mock()
+        configure_fake_trade_client(
+            fake_client,
+            data={
                 "endpoint": "transaction.close_positions",
                 "businessOk": True,
                 "exitCode": 0,
                 "result": [{"positionId": 9001, "success": True, "successOrderId": 9101}],
             },
+            on_preview=lambda _endpoint, _query, body: captured_body.update(body),
         )
         fresh_account = {
             "partial": False,
@@ -119,7 +205,7 @@ class TradeGuardTests(unittest.TestCase):
         ), mock.patch.object(
             trade_guard,
             "_build_contract_client",
-            return_value=(fake_contract_api, mock.Mock()),
+            return_value=(fake_contract_api, fake_client),
         ):
             result = trade_guard._submit_order(
                 market="futures",
@@ -137,8 +223,7 @@ class TradeGuardTests(unittest.TestCase):
 
         self.assertEqual(result["endpoint"], "transaction.close_positions")
         fake_contract_api.find_endpoint_key_by_doc_suffix.assert_called_once_with("ClosePositions")
-        execute_kwargs = fake_contract_api.execute_endpoint_payload.call_args.kwargs
-        self.assertEqual(execute_kwargs["body"], {"symbol": "ETHUSDT", "positionId": 1001})
+        self.assertEqual(captured_body, {"symbol": "ETHUSDT", "positionId": 1001})
 
     def test_submit_order_rejects_partial_quantity_for_exact_position_close(self) -> None:
         fresh_account = {
@@ -376,7 +461,11 @@ class TradeGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tempdir:
             with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
-                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance):
+                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance), mock.patch.object(
+                    trade_guard,
+                    "_preview_manual_order_trade",
+                    return_value=fake_mcp_trade_preview(expires_at=600),
+                ):
                     with mock.patch.object(trade_guard.analysis, "analyze_order_risk", return_value=analysis_payload):
                         stream = io.StringIO()
                         with mock.patch.object(sys, "stdout", stream):
@@ -433,7 +522,11 @@ class TradeGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tempdir:
             with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
-                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance):
+                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance), mock.patch.object(
+                    trade_guard,
+                    "_preview_manual_order_trade",
+                    return_value=fake_mcp_trade_preview(expires_at=600),
+                ):
                     with mock.patch.object(trade_guard.analysis, "analyze_order_risk", return_value=analysis_payload):
                         stream = io.StringIO()
                         with mock.patch.object(sys, "stdout", stream):
@@ -509,7 +602,11 @@ class TradeGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tempdir:
             with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
-                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance):
+                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance), mock.patch.object(
+                    trade_guard,
+                    "_preview_manual_order_trade",
+                    return_value=fake_mcp_trade_preview(expires_at=600),
+                ):
                     with mock.patch.object(trade_guard.analysis, "analyze_order_risk", return_value=analysis_payload):
                         stream = io.StringIO()
                         with mock.patch.object(sys, "stdout", stream):
@@ -568,7 +665,11 @@ class TradeGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tempdir:
             with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
-                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance):
+                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance), mock.patch.object(
+                    trade_guard,
+                    "_preview_manual_order_trade",
+                    return_value=fake_mcp_trade_preview(expires_at=600),
+                ):
                     with mock.patch.object(trade_guard.analysis, "analyze_order_risk", return_value=analysis_payload):
                         stream = io.StringIO()
                         with mock.patch.object(sys, "stdout", stream):
@@ -696,17 +797,35 @@ class TradeGuardTests(unittest.TestCase):
                     now_ms=1000,
                     ttl_seconds=300,
                 )
+                intent["mcp_trade_preview"] = fake_mcp_trade_preview(expires_at=600)
                 intent["intent_id"] = "intent-1"
                 intent["risk_signature"] = "sig-1"
                 intent_state.save_intent(intent)
                 stream = io.StringIO()
-                with mock.patch.object(trade_guard, "_submit_live_order", return_value=execution_payload) as submit_mock:
+                with mock.patch.object(
+                    trade_guard,
+                    "_confirm_saved_trade_preview",
+                    return_value={
+                        "ok": True,
+                        "data": execution_payload,
+                        "outcome": {
+                            "class": "accepted",
+                            "write_attempted": True,
+                            "action": "order",
+                        },
+                        "trade_status": "ACCEPTED",
+                        "review_required": False,
+                    },
+                ) as submit_mock:
                     with mock.patch.object(sys, "stdout", stream):
                         exit_code = trade_guard.cmd_confirm_order(args, now_ms=1000 + (60 * 1000))
                 remaining_intent = intent_state.load_intent()
 
         self.assertEqual(exit_code, 0)
-        submit_mock.assert_called_once()
+        submit_mock.assert_called_once_with(
+            profile_name="demo",
+            preview=fake_mcp_trade_preview(expires_at=600),
+        )
         self.assertIsNone(remaining_intent)
         self.assertIn('"order_id": "9001"', stream.getvalue())
 
@@ -743,6 +862,7 @@ class TradeGuardTests(unittest.TestCase):
                     analysis_output={"alerts": []},
                     now_ms=1000,
                     ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
                 )
                 intent.update(
                     {
@@ -769,6 +889,171 @@ class TradeGuardTests(unittest.TestCase):
         self.assertEqual(submit_mock.call_args.args[0]["intent_id"], "fallback-intent")
         self.assertIsNone(remaining_intent)
         self.assertEqual(json.loads(stream.getvalue())["status"], "ACCEPTED")
+
+    def test_confirm_order_unknown_is_review_required_and_cannot_be_replayed(self) -> None:
+        args = mock.Mock(
+            intent_id="intent-unknown",
+            risk_signature="sig-unknown",
+            trading_mode="live",
+            confirm_live=True,
+            confirm_demo=False,
+            language="en",
+            pretty=False,
+        )
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                )
+                intent["intent_id"] = "intent-unknown"
+                intent["risk_signature"] = "sig-unknown"
+                intent_state.save_intent(intent)
+                stream = io.StringIO()
+                with mock.patch.object(
+                    trade_guard,
+                    "_confirm_saved_trade_preview",
+                    return_value={
+                        "ok": False,
+                        "error": {"code": "upstream_error", "message": "uncertain"},
+                        "outcome": {
+                            "class": "unknown",
+                            "write_attempted": True,
+                            "action": "order",
+                            "client_order_id": "client-1",
+                        },
+                        "trade_status": "REVIEW_REQUIRED",
+                        "review_required": True,
+                    },
+                ):
+                    with mock.patch.object(sys, "stdout", stream):
+                        exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+                remaining = intent_state.load_intent()
+                second_stream = io.StringIO()
+                with mock.patch.object(sys, "stdout", second_stream):
+                    second_exit = trade_guard.cmd_confirm_order(args, now_ms=700000)
+                remaining_after_expiry = intent_state.load_intent()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(second_exit, 1)
+        self.assertIsNotNone(remaining)
+        self.assertEqual(remaining["mcp_trade_confirmation_started_at"], 2000)
+        self.assertIsNotNone(remaining_after_expiry)
+        self.assertEqual(
+            remaining_after_expiry["mcp_trade_confirmation_started_at"],
+            2000,
+        )
+        self.assertIn("already submitted", second_stream.getvalue())
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(payload["status"], "REVIEW_REQUIRED")
+        self.assertTrue(payload["review_required"])
+        self.assertEqual(payload["outcome"]["class"], "unknown")
+
+    def test_unknown_intent_blocks_new_preview_before_risk_or_mcp_calls(self) -> None:
+        args = mock.Mock(
+            profile="demo",
+            market="futures",
+            trading_mode="live",
+            language="en",
+            order_json=json.dumps(
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "position_side": "LONG",
+                    "order_type": "MARKET",
+                    "quantity": "1",
+                }
+            ),
+            pretty=False,
+            ttl_seconds=300,
+        )
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                intent = intent_state.build_intent(
+                    profile_name="demo",
+                    market="futures",
+                    order_preview={"symbol": "BTCUSDT"},
+                    raw_order={"symbol": "BTCUSDT"},
+                    analysis_output={"alerts": []},
+                    now_ms=1000,
+                    ttl_seconds=300,
+                    mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                )
+                intent["mcp_trade_confirmation_started_at"] = 2000
+                intent_state.save_intent(intent)
+                with mock.patch.object(trade_guard, "TradeDataAggregator") as aggregator_mock:
+                    with self.assertRaisesRegex(
+                        trade_guard.AggregationInputError,
+                        "unresolved",
+                    ):
+                        trade_guard.cmd_preview_order(args, now_ms=700000)
+                remaining = intent_state.load_intent()
+
+        aggregator_mock.assert_not_called()
+        self.assertEqual(remaining["mcp_trade_confirmation_started_at"], 2000)
+
+    def test_rejection_and_not_sent_clear_intent_for_fresh_preview(self) -> None:
+        cases = (
+            ("definitive_rejection", "REJECTED", True),
+            ("not_sent", "NOT_SENT", False),
+        )
+        for outcome_class, trade_status, write_attempted in cases:
+            with self.subTest(outcome_class=outcome_class):
+                args = mock.Mock(
+                    intent_id="intent-final",
+                    risk_signature="sig-final",
+                    trading_mode="live",
+                    confirm_live=True,
+                    confirm_demo=False,
+                    language="en",
+                    pretty=False,
+                )
+                with tempfile.TemporaryDirectory() as tempdir:
+                    with mock.patch.dict(
+                        os.environ,
+                        {"WEEX_TRADER_SKILL_HOME": tempdir},
+                        clear=False,
+                    ):
+                        intent = intent_state.build_intent(
+                            profile_name="demo",
+                            market="futures",
+                            order_preview={"symbol": "BTCUSDT"},
+                            raw_order={"symbol": "BTCUSDT"},
+                            analysis_output={"alerts": []},
+                            now_ms=1000,
+                            ttl_seconds=300,
+                            mcp_trade_preview=fake_mcp_trade_preview(expires_at=600),
+                        )
+                        intent["intent_id"] = "intent-final"
+                        intent["risk_signature"] = "sig-final"
+                        intent_state.save_intent(intent)
+                        with mock.patch.object(
+                            trade_guard,
+                            "_confirm_saved_trade_preview",
+                            return_value={
+                                "ok": False,
+                                "error": {"code": "rejected", "message": "not accepted"},
+                                "outcome": {
+                                    "class": outcome_class,
+                                    "write_attempted": write_attempted,
+                                    "action": "order",
+                                },
+                                "trade_status": trade_status,
+                                "review_required": False,
+                            },
+                        ):
+                            with mock.patch.object(sys, "stdout", io.StringIO()):
+                                exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
+                        remaining = intent_state.load_intent()
+
+                self.assertEqual(exit_code, 1)
+                self.assertIsNone(remaining)
 
     def test_auto_fallback_submitter_preserves_batch_legs_and_stops_on_uncertain_result(self) -> None:
         import weex_auto_trade_runtime as runtime_module
@@ -859,11 +1144,26 @@ class TradeGuardTests(unittest.TestCase):
                     now_ms=1000,
                     ttl_seconds=300,
                 )
+                intent["mcp_trade_preview"] = fake_mcp_trade_preview(expires_at=600)
                 intent["intent_id"] = "intent-demo"
                 intent["risk_signature"] = "sig-demo"
                 intent_state.save_intent(intent)
                 stream = io.StringIO()
-                with mock.patch.object(trade_guard, "_submit_order", return_value=execution_payload) as submit_mock:
+                with mock.patch.object(
+                    trade_guard,
+                    "_confirm_saved_trade_preview",
+                    return_value={
+                        "ok": True,
+                        "data": execution_payload,
+                        "outcome": {
+                            "class": "accepted",
+                            "write_attempted": True,
+                            "action": "order",
+                        },
+                        "trade_status": "ACCEPTED",
+                        "review_required": False,
+                    },
+                ) as submit_mock:
                     with mock.patch.object(trade_guard, "resolve_language", return_value="zh"):
                         with mock.patch.object(sys, "stdout", stream):
                             exit_code = trade_guard.cmd_confirm_order(args, now_ms=2000)
@@ -871,16 +1171,8 @@ class TradeGuardTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         submit_mock.assert_called_once_with(
-            market="futures",
             profile_name="demo-profile",
-            trading_mode="demo",
-            raw_order={
-                "symbol": "BTCSUSDT",
-                "side": "BUY",
-                "position_side": "LONG",
-                "order_type": "MARKET",
-                "quantity": "0.01",
-            },
+            preview=fake_mcp_trade_preview(expires_at=600),
         )
         self.assertIsNone(remaining_intent)
         payload = json.loads(stream.getvalue())
@@ -985,8 +1277,11 @@ class TradeGuardTests(unittest.TestCase):
             prepared_bodies.append(body)
             return {"endpoint": endpoint, "query": query, "body": body}
 
-        fake_client.prepare_request.side_effect = prepare_request
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "1001"}}
+        configure_fake_trade_client(
+            fake_client,
+            data={"orderId": "1001"},
+            on_preview=prepare_request,
+        )
 
         with mock.patch.object(trade_guard, "_build_contract_client", return_value=(fake_contract_api, fake_client)):
             result = trade_guard._submit_live_order(
@@ -1016,8 +1311,11 @@ class TradeGuardTests(unittest.TestCase):
             prepared_bodies.append(body)
             return {"endpoint": endpoint, "query": query, "body": body}
 
-        fake_client.prepare_request.side_effect = prepare_request
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "2001"}}
+        configure_fake_trade_client(
+            fake_client,
+            data={"orderId": "2001"},
+            on_preview=prepare_request,
+        )
 
         with mock.patch.object(trade_guard, "_build_contract_client", return_value=(fake_contract_api, fake_client)):
             result = trade_guard._submit_live_order(
@@ -1051,8 +1349,7 @@ class TradeGuardTests(unittest.TestCase):
         fake_contract_api.find_endpoint_key_by_doc_suffix.return_value = "sim.transaction.place_order"
         fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
         fake_client = mock.Mock()
-        fake_client.prepare_request.return_value = {"request": "prepared"}
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "live-2002"}}
+        configure_fake_trade_client(fake_client, data={"orderId": "live-2002"})
 
         with mock.patch.object(trade_guard, "_build_contract_client", return_value=(fake_contract_api, fake_client)):
             result = trade_guard._submit_live_order(
@@ -1068,7 +1365,10 @@ class TradeGuardTests(unittest.TestCase):
             )
 
         self.assertEqual(result["orderId"], "live-2002")
-        self.assertIs(fake_client.prepare_request.call_args.args[0], live_endpoint)
+        self.assertIs(
+            fake_client.preview_trade_endpoint.call_args.kwargs["endpoint"],
+            live_endpoint,
+        )
 
     def test_submit_demo_order_maps_standard_symbol_to_official_sim_symbol(self) -> None:
         prepared_bodies: list[dict[str, object]] = []
@@ -1082,8 +1382,11 @@ class TradeGuardTests(unittest.TestCase):
             prepared_bodies.append(body)
             return {"endpoint": endpoint, "query": query, "body": body}
 
-        fake_client.prepare_request.side_effect = prepare_request
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "demo-3001"}}
+        configure_fake_trade_client(
+            fake_client,
+            data={"orderId": "demo-3001"},
+            on_preview=prepare_request,
+        )
 
         with mock.patch.object(trade_guard, "_build_contract_client", return_value=(fake_contract_api, fake_client)):
             result = trade_guard._submit_order(
@@ -1115,8 +1418,11 @@ class TradeGuardTests(unittest.TestCase):
             prepared_bodies.append(body)
             return {"endpoint": endpoint, "query": query, "body": body}
 
-        fake_client.prepare_request.side_effect = prepare_request
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "3001"}}
+        configure_fake_trade_client(
+            fake_client,
+            data={"orderId": "3001"},
+            on_preview=prepare_request,
+        )
 
         with mock.patch.object(trade_guard, "_build_spot_client", return_value=(fake_spot_api, fake_client)):
             result = trade_guard._submit_live_order(
@@ -1148,8 +1454,11 @@ class TradeGuardTests(unittest.TestCase):
             prepared_bodies.append(body)
             return {"endpoint": endpoint, "query": query, "body": body}
 
-        fake_client.prepare_request.side_effect = prepare_request
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "3002"}}
+        configure_fake_trade_client(
+            fake_client,
+            data={"orderId": "3002"},
+            on_preview=prepare_request,
+        )
 
         with mock.patch.object(trade_guard, "_build_spot_client", return_value=(fake_spot_api, fake_client)):
             result = trade_guard._submit_live_order(
@@ -1180,8 +1489,11 @@ class TradeGuardTests(unittest.TestCase):
             prepared_bodies.append(body)
             return {"endpoint": endpoint, "query": query, "body": body}
 
-        fake_client.prepare_request.side_effect = prepare_request
-        fake_client.send.return_value = {"ok": True, "data": {"orderId": "3003"}}
+        configure_fake_trade_client(
+            fake_client,
+            data={"orderId": "3003"},
+            on_preview=prepare_request,
+        )
 
         with mock.patch.object(trade_guard, "_build_spot_client", return_value=(fake_spot_api, fake_client)):
             result = trade_guard._submit_live_order(
@@ -1283,7 +1595,14 @@ class TradeGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tempdir:
             with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
-                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance):
+                with mock.patch.object(trade_guard, "TradeDataAggregator", return_value=aggregator_instance), mock.patch.object(
+                    trade_guard,
+                    "_preview_manual_tp_sl_trade",
+                    return_value=fake_mcp_trade_preview(
+                        legacy_key="transaction.place_tp_sl_order",
+                        expires_at=600,
+                    ),
+                ):
                     with mock.patch.object(trade_guard.analysis, "analyze_account_risk", return_value=analysis_payload):
                         stream = io.StringIO()
                         with mock.patch.object(sys, "stdout", stream):
@@ -1373,14 +1692,28 @@ class TradeGuardTests(unittest.TestCase):
                     intent_type="tp_sl_order",
                     tp_sl_order=tp_sl_order,
                 )
+                intent["mcp_trade_preview"] = fake_mcp_trade_preview(
+                    legacy_key="transaction.place_tp_sl_order",
+                    expires_at=600,
+                )
                 intent["intent_id"] = "intent-tpsl"
                 intent["risk_signature"] = "sig-tpsl"
                 intent_state.save_intent(intent)
                 stream = io.StringIO()
                 with mock.patch.object(
                     trade_guard,
-                    "_submit_live_tp_sl_order",
-                    return_value={"algoId": "7001", "clientAlgoId": "mon_price_demo"},
+                    "_confirm_saved_trade_preview",
+                    return_value={
+                        "ok": True,
+                        "data": {"algoId": "7001", "clientAlgoId": "mon_price_demo"},
+                        "outcome": {
+                            "class": "accepted",
+                            "write_attempted": True,
+                            "action": "tp_sl",
+                        },
+                        "trade_status": "ACCEPTED",
+                        "review_required": False,
+                    },
                 ) as submit_mock:
                     with mock.patch.object(trade_guard, "resolve_language", return_value="zh"):
                         with mock.patch.object(sys, "stdout", stream):
@@ -1388,7 +1721,13 @@ class TradeGuardTests(unittest.TestCase):
                 remaining_intent = intent_state.load_intent()
 
         self.assertEqual(exit_code, 0)
-        submit_mock.assert_called_once_with(profile_name="demo", raw_order=tp_sl_order)
+        submit_mock.assert_called_once_with(
+            profile_name="demo",
+            preview=fake_mcp_trade_preview(
+                legacy_key="transaction.place_tp_sl_order",
+                expires_at=600,
+            ),
+        )
         self.assertIsNone(remaining_intent)
         payload = json.loads(stream.getvalue())
         self.assertEqual(payload["algoId"], "7001")
