@@ -46,6 +46,7 @@ TRADE_DATA_SCHEMA_REFERENCE = ROOT / "references" / "trade-data-schema.md"
 CONTRACT_API_DEFINITIONS_REFERENCE = ROOT / "references" / "contract-api-definitions.md"
 PARTNER_API_DEFINITIONS = ROOT / "references" / "partner-api-definitions.json"
 MCP_CAPABILITY_MAPPING = ROOT / "references" / "mcp-capability-mapping.json"
+MCP_GATEWAY = ROOT / "scripts" / "weex_mcp_gateway.py"
 SPOT_API_DEFINITIONS = ROOT / "references" / "spot-api-definitions.json"
 SPOT_API_DEFINITIONS_MD = ROOT / "references" / "spot-api-definitions.md"
 CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
@@ -178,6 +179,37 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertEqual(manifest["routing"]["compatibility"]["mcp_capability_mapping"], mapping_path)
         self.assertIn(mapping_path, file_index["file_guide"])
         self.assertIn("79", file_index["file_guide"][mapping_path]["role"])
+
+    def test_manifest_and_file_index_register_local_mcp_readiness_without_lockfile_dependency(self) -> None:
+        self.assertTrue(MCP_GATEWAY.exists())
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        gateway_path = "scripts/weex_mcp_gateway.py"
+
+        self.assertEqual(
+            manifest["routing"]["compatibility"]["local_mcp_gateway"],
+            gateway_path,
+        )
+        for path in (
+            gateway_path,
+            "scripts/weex_profile_store.py",
+            "scripts/weex_agent_state.py",
+            "scripts/weex_runtime_setup.py",
+            "scripts/weex_doctor.py",
+        ):
+            self.assertIn(path, file_index["file_guide"])
+        self.assertIn("runtime_status", file_index["file_guide"][gateway_path]["surface"])
+        self.assertIn("probe_local_mcp_runtime", file_index["file_guide"][gateway_path]["surface"])
+        self.assertIn(
+            "project_mcp_status",
+            file_index["file_guide"]["scripts/weex_agent_state.py"]["surface"],
+        )
+        self.assertIn("mcp", file_index["file_guide"]["scripts/weex_doctor.py"]["surface"])
+
+        dependency_text = REQUIREMENTS.read_text(encoding="utf-8") + REQUIREMENTS_LOCK.read_text(encoding="utf-8")
+        self.assertNotIn("weex-mcp", dependency_text.lower())
+        self.assertNotIn("/Users/", dependency_text)
+        self.assertNotIn("artifacts/", dependency_text)
 
     def test_skill_frontmatter_is_portable_and_monitor_description_is_trigger_only(self) -> None:
         analysis_skill = REPO_ROOT / "skills" / "weex-analysis-skill" / "SKILL.md"

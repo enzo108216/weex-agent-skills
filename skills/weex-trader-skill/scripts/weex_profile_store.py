@@ -36,6 +36,11 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover
+    msvcrt = None
+
 from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
 
 
@@ -52,6 +57,10 @@ VAULT_AGENT_VERSION = 1
 VAULT_AGENT_START_TIMEOUT_SECONDS = 5.0
 VAULT_AGENT_CONNECT_TIMEOUT_SECONDS = 1.5
 SECURE_FIELDS = ("api_key", "api_secret", "api_passphrase")
+APPLICATION_SECRETS_FIELD = "application_secrets"
+LOCAL_MCP_APPROVAL_KEY_FIELD = "local_mcp_approval_key"
+LOCAL_MCP_APPROVAL_KEY_MIN_BYTES = 32
+LOCAL_MCP_APPROVAL_KEY_RANDOM_BYTES = 48
 FIELD_LABELS = {
     "api_key": "API Key",
     "api_secret": "Secret Key",
@@ -236,6 +245,7 @@ def _empty_vault_payload() -> Dict[str, Any]:
     return {
         "version": VAULT_VERSION,
         "profiles": {},
+        APPLICATION_SECRETS_FIELD: {},
     }
 
 
@@ -283,14 +293,29 @@ def _save_vault_file(obj: Dict[str, Any]) -> None:
 @contextmanager
 def _file_lock(lock_path: Path) -> Any:
     _ensure_private_dir(lock_path.parent)
-    with open(lock_path, "a+", encoding="utf-8") as handle:
+    with open(lock_path, "a+b") as handle:
         if fcntl is not None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            lock_backend = "fcntl"
+        elif msvcrt is not None:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            lock_backend = "msvcrt"
+        else:
+            raise ProfileError("Secure storage file locking is unavailable on this platform.")
         try:
             yield
         finally:
-            if fcntl is not None:
+            if lock_backend == "fcntl":
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            else:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 @contextmanager
@@ -737,16 +762,94 @@ def _load_vault_profiles() -> Dict[str, Dict[str, str]]:
     return normalized
 
 
+def _load_unlocked_vault_payload() -> tuple[Dict[str, Any], bytes, Dict[str, Any], bytes]:
+    key = _resolve_vault_key()
+    config = _require_vault_config()
+    raw_vault = _load_vault_file()
+    salt = b64decode(raw_vault["kdf"]["salt"])
+    payload = _decrypt_vault_payload(raw_vault, key)
+    return payload, key, config, salt
+
+
+def _application_secrets(payload: Dict[str, Any], *, create: bool) -> Optional[Dict[str, Any]]:
+    if APPLICATION_SECRETS_FIELD not in payload:
+        if not create:
+            return None
+        payload[APPLICATION_SECRETS_FIELD] = {}
+    value = payload[APPLICATION_SECRETS_FIELD]
+    if not isinstance(value, dict):
+        raise ProfileError("Invalid vault application secrets map")
+    return value
+
+
+def _validated_local_mcp_approval_key(value: Any) -> str:
+    if not isinstance(value, str) or len(value.encode("utf-8")) < LOCAL_MCP_APPROVAL_KEY_MIN_BYTES:
+        raise ProfileError("Invalid local MCP approval key in application vault")
+    return value
+
+
+def _new_local_mcp_approval_key() -> str:
+    return secrets.token_urlsafe(LOCAL_MCP_APPROVAL_KEY_RANDOM_BYTES)
+
+
+def get_or_create_local_mcp_approval_key() -> str:
+    with _vault_lock():
+        payload, key, config, salt = _load_unlocked_vault_payload()
+        application_secrets = _application_secrets(payload, create=True)
+        assert application_secrets is not None
+        if LOCAL_MCP_APPROVAL_KEY_FIELD in application_secrets:
+            return _validated_local_mcp_approval_key(
+                application_secrets[LOCAL_MCP_APPROVAL_KEY_FIELD]
+            )
+        approval_key = _new_local_mcp_approval_key()
+        application_secrets[LOCAL_MCP_APPROVAL_KEY_FIELD] = approval_key
+        _save_vault_file(_encrypt_vault_payload(payload, key, config, salt))
+        return approval_key
+
+
+def rotate_local_mcp_approval_key() -> str:
+    with _vault_lock():
+        payload, key, config, salt = _load_unlocked_vault_payload()
+        application_secrets = _application_secrets(payload, create=True)
+        assert application_secrets is not None
+        if LOCAL_MCP_APPROVAL_KEY_FIELD in application_secrets:
+            _validated_local_mcp_approval_key(
+                application_secrets[LOCAL_MCP_APPROVAL_KEY_FIELD]
+            )
+        approval_key = _new_local_mcp_approval_key()
+        application_secrets[LOCAL_MCP_APPROVAL_KEY_FIELD] = approval_key
+        _save_vault_file(_encrypt_vault_payload(payload, key, config, salt))
+        return approval_key
+
+
+def local_mcp_approval_key_status() -> Dict[str, Any]:
+    with _vault_lock():
+        payload, _, _, _ = _load_unlocked_vault_payload()
+        application_secrets = _application_secrets(payload, create=False)
+        if application_secrets is None or LOCAL_MCP_APPROVAL_KEY_FIELD not in application_secrets:
+            return {
+                "present": False,
+                "valid": False,
+                "length": 0,
+                "fp_sha256": None,
+            }
+        approval_key = _validated_local_mcp_approval_key(
+            application_secrets[LOCAL_MCP_APPROVAL_KEY_FIELD]
+        )
+        encoded = approval_key.encode("utf-8")
+        return {
+            "present": True,
+            "valid": True,
+            "length": len(encoded),
+            "fp_sha256": sha256(encoded).hexdigest()[:16],
+        }
+
+
 def _save_vault_profiles(profiles: Dict[str, Dict[str, str]]) -> None:
     with _vault_lock():
-        key = _resolve_vault_key()
-        config = _require_vault_config()
-        raw_vault = _load_vault_file()
-        salt = b64decode(raw_vault["kdf"]["salt"])
-        payload = {
-            "version": VAULT_VERSION,
-            "profiles": profiles,
-        }
+        payload, key, config, salt = _load_unlocked_vault_payload()
+        payload.setdefault("version", VAULT_VERSION)
+        payload["profiles"] = profiles
         _save_vault_file(_encrypt_vault_payload(payload, key, config, salt))
 
 

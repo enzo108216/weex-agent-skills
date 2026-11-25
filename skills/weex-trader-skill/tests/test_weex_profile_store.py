@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -428,6 +429,343 @@ class LinuxVaultStoreTests(unittest.TestCase):
         self.assertIsNone(store.get_default_profile_id())
         self.assertFalse(store.vault_config_path().exists())
         self.assertFalse(store.vault_data_path().exists())
+
+
+class ApplicationVaultApprovalKeyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.prev_home = os.environ.get("WEEX_TRADER_SKILL_HOME")
+        os.environ["WEEX_TRADER_SKILL_HOME"] = self.tempdir.name
+        self.session_key: bytes | None = None
+
+        self.read_session_patch = mock.patch.object(
+            store,
+            "_read_vault_session_key",
+            side_effect=lambda: self.session_key,
+        )
+        self.write_session_patch = mock.patch.object(
+            store,
+            "_write_vault_session_key",
+            side_effect=self._remember_session_key,
+        )
+        self.delete_session_patch = mock.patch.object(
+            store,
+            "_delete_vault_session_key",
+            side_effect=self._forget_session_key,
+        )
+        self.read_session_patch.start()
+        self.write_session_patch.start()
+        self.delete_session_patch.start()
+
+    def tearDown(self) -> None:
+        self.delete_session_patch.stop()
+        self.write_session_patch.stop()
+        self.read_session_patch.stop()
+        store._MANUAL_SESSION_PROCESSES.clear()
+        if self.prev_home is None:
+            os.environ.pop("WEEX_TRADER_SKILL_HOME", None)
+        else:
+            os.environ["WEEX_TRADER_SKILL_HOME"] = self.prev_home
+
+    def _remember_session_key(self, key: bytes) -> None:
+        self.session_key = key
+
+    def _forget_session_key(self) -> None:
+        self.session_key = None
+
+    def _setup(self, *, passphrase: str = "vault-pass", force: bool = False) -> None:
+        store.setup_linux_vault(
+            mode="manual_once",
+            passphrase=passphrase,
+            unlock=True,
+            force=force,
+        )
+        self.assertIsNotNone(self.session_key)
+
+    def _payload(self) -> dict[str, object]:
+        self.assertIsNotNone(self.session_key)
+        return store._decrypt_vault_payload(store._load_vault_file(), self.session_key)
+
+    def _rewrite_payload(self, payload: dict[str, object]) -> None:
+        self.assertIsNotNone(self.session_key)
+        raw_vault = store._load_vault_file()
+        config = store._require_vault_config()
+        salt = store.b64decode(raw_vault["kdf"]["salt"])
+        store._save_vault_file(
+            store._encrypt_vault_payload(payload, self.session_key, config, salt)
+        )
+
+    def _create_profile(self, *, name: str = "main") -> store.ProfileMetadata:
+        return store.upsert_profile(
+            name=name,
+            api_key="key-1234",
+            api_secret="secret-1234",
+            api_passphrase="pass-1234",
+            set_default=True,
+        )
+
+    def test_approval_key_is_lazily_created_once_and_stable_across_reloads(self) -> None:
+        self._setup()
+        self.assertEqual(self._payload()["application_secrets"], {})
+
+        first = store.get_or_create_local_mcp_approval_key()
+        second = store.get_or_create_local_mcp_approval_key()
+
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(len(first.encode("utf-8")), 32)
+        self.assertEqual(
+            self._payload()["application_secrets"]["local_mcp_approval_key"],
+            first,
+        )
+
+    def test_concurrent_first_provision_returns_one_key_and_writes_once(self) -> None:
+        self._setup()
+        results: list[str] = []
+        errors: list[BaseException] = []
+        original_save = store._save_vault_file
+
+        def worker() -> None:
+            try:
+                results.append(store.get_or_create_local_mcp_approval_key())
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with mock.patch.object(store, "_save_vault_file", wraps=original_save) as save_mock:
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 8)
+        self.assertEqual(len(set(results)), 1)
+        self.assertEqual(save_mock.call_count, 1)
+
+    def test_locked_vault_refuses_approval_key_without_writing(self) -> None:
+        store.setup_linux_vault(
+            mode="manual_once",
+            passphrase="vault-pass",
+            unlock=False,
+        )
+        before = store.vault_data_path().read_bytes()
+
+        with self.assertRaisesRegex(store.ProfileError, "locked"):
+            store.get_or_create_local_mcp_approval_key()
+
+        self.assertEqual(store.vault_data_path().read_bytes(), before)
+
+    def test_invalid_application_secret_payload_fails_closed_without_rewrite(self) -> None:
+        self._setup()
+        invalid_values: tuple[object, ...] = (
+            "not-an-object",
+            {"local_mcp_approval_key": 123},
+            {"local_mcp_approval_key": "short"},
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                payload = self._payload()
+                payload["application_secrets"] = value
+                self._rewrite_payload(payload)
+                before = store.vault_data_path().read_bytes()
+                for operation in (
+                    store.get_or_create_local_mcp_approval_key,
+                    store.rotate_local_mcp_approval_key,
+                    store.local_mcp_approval_key_status,
+                ):
+                    with self.assertRaises(store.ProfileError):
+                        operation()
+                self.assertEqual(store.vault_data_path().read_bytes(), before)
+
+    def test_old_vault_upgrade_preserves_profile_credentials_and_unknown_fields(self) -> None:
+        self._setup()
+        profile = self._create_profile()
+        payload = self._payload()
+        payload.pop("application_secrets", None)
+        payload["future_top_level"] = {"sentinel": "keep"}
+        self._rewrite_payload(payload)
+
+        approval_key = store.get_or_create_local_mcp_approval_key()
+
+        upgraded = self._payload()
+        self.assertEqual(upgraded["future_top_level"], {"sentinel": "keep"})
+        self.assertEqual(
+            upgraded["application_secrets"]["local_mcp_approval_key"],
+            approval_key,
+        )
+        self.assertEqual(store.load_profile_credentials(profile.profile_id).api_key, "key-1234")
+
+    def test_profile_save_update_delete_and_rename_preserve_application_secrets(self) -> None:
+        self._setup()
+        profile = self._create_profile()
+        approval_key = store.get_or_create_local_mcp_approval_key()
+        payload = self._payload()
+        payload["version"] = 7
+        payload["future_top_level"] = {"sentinel": "keep"}
+        self._rewrite_payload(payload)
+
+        store._store_secret_linux(profile.profile_id, "api_key", "key-updated")
+        renamed = store.upsert_profile(name="renamed", profile_id=profile.profile_id)
+        self.assertEqual(renamed.profile_id, profile.profile_id)
+        self.assertEqual(store.get_default_profile_id(), profile.profile_id)
+        self.assertEqual(store.load_profile_credentials("renamed").api_key, "key-updated")
+        self.assertEqual(store.get_or_create_local_mcp_approval_key(), approval_key)
+        after_store = self._payload()
+        self.assertEqual(after_store["version"], 7)
+        self.assertEqual(after_store["future_top_level"], {"sentinel": "keep"})
+        self.assertEqual(
+            after_store["application_secrets"]["local_mcp_approval_key"],
+            approval_key,
+        )
+
+        self.assertTrue(store.delete_profile_credentials("renamed"))
+        after_delete = self._payload()
+        self.assertEqual(after_delete["version"], 7)
+        self.assertEqual(
+            after_delete["application_secrets"]["local_mcp_approval_key"],
+            approval_key,
+        )
+        self.assertEqual(after_delete["future_top_level"], {"sentinel": "keep"})
+
+    def test_password_change_preserves_approval_key(self) -> None:
+        self._setup()
+        self._create_profile()
+        approval_key = store.get_or_create_local_mcp_approval_key()
+
+        store.change_linux_vault_password("vault-pass", "vault-pass-2")
+
+        self.assertEqual(store.get_or_create_local_mcp_approval_key(), approval_key)
+        store.lock_linux_vault()
+        with self.assertRaises(store.ProfileError):
+            store.unlock_linux_vault("vault-pass")
+        store.unlock_linux_vault("vault-pass-2")
+        self.assertEqual(store.get_or_create_local_mcp_approval_key(), approval_key)
+
+    def test_explicit_rotation_changes_only_key_and_preserves_profiles(self) -> None:
+        self._setup()
+        profile = self._create_profile()
+        first = store.get_or_create_local_mcp_approval_key()
+
+        second = store.rotate_local_mcp_approval_key()
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(store.get_or_create_local_mcp_approval_key(), second)
+        self.assertEqual(store.resolve_profile("main").profile_id, profile.profile_id)
+        self.assertEqual(store.load_profile_credentials(profile.profile_id).api_secret, "secret-1234")
+
+    def test_reset_and_force_setup_create_new_approval_keys(self) -> None:
+        self._setup()
+        first = store.get_or_create_local_mcp_approval_key()
+
+        store.reset_linux_vault()
+        self._setup(passphrase="vault-pass-2")
+        second = store.get_or_create_local_mcp_approval_key()
+        self.assertNotEqual(first, second)
+
+        self._setup(passphrase="vault-pass-3", force=True)
+        third = store.get_or_create_local_mcp_approval_key()
+        self.assertNotEqual(second, third)
+
+    def test_simulated_old_writer_drop_regenerates_key_and_keeps_profiles(self) -> None:
+        self._setup()
+        profile = self._create_profile()
+        first = store.get_or_create_local_mcp_approval_key()
+        current = self._payload()
+        legacy_payload = {
+            "version": current["version"],
+            "profiles": current["profiles"],
+        }
+        self._rewrite_payload(legacy_payload)
+
+        second = store.get_or_create_local_mcp_approval_key()
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(store.load_profile_credentials(profile.profile_id).api_passphrase, "pass-1234")
+
+    def test_full_file_backup_restore_preserves_key_profile_default_and_credentials(self) -> None:
+        self._setup()
+        profile = self._create_profile()
+        approval_key = store.get_or_create_local_mcp_approval_key()
+        paths = (store.vault_config_path(), store.vault_data_path(), store.metadata_path())
+        backup = {path.name: path.read_text(encoding="utf-8") for path in paths}
+
+        store.reset_linux_vault()
+        for path in paths:
+            store._atomic_write_text(path, backup[path.name], 0o600)
+        store.unlock_linux_vault("vault-pass")
+
+        self.assertEqual(store.get_or_create_local_mcp_approval_key(), approval_key)
+        self.assertEqual(store.get_default_profile_id(), profile.profile_id)
+        self.assertEqual(store.resolve_profile("main").profile_id, profile.profile_id)
+        self.assertEqual(store.load_profile_credentials(profile.profile_id).api_key, "key-1234")
+
+    def test_status_is_non_mutating_and_never_returns_the_secret(self) -> None:
+        self._setup()
+        before = store.vault_data_path().read_bytes()
+        absent = store.local_mcp_approval_key_status()
+        self.assertEqual(
+            absent,
+            {"present": False, "valid": False, "length": 0, "fp_sha256": None},
+        )
+        self.assertEqual(store.vault_data_path().read_bytes(), before)
+
+        approval_key = store.get_or_create_local_mcp_approval_key()
+        status = store.local_mcp_approval_key_status()
+        self.assertEqual(status["present"], True)
+        self.assertEqual(status["valid"], True)
+        self.assertEqual(status["length"], len(approval_key.encode("utf-8")))
+        self.assertEqual(
+            status["fp_sha256"],
+            hashlib.sha256(approval_key.encode("utf-8")).hexdigest()[:16],
+        )
+        self.assertNotIn(approval_key, json.dumps(status, sort_keys=True))
+
+    def test_file_lock_uses_posix_or_windows_and_fails_without_backend(self) -> None:
+        lock_path = Path(self.tempdir.name) / "portable.lock"
+
+        posix = mock.Mock()
+        posix.LOCK_EX = 1
+        posix.LOCK_UN = 2
+        with mock.patch.object(store, "fcntl", posix), mock.patch.object(
+            store,
+            "msvcrt",
+            None,
+            create=True,
+        ):
+            with store._file_lock(lock_path):
+                pass
+        self.assertEqual(
+            [call.args[1] for call in posix.flock.call_args_list],
+            [posix.LOCK_EX, posix.LOCK_UN],
+        )
+
+        windows = mock.Mock()
+        windows.LK_LOCK = 3
+        windows.LK_UNLCK = 4
+        with mock.patch.object(store, "fcntl", None), mock.patch.object(
+            store,
+            "msvcrt",
+            windows,
+            create=True,
+        ):
+            with store._file_lock(lock_path):
+                pass
+        self.assertEqual(
+            [(call.args[1], call.args[2]) for call in windows.locking.call_args_list],
+            [(windows.LK_LOCK, 1), (windows.LK_UNLCK, 1)],
+        )
+        self.assertGreaterEqual(lock_path.stat().st_size, 1)
+
+        with mock.patch.object(store, "fcntl", None), mock.patch.object(
+            store,
+            "msvcrt",
+            None,
+            create=True,
+        ):
+            with self.assertRaisesRegex(store.ProfileError, "locking"):
+                with store._file_lock(lock_path):
+                    pass
 
 
 class ProfileStoreCredentialBackendTests(unittest.TestCase):

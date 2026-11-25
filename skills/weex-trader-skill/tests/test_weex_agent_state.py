@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 import inspect
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -45,6 +47,181 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
 
         credential_probe.assert_not_called()
         self.assertIsNone(payload["profiles"]["default_profile_usable"])
+
+    def test_runtime_state_adds_safe_mcp_without_changing_legacy_host_readiness(self) -> None:
+        mcp_status = {
+            "installed": False,
+            "version": None,
+            "expected_version": "0.2.0",
+            "package_ok": False,
+            "manifest_ok": False,
+            "runtime_profile": "local_user",
+            "trade_enabled": False,
+            "tool_contract_version": "1",
+            "manifest_digest": f"sha256:{'a' * 64}",
+            "action_required": "install_verified_mcp_candidate",
+        }
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(
+                    agent_state,
+                    "_probe_required_modules",
+                    return_value=(False, ["cryptography"]),
+                ), mock.patch.object(
+                    agent_state,
+                    "validate_runtime_environment",
+                    return_value={"ok": True, "issues": []},
+                ), mock.patch.object(
+                    agent_state,
+                    "_load_metadata_summary",
+                    return_value={
+                        "count": 0,
+                        "default_profile_id": None,
+                        "default_profile_name": None,
+                        "summary": [],
+                    },
+                ), mock.patch.object(
+                    agent_state,
+                    "_load_vault_summary",
+                    return_value={"configured": False, "mode": None},
+                ), mock.patch.object(
+                    agent_state,
+                    "_load_store_module",
+                    return_value=None,
+                ), mock.patch.object(
+                    agent_state,
+                    "_probe_local_mcp_runtime",
+                    return_value=mcp_status,
+                ):
+                    payload = agent_state.build_agent_runtime_state(
+                        preferred_language="en",
+                        command="contract.list-endpoints",
+                    )
+
+        self.assertFalse(payload["host"]["requirements_ready"])
+        self.assertEqual(payload["host"]["missing_modules"], ["cryptography"])
+        self.assertEqual(payload["mcp"], mcp_status)
+        self.assertNotIn("mcp", agent_state.REQUIRED_MODULES)
+
+    def test_mcp_probe_projection_and_runtime_cache_never_store_unsafe_fields(self) -> None:
+        self.assertTrue(callable(agent_state.project_mcp_status))
+        self.assertFalse(hasattr(agent_state, "_project_mcp_status"))
+        raw = {
+            "installed": True,
+            "version": "0.2.0",
+            "expected_version": "0.2.0",
+            "package_ok": True,
+            "manifest_ok": True,
+            "runtime_profile": "local_user",
+            "trade_enabled": False,
+            "tool_contract_version": "1",
+            "manifest_digest": f"sha256:{'a' * 64}",
+            "action_required": None,
+            "origin": "https://private.weex.tech",
+            "profile": "profile-a",
+            "path": "/private/artifact.whl",
+            "key": "AK_LEAK",
+        }
+        module = SimpleNamespace(probe_local_mcp_runtime=lambda: dict(raw))
+        with mock.patch.object(agent_state.importlib, "import_module", return_value=module):
+            safe = agent_state._probe_local_mcp_runtime()
+        self.assertEqual(
+            set(safe),
+            {
+                "installed",
+                "version",
+                "expected_version",
+                "package_ok",
+                "manifest_ok",
+                "runtime_profile",
+                "trade_enabled",
+                "tool_contract_version",
+                "manifest_digest",
+                "action_required",
+            },
+        )
+        serialized = json.dumps(safe, sort_keys=True)
+        for forbidden in ("private.weex.tech", "profile-a", "/private/", "AK_LEAK"):
+            self.assertNotIn(forbidden, serialized)
+
+        with mock.patch.object(
+            agent_state.importlib,
+            "import_module",
+            side_effect=RuntimeError("SK_LEAK /private/gateway.py"),
+        ):
+            unavailable = agent_state._probe_local_mcp_runtime()
+        self.assertEqual(unavailable["action_required"], "repair_mcp_gateway")
+        self.assertNotIn("SK_LEAK", json.dumps(unavailable, sort_keys=True))
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            with mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
+                with mock.patch.object(
+                    agent_state,
+                    "build_agent_runtime_state",
+                    return_value={"schema_version": 1, "mcp": safe},
+                ):
+                    cached = agent_state.refresh_agent_runtime_state(command="test")
+                cache_text = agent_state.agent_runtime_path().read_text(encoding="utf-8")
+        self.assertEqual(cached["mcp"], safe)
+        for forbidden in ("private.weex.tech", "profile-a", "/private/", "AK_LEAK"):
+            self.assertNotIn(forbidden, cache_text)
+
+    def test_mcp_projection_rejects_malformed_versions_trade_mode_and_actions(self) -> None:
+        ready = {
+            "installed": True,
+            "version": "0.2.0",
+            "expected_version": "0.2.0",
+            "package_ok": True,
+            "manifest_ok": True,
+            "runtime_profile": "local_user",
+            "trade_enabled": False,
+            "tool_contract_version": "1",
+            "manifest_digest": f"sha256:{'a' * 64}",
+            "action_required": None,
+        }
+        malformed = (
+            {"version": "AK_LEAK", "expected_version": "AK_LEAK"},
+            {"tool_contract_version": "profile-a"},
+            {"trade_enabled": "false"},
+            {"action_required": "AK_LEAK"},
+            {"action_required": "repair_mcp_runtime"},
+        )
+        for overrides in malformed:
+            with self.subTest(overrides=overrides):
+                raw = {**ready, **overrides}
+                projected = agent_state.project_mcp_status(raw)
+
+                self.assertFalse(projected["manifest_ok"])
+                self.assertIsNotNone(projected["action_required"])
+                serialized = json.dumps(projected, sort_keys=True)
+                for forbidden in ("AK_LEAK", "profile-a"):
+                    self.assertNotIn(forbidden, serialized)
+
+    def test_mcp_projection_rejects_non_string_unhashable_actions(self) -> None:
+        ready = {
+            "installed": True,
+            "version": "0.2.0",
+            "expected_version": "0.2.0",
+            "package_ok": True,
+            "manifest_ok": True,
+            "runtime_profile": "local_user",
+            "trade_enabled": False,
+            "tool_contract_version": "1",
+            "manifest_digest": f"sha256:{'a' * 64}",
+            "action_required": None,
+        }
+        for action in ({"key": "AK_LEAK"}, ["AK_LEAK"], {"AK_LEAK"}):
+            with self.subTest(action_type=type(action).__name__):
+                projected = agent_state.project_mcp_status(
+                    {**ready, "action_required": action}
+                )
+
+                self.assertFalse(projected["manifest_ok"])
+                self.assertEqual(
+                    projected["action_required"],
+                    "repair_mcp_gateway",
+                )
+                self.assertNotIn("AK_LEAK", json.dumps(projected, sort_keys=True))
 
     def test_preflight_requires_managed_runtime_even_when_current_runtime_has_tk(self) -> None:
         current_probe = RuntimeProbe(usable=True, reason="ok", returncode=0, tk_version="8.6", tcl_version="8.6")

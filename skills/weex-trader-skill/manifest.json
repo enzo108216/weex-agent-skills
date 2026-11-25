@@ -289,7 +289,8 @@
       ]
     },
     "compatibility": {
-      "mcp_capability_mapping": "references/mcp-capability-mapping.json"
+      "mcp_capability_mapping": "references/mcp-capability-mapping.json",
+      "local_mcp_gateway": "scripts/weex_mcp_gateway.py"
     }
   },
   "state": {

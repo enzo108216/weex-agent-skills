@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,24 @@ BASE_URL_ENV_VARS = (
     "WEEX_CONTRACT_API_BASE",
     "WEEX_SPOT_API_BASE",
 )
+MCP_RUNTIME_PROFILE = "local_user"
+MCP_ACTIONS = frozenset(
+    {
+        "install_verified_mcp_candidate",
+        "repair_mcp_mapping",
+        "repair_mcp_runtime",
+        "repair_mcp_contract",
+        "repair_mcp_gateway",
+    }
+)
+_MCP_PACKAGE_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})"
+    r"(?:(?:a|b|rc)(?:0|[1-9][0-9]{0,8}))?"
+    r"(?:\.post(?:0|[1-9][0-9]{0,8}))?"
+    r"(?:\.dev(?:0|[1-9][0-9]{0,8}))?$"
+)
+_MCP_CONTRACT_VERSION_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,8})$")
+_MCP_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class RuntimePreflightError(RuntimeError):
@@ -345,6 +364,102 @@ def _probe_required_modules() -> tuple[bool, list[str]]:
     return not missing, missing
 
 
+def _safe_mcp_package_version(value: object) -> Optional[str]:
+    if not isinstance(value, str) or _MCP_PACKAGE_VERSION_PATTERN.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _safe_mcp_contract_version(value: object) -> Optional[str]:
+    if not isinstance(value, str) or _MCP_CONTRACT_VERSION_PATTERN.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _unavailable_mcp_status() -> dict[str, Any]:
+    return {
+        "installed": False,
+        "version": None,
+        "expected_version": None,
+        "package_ok": False,
+        "manifest_ok": False,
+        "runtime_profile": MCP_RUNTIME_PROFILE,
+        "trade_enabled": False,
+        "tool_contract_version": None,
+        "manifest_digest": None,
+        "action_required": "repair_mcp_gateway",
+    }
+
+
+def project_mcp_status(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return _unavailable_mcp_status()
+
+    version = _safe_mcp_package_version(raw.get("version"))
+    expected_version = _safe_mcp_package_version(raw.get("expected_version"))
+    tool_contract_version = _safe_mcp_contract_version(raw.get("tool_contract_version"))
+    digest_value = raw.get("manifest_digest")
+    manifest_digest = (
+        digest_value
+        if isinstance(digest_value, str) and _MCP_DIGEST_PATTERN.fullmatch(digest_value) is not None
+        else None
+    )
+    installed = raw.get("installed") is True
+    package_ok = (
+        raw.get("package_ok") is True
+        and installed
+        and version is not None
+        and version == expected_version
+    )
+    runtime_profile = raw.get("runtime_profile")
+    profile_ok = runtime_profile == MCP_RUNTIME_PROFILE
+    trade_value = raw.get("trade_enabled")
+    trade_ok = isinstance(trade_value, bool)
+    trade_enabled = trade_value if trade_ok else False
+    raw_action = raw.get("action_required")
+    action_allowed = isinstance(raw_action, str) and raw_action in MCP_ACTIONS
+    action_ok = raw_action is None or action_allowed
+    manifest_ok = (
+        raw.get("manifest_ok") is True
+        and package_ok
+        and profile_ok
+        and trade_ok
+        and tool_contract_version is not None
+        and manifest_digest is not None
+        and action_ok
+        and raw_action is None
+    )
+    action_required = raw_action if action_allowed else None
+    if manifest_ok:
+        action_required = None
+    elif action_required is None:
+        action_required = "repair_mcp_gateway"
+    if not profile_ok or not trade_ok or not action_ok:
+        action_required = "repair_mcp_gateway"
+
+    return {
+        "installed": installed,
+        "version": version,
+        "expected_version": expected_version,
+        "package_ok": package_ok,
+        "manifest_ok": manifest_ok,
+        "runtime_profile": MCP_RUNTIME_PROFILE,
+        "trade_enabled": trade_enabled,
+        "tool_contract_version": tool_contract_version,
+        "manifest_digest": manifest_digest,
+        "action_required": action_required,
+    }
+
+
+def _probe_local_mcp_runtime() -> dict[str, Any]:
+    try:
+        module = importlib.import_module("weex_mcp_gateway")
+        probe = getattr(module, "probe_local_mcp_runtime")
+        return project_mcp_status(probe())
+    except Exception:
+        return _unavailable_mcp_status()
+
+
 def validate_runtime_environment(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
     source = os.environ if env is None else env
     issues: list[str] = []
@@ -586,6 +701,7 @@ def build_agent_runtime_state(
     metadata_summary = _load_metadata_summary()
     vault_summary = _load_vault_summary()
     store = _load_store_module()
+    mcp_status = _probe_local_mcp_runtime()
 
     if store is not None:
         try:
@@ -622,6 +738,7 @@ def build_agent_runtime_state(
             for env_name in RUNTIME_ENV_VARS
         },
         "env_validation": env_validation,
+        "mcp": mcp_status,
         "vault": vault_runtime,
         "profiles": {
             "count": metadata_summary["count"],

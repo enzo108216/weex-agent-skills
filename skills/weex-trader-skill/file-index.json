@@ -125,34 +125,60 @@
         "references/partner-api-definitions.json"
       ]
     },
+    "scripts/weex_mcp_gateway.py": {
+      "role": "Profile-bound embedded Local MCP boundary with verified package/manifest preflight, safe runtime readiness, Vault-backed credential refs, approval-key binding, and strict typed-tool envelopes.",
+      "when": [
+        "constructing a Local User MCP service for one profile, effective Spot/Futures route pair, and Trade mode",
+        "validating the verified MCP candidate package and compatibility manifest before a business request",
+        "calling an allowlisted typed MCP tool without exposing plaintext credentials or raw REST routing",
+        "probing package and manifest readiness without loading credentials or sending a business request"
+      ],
+      "depends_on": [
+        "references/mcp-capability-mapping.json",
+        "scripts/weex_profile_store.py"
+      ],
+      "surface": [
+        "LocalMcpGateway",
+        "VaultSecretProvider",
+        "McpGatewayError and strict structuredContent return",
+        "runtime_status",
+        "probe_local_mcp_runtime"
+      ]
+    },
     "scripts/weex_profile_store.py": {
-      "role": "Shared profile metadata and application-vault backend.",
+      "role": "Shared profile metadata and application-vault backend, including the encrypted Local MCP approval key lifecycle.",
       "when": [
         "profile resolution",
         "default profile behavior",
         "application vault debugging",
-        "private auth credential loading"
+        "private auth credential loading",
+        "checking, provisioning, or explicitly rotating the encrypted Local MCP approval key"
       ],
       "surface": [
         "metadata load/save",
         "default profile resolution",
         "credential read/write/delete",
-        "credential backend integration"
+        "credential backend integration",
+        "get_or_create_local_mcp_approval_key",
+        "rotate_local_mcp_approval_key",
+        "local_mcp_approval_key_status"
       ]
     },
     "scripts/weex_agent_state.py": {
-      "role": "Lightweight AI-facing cache for stable host routing facts and fresh vault/profile checks.",
+      "role": "Lightweight AI-facing cache for stable host routing facts, fresh vault/profile checks, and additive non-authoritative Local MCP readiness.",
       "when": [
         "bootstrapping AI initialization records",
         "refreshing runtime cache before or during CLI entrypoints",
-        "reading non-secret host, vault, and profile summary state"
+        "reading non-secret host, vault, profile, and Local MCP summary state"
       ],
       "surface": [
         "agent_init_path",
         "agent_runtime_path",
         "build_agent_init_state",
         "build_agent_runtime_state",
-        "refresh_agent_records"
+        "refresh_agent_records",
+        "project_mcp_status",
+        "safe Local MCP readiness projection"
       ]
     },
     "scripts/weex_profile_language.py": {
@@ -218,26 +244,32 @@
       ]
     },
     "scripts/weex_doctor.py": {
-      "role": "User-facing runtime doctor command for guided diagnostics and repair.",
+      "role": "User-facing runtime doctor command for guided GUI repair and read-only Local MCP diagnostics.",
       "when": [
         "terminal-friendly troubleshooting",
         "one-command GUI diagnosis",
         "guided managed-runtime repair",
-        "verifying whether GUI fallback is already healthy"
+        "verifying whether GUI fallback is already healthy",
+        "checking Local MCP read and trade prerequisites without installing, provisioning, or rotating state"
       ],
       "surface": [
         "gui",
         "build_gui_report",
         "render_gui_report",
-        "cmd_gui"
+        "cmd_gui",
+        "mcp",
+        "build_mcp_report",
+        "render_mcp_report",
+        "cmd_mcp"
       ]
     },
     "scripts/weex_runtime_setup.py": {
-      "role": "Cross-platform one-command runtime setup helper for the current Python interpreter.",
+      "role": "Cross-platform one-command runtime setup helper that installs only the existing lockfile and refreshes Local MCP readiness without installing the MCP candidate.",
       "when": [
         "installing requirements.lock into the active interpreter with hash verification",
         "repairing a missing pip via ensurepip before installation",
-        "preparing private contract or spot CLI prerequisites"
+        "preparing private contract or spot CLI prerequisites",
+        "reporting Local MCP readiness after setup without changing MCP installation state"
       ],
       "depends_on": [
         "scripts/weex_agent_state.py",

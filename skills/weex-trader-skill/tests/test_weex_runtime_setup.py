@@ -32,6 +32,18 @@ class RuntimeSetupTests(unittest.TestCase):
                 "ok": True,
                 "issues": [],
             },
+            "mcp": {
+                "installed": False,
+                "version": None,
+                "expected_version": "0.2.0",
+                "package_ok": False,
+                "manifest_ok": False,
+                "runtime_profile": "local_user",
+                "trade_enabled": False,
+                "tool_contract_version": "1",
+                "manifest_digest": f"sha256:{'a' * 64}",
+                "action_required": "install_verified_mcp_candidate",
+            },
         }
 
         with mock.patch.object(runtime_setup.subprocess, "run", side_effect=completed) as run_mock:
@@ -45,6 +57,7 @@ class RuntimeSetupTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertFalse(report["pip"]["ensurepip_attempted"])
         self.assertEqual(report["pip"]["install"]["returncode"], 0)
+        self.assertEqual(report["runtime"]["mcp"], runtime_state["mcp"])
         refresh_mock.assert_called_once_with(preferred_language="zh", command="env.setup")
 
         commands = [call.args[0] for call in run_mock.call_args_list]
@@ -62,6 +75,9 @@ class RuntimeSetupTests(unittest.TestCase):
                 str(runtime_setup.requirements_lock_path()),
             ],
         )
+        serialized_commands = json.dumps(commands)
+        self.assertNotIn("weex-mcp", serialized_commands)
+        self.assertNotIn("artifact", serialized_commands)
 
     def test_build_setup_report_bootstraps_ensurepip_when_pip_is_missing(self) -> None:
         completed = [

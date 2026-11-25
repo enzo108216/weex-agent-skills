@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import platform
@@ -33,6 +34,8 @@ TEXTS = {
         "gui_description": "Inspect the current Python runtime, required managed GUI runtime, and optionally repair GUI bootstrap state.",
         "gui_fix_help": "Provision or repair the required managed GUI runtime",
         "gui_accept_help": "Allow the GUI doctor to download the pinned managed GUI runtime when --fix is used",
+        "mcp_help": "Inspect Local MCP runtime and encrypted approval-key readiness",
+        "mcp_description": "Read-only Local MCP, Vault, and approval-key diagnostics. This command never installs, provisions, rotates, or repairs state.",
         "status_ok_system": "GUI is healthy on the current Python runtime.",
         "status_ok_managed": "The required managed GUI runtime is ready.",
         "status_not_ready": "GUI is not ready yet.",
@@ -59,6 +62,17 @@ TEXTS = {
         "fix_disabled": "disabled",
         "runtime_ok": "ok",
         "runtime_issue": "{reason}",
+        "label_mcp_runtime": "MCP runtime",
+        "label_read_ready": "Read ready",
+        "label_trade_ready": "Trade ready",
+        "label_vault_state": "Vault state",
+        "label_approval_key": "Approval key",
+        "label_action_required": "Action required",
+        "value_yes": "yes",
+        "value_no": "no",
+        "value_ready": "ready",
+        "value_not_ready": "not ready",
+        "value_none": "none",
     },
     "zh": {
         "parser_description": "诊断并修复常见的 WEEX 技能运行时问题。",
@@ -67,6 +81,8 @@ TEXTS = {
         "gui_description": "检查当前 Python 运行时、必需的受管 GUI 运行时，并在需要时修复 GUI bootstrap 状态。",
         "gui_fix_help": "创建或修复必需的受管 GUI 运行时",
         "gui_accept_help": "配合 --fix 使用，允许 GUI doctor 下载固定版本的受管 GUI 运行时",
+        "mcp_help": "检查本地 MCP 运行时和加密 approval key 就绪状态",
+        "mcp_description": "只读检查本地 MCP、Vault 和 approval key；不会安装、创建、轮换或修复任何状态。",
         "status_ok_system": "当前 Python 运行时的 GUI 状态正常。",
         "status_ok_managed": "必需的受管 GUI 运行时已经可用。",
         "status_not_ready": "GUI 运行时当前还没有就绪。",
@@ -93,6 +109,17 @@ TEXTS = {
         "fix_disabled": "已禁用",
         "runtime_ok": "正常",
         "runtime_issue": "{reason}",
+        "label_mcp_runtime": "MCP 运行时",
+        "label_read_ready": "只读就绪",
+        "label_trade_ready": "交易就绪",
+        "label_vault_state": "Vault 状态",
+        "label_approval_key": "Approval key",
+        "label_action_required": "需要操作",
+        "value_yes": "是",
+        "value_no": "否",
+        "value_ready": "已就绪",
+        "value_not_ready": "未就绪",
+        "value_none": "无",
     },
 }
 
@@ -305,6 +332,200 @@ def cmd_gui(args: argparse.Namespace, language: str) -> int:
     return 0 if payload["ok"] else 1
 
 
+def _probe_local_mcp_runtime(*, trade_enabled: bool = False) -> dict[str, Any]:
+    gateway = importlib.import_module("weex_mcp_gateway")
+    return gateway.probe_local_mcp_runtime(trade_enabled=trade_enabled)
+
+
+def _load_profile_store_module() -> Any:
+    return importlib.import_module("weex_profile_store")
+
+
+def _failed_mcp_runtime_status(*, trade_enabled: bool) -> dict[str, Any]:
+    return {
+        "installed": False,
+        "version": None,
+        "expected_version": None,
+        "package_ok": False,
+        "manifest_ok": False,
+        "runtime_profile": "local_user",
+        "trade_enabled": trade_enabled,
+        "tool_contract_version": None,
+        "manifest_digest": None,
+        "action_required": "repair_mcp_gateway",
+    }
+
+
+def _empty_approval_key_status() -> dict[str, Any]:
+    return {
+        "present": False,
+        "valid": False,
+        "length": 0,
+        "fp_sha256": None,
+    }
+
+
+def _safe_approval_key_status(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return _empty_approval_key_status()
+    present = raw.get("present") is True
+    raw_length = raw.get("length")
+    length = raw_length if isinstance(raw_length, int) and not isinstance(raw_length, bool) and 0 <= raw_length <= 4096 else 0
+    raw_fingerprint = raw.get("fp_sha256")
+    fingerprint = (
+        raw_fingerprint
+        if isinstance(raw_fingerprint, str)
+        and len(raw_fingerprint) == 16
+        and all(character in "0123456789abcdef" for character in raw_fingerprint)
+        else None
+    )
+    valid = (
+        raw.get("valid") is True
+        and present
+        and length >= 32
+        and fingerprint is not None
+    )
+    return {
+        "present": present,
+        "valid": valid,
+        "length": length,
+        "fp_sha256": fingerprint,
+    }
+
+
+def _mcp_runtime_ready(runtime: dict[str, Any], *, trade_enabled: bool) -> bool:
+    return bool(
+        runtime.get("package_ok")
+        and runtime.get("manifest_ok")
+        and runtime.get("action_required") is None
+        and runtime.get("trade_enabled") is trade_enabled
+    )
+
+
+def build_mcp_report(language: str) -> dict[str, Any]:
+    resolve_language(language)
+    agent_state = importlib.import_module("weex_agent_state")
+    try:
+        runtime = agent_state.project_mcp_status(
+            _probe_local_mcp_runtime(trade_enabled=False)
+        )
+    except Exception:
+        runtime = _failed_mcp_runtime_status(trade_enabled=False)
+    try:
+        trade_runtime = agent_state.project_mcp_status(
+            _probe_local_mcp_runtime(trade_enabled=True)
+        )
+    except Exception:
+        trade_runtime = _failed_mcp_runtime_status(trade_enabled=True)
+
+    read_ready = _mcp_runtime_ready(runtime, trade_enabled=False)
+    trade_contract_ready = _mcp_runtime_ready(
+        trade_runtime,
+        trade_enabled=True,
+    )
+    vault = {
+        "configured": False,
+        "state": "unavailable",
+        "action_required": "repair",
+    }
+    approval_key = _empty_approval_key_status()
+    action_required = runtime.get("action_required") or "repair_mcp_gateway"
+    trade_ready = False
+
+    if read_ready and not trade_contract_ready:
+        action_required = trade_runtime.get("action_required") or "repair_mcp_gateway"
+    elif read_ready:
+        action_required = None
+        try:
+            store = _load_profile_store_module()
+            raw_vault = store.vault_status()
+        except Exception:
+            raw_vault = None
+            store = None
+
+        raw_state = raw_vault.get("state") if isinstance(raw_vault, dict) else None
+        state = raw_state if raw_state in {"uninitialized", "locked", "unlocked", "misconfigured"} else "unavailable"
+        configured = bool(isinstance(raw_vault, dict) and raw_vault.get("configured") is True)
+        vault_action = {
+            "uninitialized": "setup",
+            "locked": "unlock",
+            "unlocked": None,
+            "misconfigured": "repair",
+            "unavailable": "repair",
+        }[state]
+        vault = {
+            "configured": configured,
+            "state": state,
+            "action_required": vault_action,
+        }
+
+        if state == "uninitialized":
+            action_required = "setup_vault"
+        elif state == "locked":
+            action_required = "unlock_vault"
+        elif state != "unlocked" or store is None:
+            action_required = "repair_vault"
+        else:
+            try:
+                approval_key = _safe_approval_key_status(
+                    store.local_mcp_approval_key_status()
+                )
+            except Exception:
+                approval_key = _empty_approval_key_status()
+                action_required = "repair_vault"
+            else:
+                trade_ready = bool(approval_key["valid"])
+                action_required = (
+                    None if trade_ready else "provision_local_mcp_approval_key"
+                )
+
+    return {
+        "runtime": runtime,
+        "trade_runtime": trade_runtime,
+        "vault": vault,
+        "approval_key": approval_key,
+        "read_ready": read_ready,
+        "trade_ready": trade_ready,
+        "action_required": action_required,
+    }
+
+
+def render_mcp_report(language: str, payload: dict[str, Any]) -> str:
+    resolved_language = resolve_language(language)
+    yes = t(resolved_language, "value_yes")
+    no = t(resolved_language, "value_no")
+    runtime_label = (
+        t(resolved_language, "value_ready")
+        if payload["read_ready"]
+        else t(resolved_language, "value_not_ready")
+    )
+    approval_label = (
+        t(resolved_language, "value_ready")
+        if payload["approval_key"]["valid"]
+        else t(resolved_language, "value_not_ready")
+    )
+    action = payload["action_required"] or t(resolved_language, "value_none")
+    return "\n".join(
+        [
+            f"{t(resolved_language, 'label_mcp_runtime')}: {runtime_label}",
+            f"{t(resolved_language, 'label_read_ready')}: {yes if payload['read_ready'] else no}",
+            f"{t(resolved_language, 'label_trade_ready')}: {yes if payload['trade_ready'] else no}",
+            f"{t(resolved_language, 'label_vault_state')}: {payload['vault']['state']}",
+            f"{t(resolved_language, 'label_approval_key')}: {approval_label}",
+            f"{t(resolved_language, 'label_action_required')}: {action}",
+        ]
+    )
+
+
+def cmd_mcp(args: argparse.Namespace, language: str) -> int:
+    payload = build_mcp_report(language)
+    if args.pretty:
+        output_json(payload, pretty=True)
+    else:
+        print(render_mcp_report(language, payload))
+    return 0 if payload["read_ready"] else 1
+
+
 def build_parser(language: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=t(language, "parser_description"),
@@ -322,6 +543,13 @@ def build_parser(language: str) -> argparse.ArgumentParser:
     p_gui.add_argument("--fix", action="store_true", help=t(language, "gui_fix_help"))
     p_gui.add_argument("--accept-managed-runtime", action="store_true", help=t(language, "gui_accept_help"))
     p_gui.add_argument("--pretty", action="store_true", help=t(language, "pretty_help"))
+    p_mcp = sub.add_parser(
+        "mcp",
+        help=t(language, "mcp_help"),
+        description=t(language, "mcp_description"),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_mcp.add_argument("--pretty", action="store_true", help=t(language, "pretty_help"))
     return parser
 
 
@@ -334,6 +562,8 @@ def main(language: str | None = None, argv: Optional[list[str]] = None) -> int:
 
     if args.command == "gui":
         return cmd_gui(args, resolved_language)
+    if args.command == "mcp":
+        return cmd_mcp(args, resolved_language)
     raise SystemExit(2)
 
 
