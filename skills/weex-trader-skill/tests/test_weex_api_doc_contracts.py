@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR_PATH = ROOT / "scripts" / "generate_weex_api_definitions.py"
+MCP_CAPABILITY_MAPPING = ROOT / "references" / "mcp-capability-mapping.json"
+PARTNER_API_DEFINITIONS = ROOT / "references" / "partner-api-definitions.json"
 
 
 def load_generator():
@@ -33,6 +35,37 @@ def load_definitions(product: str) -> tuple[dict, dict[str, dict]]:
 
 def params_by_name(definition: dict, section: str) -> dict[str, dict]:
     return {row["name"]: row for row in definition[section]}
+
+
+def expected_mcp_mapping_sources() -> dict[str, tuple[str, dict]]:
+    contract, _ = load_definitions("contract")
+    spot, _ = load_definitions("spot")
+    partner = json.loads(PARTNER_API_DEFINITIONS.read_text(encoding="utf-8"))
+    sources: dict[str, tuple[str, dict]] = {}
+    for definition in contract["definitions"]:
+        sources[definition["key"]] = ("contract", definition)
+    for definition in spot["definitions"]:
+        if definition.get("category") != "rebate":
+            sources[definition["key"]] = ("spot", definition)
+    for definition in partner["definitions"]:
+        sources[definition["key"]] = ("partner", definition)
+    return sources
+
+
+def expected_auth(definition: dict) -> str:
+    if definition.get("permission"):
+        return str(definition["permission"])
+    return "USER_DATA" if definition.get("requires_auth") else "NONE"
+
+
+def expected_request_transport(product: str, definition: dict) -> str:
+    if product == "partner":
+        return "body" if definition.get("body_fields") else "query"
+    return str(definition["request_transport"])
+
+
+def expected_response_container(product: str, definition: dict) -> str:
+    return "partner_envelope" if product == "partner" else str(definition["response_container"])
 
 
 class GeneratorRegressionTests(unittest.TestCase):
@@ -183,6 +216,234 @@ class GeneratorRegressionTests(unittest.TestCase):
 
 
 class CheckedInDefinitionRegressionTests(unittest.TestCase):
+    def test_mcp_capability_mapping_covers_exact_trader_inventory_and_catalog_contract(self) -> None:
+        self.assertTrue(MCP_CAPABILITY_MAPPING.exists(), "missing MCP capability mapping")
+        payload = json.loads(MCP_CAPABILITY_MAPPING.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["inventory_counts"], {"contract": 47, "spot": 25, "partner": 7, "total": 79})
+
+        expected = expected_mcp_mapping_sources()
+        capabilities = payload["capabilities"]
+        keys = [item["legacy_key"] for item in capabilities]
+        self.assertEqual(len(keys), 79)
+        self.assertEqual(len(set(keys)), 79)
+        self.assertEqual(set(keys), set(expected))
+        self.assertNotIn("spot.rebate.internal_withdrawal", keys)
+        self.assertFalse(any(key.startswith("spot.rebate.") for key in keys))
+
+        for item in capabilities:
+            key = item["legacy_key"]
+            product, definition = expected[key]
+            with self.subTest(key=key):
+                self.assertEqual(item["product"], product)
+                self.assertEqual(item["method"], definition["method"])
+                self.assertEqual(item["path"], definition["path"])
+                self.assertEqual(item["auth"], expected_auth(definition))
+                self.assertEqual(item["request_transport"], expected_request_transport(product, definition))
+                catalog_fields = [*definition.get("query_fields", []), *definition.get("body_fields", [])]
+                self.assertEqual(item["catalog_request_fields"], catalog_fields)
+                decisions = item["field_decisions"]
+                self.assertEqual(set(decisions), set(catalog_fields))
+                for field, decision in decisions.items():
+                    self.assertIn(decision["decision"], {"map", "default", "forbid", "fanout"}, field)
+                    if decision["decision"] in {"map", "fanout"}:
+                        self.assertTrue(decision.get("target"), field)
+
+                target = item["target"]
+                self.assertTrue(target["tool"])
+                self.assertIn(target["variant"], {"read", "preview_confirm"})
+                self.assertIsInstance(target["fixed_arguments"], dict)
+                self.assertTrue(target["hosts"])
+                self.assertIn(target["permission"], {"NONE", "USER_DATA", "TRADE"})
+                if target["variant"] == "preview_confirm":
+                    self.assertTrue(target.get("confirm_tool"))
+                    self.assertEqual(target["permission"], "TRADE")
+                else:
+                    self.assertNotIn("confirm_tool", target)
+
+                response = item["response"]
+                self.assertEqual(response["legacy_container"], expected_response_container(product, definition))
+                self.assertEqual(response["raw_policy"], "preserve_for_compat_serializer")
+                self.assertEqual(response["http_status_policy"], "compat_serializer_only")
+                self.assertEqual(item["dry_run"], {"owner": "trader_facade", "network": False})
+                self.assertEqual(item["error_policy"], {"name": "typed_fail_closed_v1", "fail_closed": True})
+                self.assertIn(item["evidence"]["status"], {"field_audit_required", "tool_extension_required"})
+                self.assertIn(item["evidence"]["capability"], {"existing_path", "missing_endpoint"})
+                self.assertEqual(item["evidence"]["source"], payload["source_catalogs"][product])
+
+    def test_mcp_capability_mapping_assigns_eleven_missing_capabilities_to_ten_tools(self) -> None:
+        payload = json.loads(MCP_CAPABILITY_MAPPING.read_text(encoding="utf-8"))
+        missing = [item for item in payload["capabilities"] if item["evidence"]["capability"] == "missing_endpoint"]
+        expected_keys = {
+            "account.get_single_position",
+            "market.get_server_time",
+            "spot.config.get_server_time",
+            "spot.config.ping",
+            "partner.get-affiliate-uids",
+            "partner.get-channel-user-trade-and-asset",
+            "partner.get-affiliate-commission",
+            "partner.query-sub-channel-transactions",
+            "partner.verify-referrals",
+            "partner.get-referral-assets",
+            "partner.get-referral-deal-data",
+        }
+        self.assertEqual({item["legacy_key"] for item in missing}, expected_keys)
+        self.assertTrue(all(item["evidence"]["status"] == "tool_extension_required" for item in missing))
+        tools = {item["target"]["tool"] for item in missing}
+        self.assertEqual(len(missing), 11)
+        self.assertEqual(len(tools), 10)
+        server_times = {
+            item["target"]["tool"]
+            for item in missing
+            if item["legacy_key"] in {"market.get_server_time", "spot.config.get_server_time"}
+        }
+        self.assertEqual(server_times, {"market_get_server_time"})
+
+    def test_mcp_capability_mapping_freezes_exact_tool_extension_set(self) -> None:
+        payload = json.loads(MCP_CAPABILITY_MAPPING.read_text(encoding="utf-8"))
+        extension_keys = {
+            item["legacy_key"]
+            for item in payload["capabilities"]
+            if item["evidence"]["status"] == "tool_extension_required"
+        }
+        self.assertEqual(
+            extension_keys,
+            {
+                "account.get_single_position",
+                "account.update_leverage_trade",
+                "market.get_server_time",
+                "partner.get-affiliate-commission",
+                "partner.get-affiliate-uids",
+                "partner.get-channel-user-trade-and-asset",
+                "partner.get-referral-assets",
+                "partner.get-referral-deal-data",
+                "partner.query-sub-channel-transactions",
+                "partner.verify-referrals",
+                "spot.config.get_product_info",
+                "spot.config.get_server_time",
+                "spot.config.ping",
+                "spot.market.get_ticker_info",
+            },
+        )
+
+    def test_mcp_capability_mapping_records_verified_unpublished_candidate(self) -> None:
+        payload = json.loads(MCP_CAPABILITY_MAPPING.read_text(encoding="utf-8"))
+        self.assertEqual(payload["mapping_version"], "trader-mcp-capability-v2")
+
+        candidate = payload["verified_mcp_candidate"]
+        source_commit = "f3e9d22195936fc07760542ced2584692c637abd"
+        self.assertEqual(
+            {
+                key: candidate[key]
+                for key in (
+                    "official_repository",
+                    "package_version",
+                    "tool_contract_version",
+                    "source_commit",
+                    "publication_status",
+                )
+            },
+            {
+                "official_repository": "https://github.com/weex-labs/weex-mcp",
+                "package_version": "0.2.0",
+                "tool_contract_version": "1",
+                "source_commit": source_commit,
+                "publication_status": "unpublished",
+            },
+        )
+        self.assertRegex(candidate["source_commit"], r"^[0-9a-f]{40}$")
+        self.assertEqual(
+            candidate["distribution_sha256"],
+            {
+                "wheel": "1d28a9541b05dcec242b62c526e9e46c31b1f24a62d09791f1b6ae0746dcc69b",
+                "sdist": "c504244bdfc3c63864612a96c0156b722f8e1ecfaa9602071510b9889e5e274d",
+            },
+        )
+        for digest in candidate["distribution_sha256"].values():
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertNotIn("/Users/", json.dumps(candidate, ensure_ascii=False))
+
+        expected_profiles = {
+            ("broker_server", False): {
+                "tool_count": 26,
+                "tool_set_digest": "sha256:1abdc9a2ad78310de4c450f32310c9f985004733ba094c7370a28afc024d767f",
+                "schema_digest": "sha256:5717e75476cdf57b0256129ab312dc7628c1ae8b226dd92f12922c8353223e85",
+                "manifest_digest": "sha256:e9f9b7bdde47aa13cc0bfbb99aed108893868e83c9c52ae32cffac8ac95fec1b",
+            },
+            ("broker_server", True): {
+                "tool_count": 52,
+                "tool_set_digest": "sha256:e4b7b026283486499cc4ced31c1abdf29a703f910936b0be26158e492e42d9cf",
+                "schema_digest": "sha256:e0ef06d268c730b4dddfce42249db1e81f2476045a7429a5f10e7129d1241903",
+                "manifest_digest": "sha256:95076586d3b6815471fdebaeb372847819a5653d0422d6e6c368c2aa1419a0a2",
+            },
+            ("local_user", False): {
+                "tool_count": 31,
+                "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
+                "schema_digest": "sha256:421f6c3a8cea15157db03230594896a83de2d51b66551cbf17bb949aa646cbe1",
+                "manifest_digest": "sha256:3f1ba1d9ad7be37744808c753995108e457758fca50cc95ebe9948abd9d23719",
+            },
+            ("local_user", True): {
+                "tool_count": 57,
+                "tool_set_digest": "sha256:6479ec2cb74a21a45266dd44455b4a44610dc5d9c8bc3d98e1df6d8e37ce8728",
+                "schema_digest": "sha256:f06dcb743415693457c161de7a723068f02bfaf9f40780d0df038cf8d41c666f",
+                "manifest_digest": "sha256:7bb0d06590f3ebd97671df5fd1fa2981f107fe8fd86bf4d6f2c359f710048ec8",
+            },
+        }
+        profiles = candidate["compatibility_profiles"]
+        self.assertEqual(len(profiles), 4)
+        actual_profiles = {
+            (item["runtime_profile"], item["trade_enabled"]): {
+                "tool_count": item["tool_count"],
+                "tool_set_digest": item["tool_set_digest"],
+                "schema_digest": item["schema_digest"],
+                "manifest_digest": item["manifest_digest"],
+            }
+            for item in profiles
+        }
+        self.assertEqual(actual_profiles, expected_profiles)
+        for field in ("tool_set_digest", "schema_digest", "manifest_digest"):
+            values = {item[field] for item in profiles}
+            self.assertEqual(len(values), 4)
+            for value in values:
+                self.assertRegex(value, r"^sha256:[0-9a-f]{64}$")
+
+        extension = [
+            item
+            for item in payload["capabilities"]
+            if item["evidence"]["status"] == "tool_extension_required"
+        ]
+        self.assertEqual(len(extension), 14)
+        for item in extension:
+            with self.subTest(key=item["legacy_key"]):
+                evidence = item["evidence"]
+                self.assertEqual(evidence["implementation_status"], "implemented_in_candidate")
+                self.assertEqual(evidence["source_commit"], source_commit)
+                self.assertEqual(evidence["package_version"], candidate["package_version"])
+                self.assertEqual(evidence["tool_contract_version"], candidate["tool_contract_version"])
+
+        pending = [
+            item
+            for item in payload["capabilities"]
+            if item["evidence"]["status"] == "field_audit_required"
+        ]
+        self.assertEqual(len(pending), 65)
+        for item in pending:
+            with self.subTest(key=item["legacy_key"]):
+                self.assertNotIn("implementation_status", item["evidence"])
+
+    def test_partner_mcp_mapping_is_local_read_only_and_never_maps_internal_withdrawal(self) -> None:
+        payload = json.loads(MCP_CAPABILITY_MAPPING.read_text(encoding="utf-8"))
+        partner = [item for item in payload["capabilities"] if item["product"] == "partner"]
+        self.assertEqual(len(partner), 7)
+        for item in partner:
+            with self.subTest(key=item["legacy_key"]):
+                self.assertEqual(item["target"]["hosts"], ["local_user"])
+                self.assertEqual(item["target"]["permission"], "USER_DATA")
+                self.assertEqual(item["target"]["variant"], "read")
+                self.assertEqual(item["auth"], "USER_DATA")
+                self.assertNotIn("withdraw", item["legacy_key"].lower())
+                self.assertNotIn("withdraw", item["path"].lower())
+
     def test_all_definitions_publish_machine_readable_transport_and_response_container(self) -> None:
         expected_delete_body = {
             "transaction.cancel_orders_batch",

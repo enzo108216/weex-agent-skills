@@ -1,0 +1,5036 @@
+{
+  "schema_version": 1,
+  "mapping_version": "trader-mcp-capability-v2",
+  "authority": "Trader legacy endpoint compatibility mapping; MCP remains the typed tool and REST execution authority.",
+  "source_catalogs": {
+    "contract": "references/contract-api-definitions.json",
+    "spot": "references/spot-api-definitions.json",
+    "partner": "references/partner-api-definitions.json"
+  },
+  "verified_mcp_candidate": {
+    "official_repository": "https://github.com/weex-labs/weex-mcp",
+    "package_version": "0.2.0",
+    "tool_contract_version": "1",
+    "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+    "publication_status": "unpublished",
+    "distribution_sha256": {
+      "wheel": "1d28a9541b05dcec242b62c526e9e46c31b1f24a62d09791f1b6ae0746dcc69b",
+      "sdist": "c504244bdfc3c63864612a96c0156b722f8e1ecfaa9602071510b9889e5e274d"
+    },
+    "compatibility_profiles": [
+      {
+        "runtime_profile": "broker_server",
+        "trade_enabled": false,
+        "tool_count": 26,
+        "tool_set_digest": "sha256:1abdc9a2ad78310de4c450f32310c9f985004733ba094c7370a28afc024d767f",
+        "schema_digest": "sha256:5717e75476cdf57b0256129ab312dc7628c1ae8b226dd92f12922c8353223e85",
+        "manifest_digest": "sha256:e9f9b7bdde47aa13cc0bfbb99aed108893868e83c9c52ae32cffac8ac95fec1b"
+      },
+      {
+        "runtime_profile": "broker_server",
+        "trade_enabled": true,
+        "tool_count": 52,
+        "tool_set_digest": "sha256:e4b7b026283486499cc4ced31c1abdf29a703f910936b0be26158e492e42d9cf",
+        "schema_digest": "sha256:e0ef06d268c730b4dddfce42249db1e81f2476045a7429a5f10e7129d1241903",
+        "manifest_digest": "sha256:95076586d3b6815471fdebaeb372847819a5653d0422d6e6c368c2aa1419a0a2"
+      },
+      {
+        "runtime_profile": "local_user",
+        "trade_enabled": false,
+        "tool_count": 31,
+        "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
+        "schema_digest": "sha256:421f6c3a8cea15157db03230594896a83de2d51b66551cbf17bb949aa646cbe1",
+        "manifest_digest": "sha256:3f1ba1d9ad7be37744808c753995108e457758fca50cc95ebe9948abd9d23719"
+      },
+      {
+        "runtime_profile": "local_user",
+        "trade_enabled": true,
+        "tool_count": 57,
+        "tool_set_digest": "sha256:6479ec2cb74a21a45266dd44455b4a44610dc5d9c8bc3d98e1df6d8e37ce8728",
+        "schema_digest": "sha256:f06dcb743415693457c161de7a723068f02bfaf9f40780d0df038cf8d41c666f",
+        "manifest_digest": "sha256:7bb0d06590f3ebd97671df5fd1fa2981f107fe8fd86bf4d6f2c359f710048ec8"
+      }
+    ]
+  },
+  "shared_policies": {
+    "request_fields": {
+      "name": "catalog_exact_decision_v1",
+      "rule": "Every query_fields/body_fields entry must have one explicit map/default/forbid/fanout decision."
+    },
+    "response": {
+      "raw_policy": "preserve_for_compat_serializer",
+      "http_status_policy": "compat_serializer_only"
+    },
+    "dry_run": {
+      "owner": "trader_facade",
+      "network": false
+    },
+    "errors": {
+      "name": "typed_fail_closed_v1",
+      "fail_closed": true
+    }
+  },
+  "inventory_counts": {
+    "contract": 47,
+    "spot": 25,
+    "partner": 7,
+    "total": 79
+  },
+  "capabilities": [
+    {
+      "legacy_key": "account.adjust_position_margin_trade",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/account/positionMargin",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "isolatedPositionId",
+        "amount",
+        "type"
+      ],
+      "field_decisions": {
+        "isolatedPositionId": {
+          "decision": "map",
+          "target": "isolated_position_id",
+          "source": "catalog"
+        },
+        "amount": {
+          "decision": "map",
+          "target": "amount",
+          "source": "catalog"
+        },
+        "type": {
+          "decision": "map",
+          "target": "adjustment",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_position_margin",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_position_margin",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.change_margin_mode_trade",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/account/marginType",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "marginType",
+        "separatedType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "marginType": {
+          "decision": "map",
+          "target": "margin_mode",
+          "source": "catalog"
+        },
+        "separatedType": {
+          "decision": "map",
+          "target": "separated_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_margin_mode",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_margin_mode",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.get_account_balance",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/account/balance",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "account_get_balance",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.get_account_config",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/account/accountConfig",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "account_get_config",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.get_all_positions",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/account/position/allPosition",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "account_get_positions",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.get_commission_rate",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/account/commissionRate",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_commission_rate",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.get_contract_bills",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/account/income",
+      "auth": "USER_DATA",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "asset",
+        "symbol",
+        "incomeType",
+        "startTime",
+        "endTime",
+        "limit",
+        "nextKeyId",
+        "nextKeyTime"
+      ],
+      "field_decisions": {
+        "asset": {
+          "decision": "map",
+          "target": "asset",
+          "source": "catalog"
+        },
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "incomeType": {
+          "decision": "map",
+          "target": "income_type",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "nextKeyId": {
+          "decision": "map",
+          "target": "next_key_id",
+          "source": "catalog"
+        },
+        "nextKeyTime": {
+          "decision": "map",
+          "target": "next_key_time",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_bills",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "bill_type": "income"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.get_single_position",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/account/position/singlePosition",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_position",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/contract-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "account.get_symbol_config",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/account/symbolConfig",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_symbol_config",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.modify_auto_append_margin_trade",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/account/modifyAutoAppendMargin",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "positionId",
+        "autoAppendMargin"
+      ],
+      "field_decisions": {
+        "positionId": {
+          "decision": "map",
+          "target": "position_id",
+          "source": "catalog"
+        },
+        "autoAppendMargin": {
+          "decision": "map",
+          "target": "enabled",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_auto_append_margin",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_auto_append_margin",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "account.update_leverage_trade",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/account/leverage",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "marginType",
+        "crossLeverage",
+        "isolatedLongLeverage",
+        "isolatedShortLeverage"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "marginType": {
+          "decision": "map",
+          "target": "margin_mode",
+          "source": "catalog"
+        },
+        "crossLeverage": {
+          "decision": "fanout",
+          "target": "leverage_and_position_side",
+          "source": "catalog",
+          "requires_tool_extension": true
+        },
+        "isolatedLongLeverage": {
+          "decision": "fanout",
+          "target": "leverage_and_position_side",
+          "source": "catalog",
+          "requires_tool_extension": true
+        },
+        "isolatedShortLeverage": {
+          "decision": "fanout",
+          "target": "leverage_and_position_side",
+          "source": "catalog",
+          "requires_tool_extension": true
+        }
+      },
+      "target": {
+        "tool": "trade_preview_leverage",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_leverage",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "tool_extension_required",
+        "source": "references/contract-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "market.get_api_trading_symbols",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/apiTradingSymbols",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "market_get_catalog",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "catalog": "symbols"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_book_ticker",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/ticker/bookTicker",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_book_ticker",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_contract_info",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/exchangeInfo",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_exchange_info",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_current_funding_rate",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/premiumIndex",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_funding_rate",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "mode": "current"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_depth_data",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/depth",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_depth",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_funding_rate_history",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/fundingRate",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "startTime",
+        "endTime",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_funding_rate",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "mode": "history"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_history_klines",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/historyKlines",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "interval",
+        "startTime",
+        "endTime",
+        "limit",
+        "priceType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "interval": {
+          "decision": "map",
+          "target": "interval",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "priceType": {
+          "decision": "map",
+          "target": "price_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_advanced_klines",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "kind": "history"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_index_price_klines",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/indexPriceKlines",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "interval",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "interval": {
+          "decision": "map",
+          "target": "interval",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_advanced_klines",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "kind": "index"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_klines",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/klines",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "interval",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "interval": {
+          "decision": "map",
+          "target": "interval",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_klines",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_mark_price_klines",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/markPriceKlines",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "interval",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "interval": {
+          "decision": "map",
+          "target": "interval",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_advanced_klines",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "kind": "mark"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_open_interest",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/openInterest",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_open_interest",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_recent_trades",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/trades",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_recent_trades",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_server_time",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/time",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "market_get_server_time",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/contract-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "market.get_symbol_price",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/symbolPrice",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "priceType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "priceType": {
+          "decision": "map",
+          "target": "price_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_symbol_price",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "market.get_ticker24h",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/market/ticker/24hr",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_ticker_24h",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "partner.get-affiliate-commission",
+      "product": "partner",
+      "method": "GET",
+      "path": "/api/v3/rebate/affiliate/getAffiliateCommission",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "uid",
+        "startTime",
+        "endTime",
+        "coin",
+        "productType",
+        "page",
+        "pageSize"
+      ],
+      "field_decisions": {
+        "uid": {
+          "decision": "map",
+          "target": "uid",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "coin": {
+          "decision": "map",
+          "target": "coin",
+          "source": "catalog"
+        },
+        "productType": {
+          "decision": "map",
+          "target": "product_type",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        },
+        "pageSize": {
+          "decision": "map",
+          "target": "page_size",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_get_affiliate_commission",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "partner.get-affiliate-uids",
+      "product": "partner",
+      "method": "GET",
+      "path": "/api/v3/rebate/affiliate/getAffiliateUIDs",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "uid",
+        "startTime",
+        "endTime",
+        "page",
+        "pageSize"
+      ],
+      "field_decisions": {
+        "uid": {
+          "decision": "map",
+          "target": "uid",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        },
+        "pageSize": {
+          "decision": "map",
+          "target": "page_size",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_get_affiliate_uids",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "partner.get-channel-user-trade-and-asset",
+      "product": "partner",
+      "method": "GET",
+      "path": "/api/v3/rebate/affiliate/getChannelUserTradeAndAsset",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "uid",
+        "startTime",
+        "endTime",
+        "page",
+        "pageSize"
+      ],
+      "field_decisions": {
+        "uid": {
+          "decision": "map",
+          "target": "uid",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        },
+        "pageSize": {
+          "decision": "map",
+          "target": "page_size",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_get_channel_user_trade_and_asset",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "partner.get-referral-assets",
+      "product": "partner",
+      "method": "GET",
+      "path": "/api/v3/agency/getAssert",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "userId",
+        "startTime",
+        "endTime"
+      ],
+      "field_decisions": {
+        "userId": {
+          "decision": "map",
+          "target": "user_id",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_get_referral_assets",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "partner.get-referral-deal-data",
+      "product": "partner",
+      "method": "GET",
+      "path": "/api/v3/agency/getDealData",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "userIds",
+        "startTime",
+        "endTime"
+      ],
+      "field_decisions": {
+        "userIds": {
+          "decision": "map",
+          "target": "user_ids",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_get_referral_deal_data",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "partner.query-sub-channel-transactions",
+      "product": "partner",
+      "method": "POST",
+      "path": "/api/v3/rebate/affiliate/querySubChannelTransactions",
+      "auth": "USER_DATA",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "subUid",
+        "startTime",
+        "endTime",
+        "productType",
+        "pageNum",
+        "pageSize"
+      ],
+      "field_decisions": {
+        "subUid": {
+          "decision": "map",
+          "target": "sub_uid",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "productType": {
+          "decision": "map",
+          "target": "product_type",
+          "source": "catalog"
+        },
+        "pageNum": {
+          "decision": "map",
+          "target": "page_num",
+          "source": "catalog"
+        },
+        "pageSize": {
+          "decision": "map",
+          "target": "page_size",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_query_sub_channel_transactions",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "partner.verify-referrals",
+      "product": "partner",
+      "method": "GET",
+      "path": "/api/v3/agency/verifyReferrals",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "userIds"
+      ],
+      "field_decisions": {
+        "userIds": {
+          "decision": "map",
+          "target": "user_ids",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "partner_verify_referrals",
+        "variant": "read",
+        "fixed_arguments": {},
+        "hosts": [
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "partner_envelope",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/partner-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "sim.account.get_account_balance",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/sim/balance",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "account_get_balance",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "demo"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "sim.account.get_all_positions",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/sim/position/allPosition",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "account_get_positions",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "demo"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "sim.transaction.get_order_history",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/sim/order/history",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "limit",
+        "startTime",
+        "endTime",
+        "page"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "demo",
+          "status": "history"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "sim.transaction.place_order",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/sim/order",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "side",
+        "positionSide",
+        "type",
+        "timeInForce",
+        "quantity",
+        "price",
+        "newClientOrderId",
+        "tpTriggerPrice",
+        "slTriggerPrice",
+        "TpWorkingType",
+        "SlWorkingType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "side": {
+          "decision": "map",
+          "target": "side",
+          "source": "catalog"
+        },
+        "positionSide": {
+          "decision": "map",
+          "target": "position_side",
+          "source": "catalog"
+        },
+        "type": {
+          "decision": "map",
+          "target": "order_type",
+          "source": "catalog"
+        },
+        "timeInForce": {
+          "decision": "map",
+          "target": "time_in_force",
+          "source": "catalog"
+        },
+        "quantity": {
+          "decision": "map",
+          "target": "quantity",
+          "source": "catalog"
+        },
+        "price": {
+          "decision": "map",
+          "target": "price",
+          "source": "catalog"
+        },
+        "newClientOrderId": {
+          "decision": "map",
+          "target": "client_order_id",
+          "source": "catalog"
+        },
+        "tpTriggerPrice": {
+          "decision": "map",
+          "target": "tp_trigger_price",
+          "source": "catalog"
+        },
+        "slTriggerPrice": {
+          "decision": "map",
+          "target": "sl_trigger_price",
+          "source": "catalog"
+        },
+        "TpWorkingType": {
+          "decision": "map",
+          "target": "tp_working_type",
+          "source": "catalog"
+        },
+        "SlWorkingType": {
+          "decision": "map",
+          "target": "sl_working_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "demo"
+        },
+        "confirm_tool": "trade_confirm_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.account.get_account_balance",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/account",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "account_get_balance",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.account.get_bill_records",
+      "product": "spot",
+      "method": "POST",
+      "path": "/api/v3/account/bills",
+      "auth": "USER_DATA",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "coinId",
+        "bizType",
+        "after",
+        "before",
+        "limit"
+      ],
+      "field_decisions": {
+        "coinId": {
+          "decision": "map",
+          "target": "coin_id",
+          "source": "catalog"
+        },
+        "bizType": {
+          "decision": "map",
+          "target": "biz_type",
+          "source": "catalog"
+        },
+        "after": {
+          "decision": "map",
+          "target": "after",
+          "source": "catalog"
+        },
+        "before": {
+          "decision": "map",
+          "target": "before",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_bills",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "bill_type": "account"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.account.get_fund_bill_records",
+      "product": "spot",
+      "method": "POST",
+      "path": "/api/v3/account/fundingBills",
+      "auth": "USER_DATA",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "coinId",
+        "bizType",
+        "startTime",
+        "endTime",
+        "pageIndex",
+        "pageSize"
+      ],
+      "field_decisions": {
+        "coinId": {
+          "decision": "map",
+          "target": "coin_id",
+          "source": "catalog"
+        },
+        "bizType": {
+          "decision": "map",
+          "target": "biz_type",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "pageIndex": {
+          "decision": "map",
+          "target": "page_index",
+          "source": "catalog"
+        },
+        "pageSize": {
+          "decision": "map",
+          "target": "page_size",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_bills",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "bill_type": "funding"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.account.transfer_records",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/account/transferRecords",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "coinId",
+        "fromType",
+        "limit",
+        "after",
+        "before"
+      ],
+      "field_decisions": {
+        "coinId": {
+          "decision": "map",
+          "target": "coin_id",
+          "source": "catalog"
+        },
+        "fromType": {
+          "decision": "map",
+          "target": "from_type",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "after": {
+          "decision": "map",
+          "target": "after",
+          "source": "catalog"
+        },
+        "before": {
+          "decision": "map",
+          "target": "before",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_transfer_records",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.config.currency_info",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/coins",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "market_get_catalog",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "catalog": "coins"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.config.get_api_trading_symbols",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/apiTradingSymbols",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "market_get_catalog",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "catalog": "symbols"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.config.get_product_info",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/exchangeInfo",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "symbols",
+        "symbolStatus"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "symbols": {
+          "decision": "map",
+          "target": "symbols",
+          "source": "catalog"
+        },
+        "symbolStatus": {
+          "decision": "map",
+          "target": "symbol_status",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_exchange_info",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "tool_extension_required",
+        "source": "references/spot-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "spot.config.get_server_time",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/time",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "market_get_server_time",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/spot-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "spot.config.ping",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/ping",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [],
+      "field_decisions": {},
+      "target": {
+        "tool": "market_ping",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "missing_endpoint",
+        "status": "tool_extension_required",
+        "source": "references/spot-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "spot.market.get_all_ticker_info",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/market/ticker/24hr",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "symbols"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "symbols": {
+          "decision": "map",
+          "target": "symbols",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_ticker_24h",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "conditional_object_or_array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.market.get_book_ticker",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/market/ticker/bookTicker",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "symbols"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "symbols": {
+          "decision": "map",
+          "target": "symbols",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_book_ticker",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "conditional_object_or_array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.market.get_depth_data",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/market/depth",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_depth",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.market.get_k_line_data",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/market/klines",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "interval"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "interval": {
+          "decision": "map",
+          "target": "interval",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_klines",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.market.get_ticker_info",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/market/ticker/price",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "symbols"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "symbols": {
+          "decision": "map",
+          "target": "symbols",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_symbol_price",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "conditional_object_or_array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "tool_extension_required",
+        "source": "references/spot-api-definitions.json",
+        "implementation_status": "implemented_in_candidate",
+        "source_commit": "f3e9d22195936fc07760542ced2584692c637abd",
+        "package_version": "0.2.0",
+        "tool_contract_version": "1"
+      }
+    },
+    {
+      "legacy_key": "spot.market.get_trade_data",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/market/trades",
+      "auth": "NONE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "market_get_recent_trades",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "NONE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.bulk_cancel",
+      "product": "spot",
+      "method": "DELETE",
+      "path": "/api/v3/order/batch",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "orderIds",
+        "origClientOrderIds"
+      ],
+      "field_decisions": {
+        "orderIds": {
+          "decision": "map",
+          "target": "order_ids",
+          "source": "catalog"
+        },
+        "origClientOrderIds": {
+          "decision": "map",
+          "target": "orig_client_order_ids",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_batch_cancel",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_batch_cancel",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.bulk_order",
+      "product": "spot",
+      "method": "POST",
+      "path": "/api/v3/order/batch",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "orderList",
+        "orderList[].side",
+        "orderList[].type",
+        "orderList[].timeInForce",
+        "orderList[].quantity",
+        "orderList[].price",
+        "orderList[].newClientOrderId"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "orderList": {
+          "decision": "map",
+          "target": "orders",
+          "source": "catalog"
+        },
+        "orderList[].side": {
+          "decision": "map",
+          "target": "order_list[].side",
+          "source": "catalog"
+        },
+        "orderList[].type": {
+          "decision": "map",
+          "target": "order_list[].type",
+          "source": "catalog"
+        },
+        "orderList[].timeInForce": {
+          "decision": "map",
+          "target": "order_list[].time_in_force",
+          "source": "catalog"
+        },
+        "orderList[].quantity": {
+          "decision": "map",
+          "target": "order_list[].quantity",
+          "source": "catalog"
+        },
+        "orderList[].price": {
+          "decision": "map",
+          "target": "order_list[].price",
+          "source": "catalog"
+        },
+        "orderList[].newClientOrderId": {
+          "decision": "map",
+          "target": "order_list[].new_client_order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_batch_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_batch_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.cancel_order",
+      "product": "spot",
+      "method": "DELETE",
+      "path": "/api/v3/order",
+      "auth": "TRADE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "orderId",
+        "origClientOrderId"
+      ],
+      "field_decisions": {
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "origClientOrderId": {
+          "decision": "map",
+          "target": "client_order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_cancel_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_cancel_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.cancel_symbol_orders",
+      "product": "spot",
+      "method": "DELETE",
+      "path": "/api/v3/openOrders",
+      "auth": "TRADE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_cancel_scope",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "order_kind": "normal",
+          "scope": "symbol"
+        },
+        "confirm_tool": "trade_confirm_cancel_scope",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.history_orders",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/allOrders",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "startTime",
+        "endTime",
+        "limit",
+        "page"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "status": "history"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.order_details",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/order",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "orderId",
+        "origClientOrderId"
+      ],
+      "field_decisions": {
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "origClientOrderId": {
+          "decision": "map",
+          "target": "client_order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "status": "single"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.place_order",
+      "product": "spot",
+      "method": "POST",
+      "path": "/api/v3/order",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "side",
+        "type",
+        "timeInForce",
+        "quantity",
+        "price",
+        "newClientOrderId"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "side": {
+          "decision": "map",
+          "target": "side",
+          "source": "catalog"
+        },
+        "type": {
+          "decision": "map",
+          "target": "order_type",
+          "source": "catalog"
+        },
+        "timeInForce": {
+          "decision": "map",
+          "target": "time_in_force",
+          "source": "catalog"
+        },
+        "quantity": {
+          "decision": "map",
+          "target": "quantity",
+          "source": "catalog"
+        },
+        "price": {
+          "decision": "map",
+          "target": "price",
+          "source": "catalog"
+        },
+        "newClientOrderId": {
+          "decision": "map",
+          "target": "client_order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.transaction_details",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/myTrades",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "orderId",
+        "startTime",
+        "endTime",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_trades",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.order.unfinished_orders",
+      "product": "spot",
+      "method": "GET",
+      "path": "/api/v3/openOrders",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "status": "open"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "spot.tax.get_spot_account_record",
+      "product": "spot",
+      "method": "POST",
+      "path": "/api/v3/tax/income",
+      "auth": "USER_DATA",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "coin",
+        "bizType",
+        "month",
+        "limit",
+        "page"
+      ],
+      "field_decisions": {
+        "coin": {
+          "decision": "map",
+          "target": "coin",
+          "source": "catalog"
+        },
+        "bizType": {
+          "decision": "map",
+          "target": "biz_type",
+          "source": "catalog"
+        },
+        "month": {
+          "decision": "map",
+          "target": "month",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_bills",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "spot",
+          "trading_mode": "live",
+          "bill_type": "tax"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/spot-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.cancel_all_orders",
+      "product": "contract",
+      "method": "DELETE",
+      "path": "/capi/v3/allOpenOrders",
+      "auth": "TRADE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_cancel_scope",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "order_kind": "normal",
+          "scope": "symbol"
+        },
+        "confirm_tool": "trade_confirm_cancel_scope",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.cancel_all_pending_orders",
+      "product": "contract",
+      "method": "DELETE",
+      "path": "/capi/v3/algoOpenOrders",
+      "auth": "TRADE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_cancel_scope",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "order_kind": "conditional",
+          "scope": "symbol"
+        },
+        "confirm_tool": "trade_confirm_cancel_scope",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.cancel_order",
+      "product": "contract",
+      "method": "DELETE",
+      "path": "/capi/v3/order",
+      "auth": "TRADE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "orderId",
+        "origClientOrderId"
+      ],
+      "field_decisions": {
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "origClientOrderId": {
+          "decision": "map",
+          "target": "client_order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_cancel_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_cancel_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.cancel_orders_batch",
+      "product": "contract",
+      "method": "DELETE",
+      "path": "/capi/v3/batchOrders",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "orderIdList",
+        "origClientOrderIdList"
+      ],
+      "field_decisions": {
+        "orderIdList": {
+          "decision": "map",
+          "target": "order_ids",
+          "source": "catalog"
+        },
+        "origClientOrderIdList": {
+          "decision": "map",
+          "target": "client_order_ids",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_batch_cancel",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_batch_cancel",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.cancel_pending_order",
+      "product": "contract",
+      "method": "DELETE",
+      "path": "/capi/v3/algoOrder",
+      "auth": "TRADE",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "orderId"
+      ],
+      "field_decisions": {
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_conditional_cancel",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_conditional_cancel",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.close_positions",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/closePositions",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "positionId"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "positionId": {
+          "decision": "map",
+          "target": "position_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_close_positions",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_close_positions",
+        "derived_arguments": {
+          "scope": "position when position_id is present; otherwise symbol"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.get_current_order_status",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/openOrders",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "orderId",
+        "startTime",
+        "endTime",
+        "limit",
+        "page"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "status": "open"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.get_current_pending_orders",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/openAlgoOrders",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "startTime",
+        "endTime",
+        "page",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_conditional_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "status": "open"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.get_historical_pending_orders",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/allAlgoOrders",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "startTime",
+        "endTime",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_conditional_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "status": "history"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.get_order_history",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/order/history",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "limit",
+        "startTime",
+        "endTime",
+        "page"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "page": {
+          "decision": "map",
+          "target": "page",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "status": "history"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.get_single_order_info",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/order",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "orderId"
+      ],
+      "field_decisions": {
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_orders",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "status": "single"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.get_trade_details",
+      "product": "contract",
+      "method": "GET",
+      "path": "/capi/v3/userTrades",
+      "auth": "USER_DATA",
+      "request_transport": "query",
+      "catalog_request_fields": [
+        "symbol",
+        "orderId",
+        "startTime",
+        "endTime",
+        "limit"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "startTime": {
+          "decision": "map",
+          "target": "start_time",
+          "source": "catalog"
+        },
+        "endTime": {
+          "decision": "map",
+          "target": "end_time",
+          "source": "catalog"
+        },
+        "limit": {
+          "decision": "map",
+          "target": "limit",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "account_get_trades",
+        "variant": "read",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "USER_DATA"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.modify_tp_sl_order",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/modifyTpSlOrder",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "orderId",
+        "triggerPrice",
+        "executePrice",
+        "triggerPriceType"
+      ],
+      "field_decisions": {
+        "orderId": {
+          "decision": "map",
+          "target": "order_id",
+          "source": "catalog"
+        },
+        "triggerPrice": {
+          "decision": "map",
+          "target": "trigger_price",
+          "source": "catalog"
+        },
+        "executePrice": {
+          "decision": "map",
+          "target": "execute_price",
+          "source": "catalog"
+        },
+        "triggerPriceType": {
+          "decision": "map",
+          "target": "trigger_price_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_tp_sl",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "operation": "modify"
+        },
+        "confirm_tool": "trade_confirm_tp_sl",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.place_order",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/order",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "side",
+        "positionSide",
+        "type",
+        "timeInForce",
+        "quantity",
+        "price",
+        "newClientOrderId",
+        "tpTriggerPrice",
+        "slTriggerPrice",
+        "TpWorkingType",
+        "SlWorkingType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "side": {
+          "decision": "map",
+          "target": "side",
+          "source": "catalog"
+        },
+        "positionSide": {
+          "decision": "map",
+          "target": "position_side",
+          "source": "catalog"
+        },
+        "type": {
+          "decision": "map",
+          "target": "order_type",
+          "source": "catalog"
+        },
+        "timeInForce": {
+          "decision": "map",
+          "target": "time_in_force",
+          "source": "catalog"
+        },
+        "quantity": {
+          "decision": "map",
+          "target": "quantity",
+          "source": "catalog"
+        },
+        "price": {
+          "decision": "map",
+          "target": "price",
+          "source": "catalog"
+        },
+        "newClientOrderId": {
+          "decision": "map",
+          "target": "client_order_id",
+          "source": "catalog"
+        },
+        "tpTriggerPrice": {
+          "decision": "map",
+          "target": "tp_trigger_price",
+          "source": "catalog"
+        },
+        "slTriggerPrice": {
+          "decision": "map",
+          "target": "sl_trigger_price",
+          "source": "catalog"
+        },
+        "TpWorkingType": {
+          "decision": "map",
+          "target": "tp_working_type",
+          "source": "catalog"
+        },
+        "SlWorkingType": {
+          "decision": "map",
+          "target": "sl_working_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.place_orders_batch",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/batchOrders",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "batchOrders"
+      ],
+      "field_decisions": {
+        "batchOrders": {
+          "decision": "map",
+          "target": "orders",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_batch_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_batch_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.place_pending_order",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/algoOrder",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "side",
+        "positionSide",
+        "type",
+        "quantity",
+        "price",
+        "triggerPrice",
+        "clientAlgoId",
+        "presetTakeProfitPrice",
+        "presetStopLossPrice",
+        "TpWorkingType",
+        "SlWorkingType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "side": {
+          "decision": "map",
+          "target": "side",
+          "source": "catalog"
+        },
+        "positionSide": {
+          "decision": "map",
+          "target": "position_side",
+          "source": "catalog"
+        },
+        "type": {
+          "decision": "map",
+          "target": "conditional_type",
+          "source": "catalog"
+        },
+        "quantity": {
+          "decision": "map",
+          "target": "quantity",
+          "source": "catalog"
+        },
+        "price": {
+          "decision": "map",
+          "target": "price",
+          "source": "catalog"
+        },
+        "triggerPrice": {
+          "decision": "map",
+          "target": "trigger_price",
+          "source": "catalog"
+        },
+        "clientAlgoId": {
+          "decision": "map",
+          "target": "client_algo_id",
+          "source": "catalog"
+        },
+        "presetTakeProfitPrice": {
+          "decision": "map",
+          "target": "preset_take_profit_price",
+          "source": "catalog"
+        },
+        "presetStopLossPrice": {
+          "decision": "map",
+          "target": "preset_stop_loss_price",
+          "source": "catalog"
+        },
+        "TpWorkingType": {
+          "decision": "map",
+          "target": "tp_working_type",
+          "source": "catalog"
+        },
+        "SlWorkingType": {
+          "decision": "map",
+          "target": "sl_working_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_conditional_order",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live"
+        },
+        "confirm_tool": "trade_confirm_conditional_order",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "object",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    },
+    {
+      "legacy_key": "transaction.place_tp_sl_order",
+      "product": "contract",
+      "method": "POST",
+      "path": "/capi/v3/placeTpSlOrder",
+      "auth": "TRADE",
+      "request_transport": "body",
+      "catalog_request_fields": [
+        "symbol",
+        "clientAlgoId",
+        "planType",
+        "triggerPrice",
+        "executePrice",
+        "quantity",
+        "positionSide",
+        "triggerPriceType"
+      ],
+      "field_decisions": {
+        "symbol": {
+          "decision": "map",
+          "target": "symbol",
+          "source": "catalog"
+        },
+        "clientAlgoId": {
+          "decision": "map",
+          "target": "client_algo_id",
+          "source": "catalog"
+        },
+        "planType": {
+          "decision": "map",
+          "target": "plan_type",
+          "source": "catalog"
+        },
+        "triggerPrice": {
+          "decision": "map",
+          "target": "trigger_price",
+          "source": "catalog"
+        },
+        "executePrice": {
+          "decision": "map",
+          "target": "execute_price",
+          "source": "catalog"
+        },
+        "quantity": {
+          "decision": "map",
+          "target": "quantity",
+          "source": "catalog"
+        },
+        "positionSide": {
+          "decision": "map",
+          "target": "position_side",
+          "source": "catalog"
+        },
+        "triggerPriceType": {
+          "decision": "map",
+          "target": "trigger_price_type",
+          "source": "catalog"
+        }
+      },
+      "target": {
+        "tool": "trade_preview_tp_sl",
+        "variant": "preview_confirm",
+        "fixed_arguments": {
+          "market": "futures",
+          "trading_mode": "live",
+          "operation": "place"
+        },
+        "confirm_tool": "trade_confirm_tp_sl",
+        "hosts": [
+          "generic",
+          "broker_server",
+          "local_user"
+        ],
+        "permission": "TRADE"
+      },
+      "response": {
+        "legacy_container": "array",
+        "raw_policy": "preserve_for_compat_serializer",
+        "http_status_policy": "compat_serializer_only"
+      },
+      "dry_run": {
+        "owner": "trader_facade",
+        "network": false
+      },
+      "error_policy": {
+        "name": "typed_fail_closed_v1",
+        "fail_closed": true
+      },
+      "evidence": {
+        "capability": "existing_path",
+        "status": "field_audit_required",
+        "source": "references/contract-api-definitions.json"
+      }
+    }
+  ]
+}

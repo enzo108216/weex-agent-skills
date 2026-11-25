@@ -287,6 +287,9 @@
         "references/contract-api-definitions.json",
         "references/spot-api-definitions.json"
       ]
+    },
+    "compatibility": {
+      "mcp_capability_mapping": "references/mcp-capability-mapping.json"
     }
   },
   "state": {

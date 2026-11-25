@@ -112,6 +112,19 @@
         "verifying that no Partner write endpoint is exposed"
       ]
     },
+    "references/mcp-capability-mapping.json": {
+      "role": "Machine-readable compatibility source for all 79 Trader Contract, non-Rebate Spot, and Partner endpoint capabilities mapped to typed MCP tools.",
+      "when": [
+        "checking exact legacy endpoint inventory and source catalog parity",
+        "planning MCP tool extensions without silently dropping request fields",
+        "validating target Host, response, dry-run, and error compatibility policy"
+      ],
+      "depends_on": [
+        "references/contract-api-definitions.json",
+        "references/spot-api-definitions.json",
+        "references/partner-api-definitions.json"
+      ]
+    },
     "scripts/weex_profile_store.py": {
       "role": "Shared profile metadata and application-vault backend.",
       "when": [

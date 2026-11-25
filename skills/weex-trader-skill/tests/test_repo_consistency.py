@@ -45,6 +45,7 @@ TROUBLESHOOTING_REFERENCE = ROOT / "references" / "troubleshooting.md"
 TRADE_DATA_SCHEMA_REFERENCE = ROOT / "references" / "trade-data-schema.md"
 CONTRACT_API_DEFINITIONS_REFERENCE = ROOT / "references" / "contract-api-definitions.md"
 PARTNER_API_DEFINITIONS = ROOT / "references" / "partner-api-definitions.json"
+MCP_CAPABILITY_MAPPING = ROOT / "references" / "mcp-capability-mapping.json"
 SPOT_API_DEFINITIONS = ROOT / "references" / "spot-api-definitions.json"
 SPOT_API_DEFINITIONS_MD = ROOT / "references" / "spot-api-definitions.md"
 CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
@@ -168,6 +169,16 @@ def load_api_definition_generator():
 
 
 class RepoConsistencyTests(unittest.TestCase):
+    def test_manifest_and_file_index_register_mcp_capability_mapping(self) -> None:
+        self.assertTrue(MCP_CAPABILITY_MAPPING.exists())
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        mapping_path = "references/mcp-capability-mapping.json"
+
+        self.assertEqual(manifest["routing"]["compatibility"]["mcp_capability_mapping"], mapping_path)
+        self.assertIn(mapping_path, file_index["file_guide"])
+        self.assertIn("79", file_index["file_guide"][mapping_path]["role"])
+
     def test_skill_frontmatter_is_portable_and_monitor_description_is_trigger_only(self) -> None:
         analysis_skill = REPO_ROOT / "skills" / "weex-analysis-skill" / "SKILL.md"
         monitor_skill = REPO_ROOT / "skills" / "weex-monitor-skill" / "SKILL.md"
