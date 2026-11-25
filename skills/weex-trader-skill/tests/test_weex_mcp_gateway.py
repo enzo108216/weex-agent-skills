@@ -178,6 +178,21 @@ class FakeSecretProviderError(ValueError):
         self.message = message
 
 
+class FakeExecutionAuthorizationError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class FakeVerifiedExecutionAuthorization:
+    authorization_id: str
+    scope_fingerprint: str
+    expires_at: int
+    audit_metadata: dict[str, object]
+
+
 @dataclass(frozen=True)
 class FakeResolvedCredential:
     key_id: str
@@ -248,6 +263,7 @@ def fake_runtime(service: FakeService, *, package_version: str = "0.2.0"):
     def build_local_user_service(**kwargs):
         service.secret_provider = kwargs["secret_provider"]
         service.settings = kwargs["settings"]
+        service.execution_authorizer = kwargs.get("execution_authorizer")
         return service
 
     return SimpleNamespace(
@@ -257,6 +273,8 @@ def fake_runtime(service: FakeService, *, package_version: str = "0.2.0"):
         TenantContext=FakeTenantContext,
         ResolvedWeexCredential=FakeResolvedCredential,
         SecretProviderError=FakeSecretProviderError,
+        ExecutionAuthorizationError=FakeExecutionAuthorizationError,
+        VerifiedExecutionAuthorization=FakeVerifiedExecutionAuthorization,
     )
 
 
@@ -297,6 +315,7 @@ class GatewayFixture(unittest.TestCase):
         profile_id: str | None = "profile-a",
         effective_spot_base_url: str = "https://api-spot.weex.com",
         effective_futures_base_url: str = "https://api-contract.weex.com",
+        delegated_authorizer=None,
     ):
         tools = tool_catalog(trade_enabled=trade_enabled)
         manifest = build_manifest(tools, trade_enabled=trade_enabled)
@@ -317,6 +336,7 @@ class GatewayFixture(unittest.TestCase):
             credential_loader=self.credential_loader,
             approval_key_loader=lambda: self.approval_key,
             approval_key_status_loader=lambda: dict(self.approval_status),
+            delegated_authorizer=delegated_authorizer,
         )
         return gateway, service
 
@@ -906,6 +926,125 @@ class LocalMcpGatewayTests(GatewayFixture):
             )
         self.assertEqual(locked.exception.code, "approval_key_required")
         self.assertNotIn("profile-a", str(locked.exception))
+
+    def test_trade_gateway_bridges_neutral_delegated_authorizer_callback(self) -> None:
+        captured: dict[str, object] = {}
+
+        def callback(payload: dict[str, object]) -> dict[str, object]:
+            captured.update(copy.deepcopy(payload))
+            return {
+                "authorization_id": "auth-1",
+                "scope_fingerprint": "scope-fingerprint",
+                "expires_at": 4102444800,
+                "audit_metadata": {"usage_count": 2},
+            }
+
+        gateway, service = self.make_gateway(
+            trade_enabled=True,
+            delegated_authorizer=callback,
+        )
+        execution = SimpleNamespace(
+            action="batch_order",
+            market="spot",
+            trading_mode="live",
+            summary={"orders": 2},
+            risk={"level": "bounded"},
+            risk_signature="risk-signature",
+        )
+
+        result = service.execution_authorizer.authorize(
+            context=gateway._context(),
+            credential_fingerprint="fp_credential",
+            execution=execution,
+            delegated_ref={"ref": "opaque-ref"},
+        )
+
+        self.assertIsInstance(result, FakeVerifiedExecutionAuthorization)
+        self.assertEqual(result.authorization_id, "auth-1")
+        self.assertEqual(result.scope_fingerprint, "scope-fingerprint")
+        self.assertEqual(result.audit_metadata, {"usage_count": 2})
+        self.assertEqual(
+            captured,
+            {
+                "context": {
+                    "tenant_id": "weex-trader-local",
+                    "user_id": "profile-a",
+                    "session_id": gateway._context().session_id,
+                    "request_id": "request",
+                },
+                "credential_fingerprint": "fp_credential",
+                "execution": {
+                    "action": "batch_order",
+                    "market": "spot",
+                    "trading_mode": "live",
+                    "summary": {"orders": 2},
+                    "risk": {"level": "bounded"},
+                    "risk_signature": "risk-signature",
+                },
+                "delegated_ref": {"ref": "opaque-ref"},
+            },
+        )
+
+    def test_delegated_authorizer_failures_use_stable_mcp_error_codes(self) -> None:
+        class CallbackError(RuntimeError):
+            def __init__(self, code: str):
+                super().__init__("unsafe callback detail AK_LEAK")
+                self.code = code
+                self.message = "unsafe callback detail AK_LEAK"
+
+        cases = (
+            ("execution_authorization_invalid", "execution_authorization_invalid"),
+            ("execution_authorization_expired", "execution_authorization_expired"),
+            ("unsupported_code", "execution_authorization_denied"),
+        )
+        for callback_code, expected_code in cases:
+            with self.subTest(callback_code=callback_code):
+                gateway, service = self.make_gateway(
+                    trade_enabled=True,
+                    delegated_authorizer=lambda _payload, code=callback_code: (_ for _ in ()).throw(
+                        CallbackError(code)
+                    ),
+                )
+                with self.assertRaises(FakeExecutionAuthorizationError) as raised:
+                    service.execution_authorizer.authorize(
+                        context=gateway._context(),
+                        credential_fingerprint="fp",
+                        execution=SimpleNamespace(
+                            action="order",
+                            market="spot",
+                            trading_mode="live",
+                            summary={},
+                            risk={},
+                            risk_signature="sig",
+                        ),
+                        delegated_ref={"ref": "opaque"},
+                    )
+                self.assertEqual(raised.exception.code, expected_code)
+                self.assertNotIn("AK_LEAK", str(raised.exception))
+
+        gateway, service = self.make_gateway(
+            trade_enabled=True,
+            delegated_authorizer=lambda _payload: {"authorization_id": "missing-fields"},
+        )
+        with self.assertRaises(FakeExecutionAuthorizationError) as invalid:
+            service.execution_authorizer.authorize(
+                context=gateway._context(),
+                credential_fingerprint="fp",
+                execution=SimpleNamespace(
+                    action="order",
+                    market="spot",
+                    trading_mode="live",
+                    summary={},
+                    risk={},
+                    risk_signature="sig",
+                ),
+                delegated_ref={"ref": "opaque"},
+            )
+        self.assertEqual(invalid.exception.code, "execution_authorization_invalid")
+
+    def test_manual_gateway_keeps_default_fail_closed_authorizer_wiring(self) -> None:
+        _gateway, service = self.make_gateway(trade_enabled=True)
+        self.assertIsNone(service.execution_authorizer)
 
     def test_credential_rotation_is_loaded_fresh_and_mcp_error_is_preserved(self) -> None:
         gateway, service = self.make_gateway(trade_enabled=True)

@@ -3080,7 +3080,7 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
                     "timestamp_ms": now_ms,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {
                         "clientOrderId": legs[0]["client_order_id"],
                         "success": True,
@@ -3336,7 +3336,7 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
                     "timestamp_ms": now_ms,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {
                         "clientOrderId": legs[0]["client_order_id"],
                         "success": True,
@@ -3416,7 +3416,7 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
                     "timestamp_ms": now_ms,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {
                         "clientOrderId": legs[0]["client_order_id"],
                         "success": True,
@@ -3823,6 +3823,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
             body: dict | None = None,
             public: bool = False,
             mutating: bool = False,
+            delegation=None,
         ):
             self.calls.append(
                 {
@@ -3832,6 +3833,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                     "body": body or {},
                     "public": public,
                     "mutating": mutating,
+                    "delegation": delegation,
                 }
             )
             result = self.responses[(module, endpoint_key)]
@@ -3842,101 +3844,60 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
     def test_official_boundary_distinguishes_explicit_http_rejection_from_uncertainty(self) -> None:
         import weex_auto_trade_runtime as runtime_module
 
-        endpoint = SimpleNamespace(mutating=True)
+        endpoint = SimpleNamespace(mutating=True, key="transaction.place_order")
         api_module = SimpleNamespace(
-            ENDPOINTS={
-                "transaction.place_order": endpoint,
-                "transaction.place_orders_batch": endpoint,
-            },
+            ENDPOINTS={"transaction.place_order": endpoint},
             validate_endpoint_trading_mode=lambda selected, mode: None,
         )
-
-        class FakeClient:
-            def __init__(self, response):
-                self.response = response
-
-            def prepare_request(self, selected, *, query, body):
-                return {"query": query, "body": body}
-
-            def send(self, prepared):
-                return self.response
-
+        client = Mock()
+        client.mcp_trade_settings_factory = lambda: SimpleNamespace(profile_id="profile-id")
+        facade = Mock()
+        facade.preview.return_value = {
+            "ok": True,
+            "preview": {"preview_id": "p"},
+            "summary": {"action": "order"},
+            "risk": {"level": "bounded"},
+        }
+        facade.confirm_delegated.return_value = {
+            "ok": False,
+            "error": {"code": "upstream_error"},
+            "outcome": {
+                "class": "unknown",
+                "write_attempted": True,
+                "action": "order",
+                "client_order_id": "client-1",
+            },
+            "trade_status": "REVIEW_REQUIRED",
+            "review_required": True,
+        }
+        delegation = Mock(delegated_ref="opaque-ref")
         boundary = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
-        boundary._client = lambda module, private: (
-            api_module,
-            FakeClient(
-                {
-                    "ok": False,
-                    "status": 400,
-                    "error": {"code": "40012", "msg": "batch order rejected"},
-                }
-            ),
+        boundary._client = lambda module, private: (api_module, client)
+        with patch.object(runtime_module, "McpTradeFacade", return_value=facade):
+            result = boundary.call(
+                module="FUTURES",
+                endpoint_key="transaction.place_order",
+                body={"symbol": "BTCUSDT", "newClientOrderId": "client-1"},
+                mutating=True,
+                delegation=delegation,
+            )
+        self.assertTrue(result["_mcp_mutation"])
+        self.assertEqual(result["response"]["outcome"]["class"], "unknown")
+        delegation.bind_preview.assert_called_once()
+        facade.confirm_delegated.assert_called_once_with(
+            {"preview_id": "p"},
+            delegated_ref="opaque-ref",
         )
-        with self.assertRaises(RuntimeError) as rejected:
+        client.prepare_request.assert_not_called()
+        client.send.assert_not_called()
+
+        with self.assertRaisesRegex(ValueError, "delegated authorization"):
             boundary.call(
                 module="FUTURES",
                 endpoint_key="transaction.place_order",
                 body={"symbol": "BTCUSDT"},
                 mutating=True,
             )
-        self.assertEqual(type(rejected.exception).__name__, "OfficialRequestRejected")
-        self.assertEqual(rejected.exception.error_code, "40012")
-        self.assertEqual(rejected.exception.error_message, "batch order rejected")
-
-        runtime = runtime_module.OfficialAutoTradeRuntime(
-            profile_name="strategy-live",
-            api=boundary,
-            risk_aggregator=Mock(),
-        )
-        released = runtime.submitter(
-            "transaction.place_orders_batch",
-            [
-                {
-                    "leg_id": "leg-0",
-                    "client_order_id": "client-0",
-                    "order": {
-                        "symbol": "BTCUSDT",
-                        "newClientOrderId": "client-0",
-                    },
-                },
-                {
-                    "leg_id": "leg-1",
-                    "client_order_id": "client-1",
-                    "order": {
-                        "symbol": "BTCUSDT",
-                        "newClientOrderId": "client-1",
-                    },
-                },
-            ],
-        )
-        self.assertEqual([item["status"] for item in released], ["RELEASED", "RELEASED"])
-        self.assertEqual(
-            [item["client_order_id"] for item in released],
-            ["client-0", "client-1"],
-        )
-        self.assertTrue(all(item["errorCode"] == "40012" for item in released))
-        self.assertTrue(
-            all(item["errorMessage"] == "batch order rejected" for item in released)
-        )
-
-        boundary._client = lambda module, private: (
-            api_module,
-            FakeClient(
-                {
-                    "ok": False,
-                    "status": None,
-                    "error": {"message": "connection reset"},
-                }
-            ),
-        )
-        with self.assertRaises(RuntimeError) as uncertain:
-            boundary.call(
-                module="FUTURES",
-                endpoint_key="transaction.place_order",
-                body={"symbol": "BTCUSDT"},
-                mutating=True,
-            )
-        self.assertEqual(type(uncertain.exception).__name__, "OfficialRequestUncertain")
 
     def test_official_boundary_preserves_read_error_code_for_spot_history_fallback(self) -> None:
         import weex_auto_trade_runtime as runtime_module
@@ -3948,10 +3909,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
         )
 
         class FakeClient:
-            def prepare_request(self, selected, *, query, body):
-                return {"query": query, "body": body}
-
-            def send(self, prepared):
+            def read_endpoint(self, *, endpoint, query, body):
                 return {
                     "ok": False,
                     "status": 400,
@@ -3988,10 +3946,35 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                     ],
                 },
                 ("SPOT", "spot.order.bulk_order"): {
-                    "orderList": [
-                        {"clientOrderId": "client-a", "orderId": "order-a"},
-                        {"clientOrderId": "client-b", "orderId": "order-b"},
-                    ]
+                    "_mcp_mutation": True,
+                    "response": {
+                        "ok": True,
+                        "data": {
+                            "orderList": [
+                                {"clientOrderId": "client-a", "orderId": "order-a"},
+                                {"clientOrderId": "client-b", "orderId": "order-b"},
+                            ]
+                        },
+                        "outcome": {
+                            "class": "accepted",
+                            "write_attempted": True,
+                            "action": "batch_order",
+                            "items": [
+                                {
+                                    "class": "accepted",
+                                    "write_attempted": True,
+                                    "action": "batch_order",
+                                    "client_order_id": "client-a",
+                                },
+                                {
+                                    "class": "accepted",
+                                    "write_attempted": True,
+                                    "action": "batch_order",
+                                    "client_order_id": "client-b",
+                                },
+                            ],
+                        },
+                    },
                 },
             }
         )
@@ -4047,6 +4030,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                     },
                 },
             ],
+            Mock(),
         )
         submit_call = api.calls[-1]
         self.assertTrue(submit_call["mutating"])
@@ -5057,7 +5041,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
                     ),
                 }
 
-            def submitter(operation_key, prepared_legs):
+            def submitter(operation_key, prepared_legs, delegation):
                 submit_calls.append((operation_key, prepared_legs))
                 return [
                     {
@@ -5431,7 +5415,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
             )
             submit_calls = []
 
-            def submitter(operation_key, prepared_legs):
+            def submitter(operation_key, prepared_legs, delegation):
                 submit_calls.append((operation_key, prepared_legs))
                 return [
                     {
@@ -5687,7 +5671,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
             )
             submitted = []
 
-            def submitter(operation_key, prepared_legs):
+            def submitter(operation_key, prepared_legs, delegation):
                 submitted.append(prepared_legs)
                 outgoing = prepared_legs[0]["order"]
                 self.assertNotEqual(outgoing["clientAlgoId"], "caller-controlled-id")
@@ -5914,7 +5898,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
             )
             submitted = []
 
-            def submitter(operation_key, prepared_legs):
+            def submitter(operation_key, prepared_legs, delegation):
                 submitted.append(prepared_legs)
                 outgoing = prepared_legs[0]["order"]
                 self.assertTrue(outgoing["clientAlgoId"].startswith("wxa_"))
@@ -6049,7 +6033,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
                 restore_enabled_kill_switch.set()
                 return original_enable_kill_switch(now_text)
 
-            def submitter(operation_key, prepared_legs):
+            def submitter(operation_key, prepared_legs, delegation):
                 submit_entered.set()
                 if not allow_submit_to_finish.wait(timeout=3):
                     raise RuntimeError("test did not release the submitter")
@@ -6255,7 +6239,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
                     "timestamp_ms": 1_700_000_000_000,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {"clientOrderId": legs[0]["client_order_id"], "success": False}
                 ],
                 confirm_live=True,
@@ -6305,7 +6289,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
                     "timestamp_ms": 1_700_000_000_000,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {
                         "clientOrderId": legs[0]["client_order_id"],
                         "success": True,
@@ -6367,7 +6351,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
                     "timestamp_ms": 1_700_000_000_000,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {
                         "clientOrderId": legs[0]["client_order_id"],
                         "success": True,
@@ -6470,7 +6454,7 @@ class AutoTradeGuardIntegrationTests(unittest.TestCase):
                     "timestamp_ms": 1_700_000_000_000,
                     "symbol": complete_spot_symbol_facts(),
                 },
-                submitter=lambda operation_key, legs: [
+                submitter=lambda operation_key, legs, delegation: [
                     {
                         "leg_id": leg["leg_id"],
                         "status": "ACCEPTED",

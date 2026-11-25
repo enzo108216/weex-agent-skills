@@ -1052,7 +1052,20 @@ def _submit_authorized_order_unlocked(
         }
 
     try:
-        submission_results = submitter(operation_key, prepared)
+        from weex_mcp_auto_trade import AutoTradeDelegation
+
+        delegation = AutoTradeDelegation(
+            state=state,
+            authorization_id=authorization_id,
+            strategy_id=strategy_id,
+            submission_group_id=str(group["submission_group_id"]),
+            request_fingerprint=request_fingerprint,
+            usage_ids=[str(item["usage_id"]) for item in prepared],
+            client_order_ids=[str(item["client_order_id"]) for item in prepared],
+            expected_orders=[dict(item["order"]) for item in prepared],
+            operation_key=operation_key,
+        )
+        submission_results = submitter(operation_key, prepared, delegation)
         if not isinstance(submission_results, list):
             raise RuntimeError("submission result is not a leg array")
     except Exception:
@@ -2037,7 +2050,7 @@ def _submit_live_auto_fallback_order(intent: dict[str, Any]) -> dict[str, Any]:
 
     runtime = OfficialAutoTradeRuntime(profile_name=str(intent["profile_name"]))
     try:
-        results = runtime.submitter(operation_key, prepared)
+        results = runtime.manual_submitter(operation_key, prepared)
     except OfficialRequestUncertain:
         return {
             "ok": False,

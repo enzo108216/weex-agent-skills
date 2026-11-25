@@ -2311,6 +2311,140 @@ class AutoTradeState:
         except (InvalidOperation, OSError, sqlite3.Error) as exc:
             raise StateConflictError("unable to prepare automated-trading submission group") from exc
 
+    def read_delegated_submission_group(
+        self,
+        *,
+        authorization_id: str,
+        submission_group_id: str,
+        request_fingerprint: str,
+        usage_ids: list[str],
+        client_order_ids: list[str],
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Read and verify one reserved group for an MCP delegated authorization.
+
+        This path is deliberately SELECT-only. It must not acquire the restore
+        operation lock, open a write transaction, or mutate expiry state.
+        """
+        authorization_id = _required_text(authorization_id, "authorization_id")
+        submission_group_id = _required_text(
+            submission_group_id, "submission_group_id"
+        )
+        request_fingerprint = _required_sha256(
+            request_fingerprint, "request_fingerprint"
+        )
+        if (
+            not isinstance(usage_ids, list)
+            or not usage_ids
+            or not isinstance(client_order_ids, list)
+            or len(client_order_ids) != len(usage_ids)
+        ):
+            raise ValueError("delegated usage and client-order IDs must be parallel arrays")
+        normalized_usage_ids = [
+            _required_text(value, "usage_id") for value in usage_ids
+        ]
+        normalized_client_ids = [
+            _required_text(value, "client_order_id") for value in client_order_ids
+        ]
+        if (
+            len(set(normalized_usage_ids)) != len(normalized_usage_ids)
+            or len(set(normalized_client_ids)) != len(normalized_client_ids)
+        ):
+            raise ValueError("delegated usage and client-order IDs must be unique")
+        expected_clients = dict(zip(normalized_usage_ids, normalized_client_ids))
+        current = _coerce_now(now)
+        current_text = _format_time(current)
+        self._assert_automatic_trading_enabled()
+
+        try:
+            with closing(self._connect()) as connection:
+                authorization = connection.execute(
+                    "SELECT * FROM authorizations WHERE authorization_id = ?",
+                    (authorization_id,),
+                ).fetchone()
+                if authorization is None:
+                    raise ValueError("UNKNOWN_AUTHORIZATION")
+                strategy = connection.execute(
+                    "SELECT * FROM strategies WHERE strategy_id = ?",
+                    (authorization["strategy_id"],),
+                ).fetchone()
+                if strategy is None:
+                    raise StateConflictError("delegated authorization has no strategy")
+                if strategy["status"] != "ACTIVE":
+                    raise ValueError("STRATEGY_RETIRED")
+                if (
+                    authorization["owner_key"] != strategy["owner_key"]
+                    or authorization["status"] != "ACTIVE"
+                    or authorization["starts_at"] > current_text
+                    or authorization["expires_at"] <= current_text
+                ):
+                    raise ValueError("AUTHORIZATION_NOT_ACTIVE")
+                if _has_deprecated_expanded_scope(authorization):
+                    raise ValueError("AUTHORIZATION_SCOPE_REAUTHORIZATION_REQUIRED")
+
+                usages = connection.execute(
+                    """
+                    SELECT * FROM authorization_usage
+                    WHERE authorization_id = ? AND submission_group_id = ?
+                    ORDER BY leg_index, usage_id
+                    """,
+                    (authorization_id, submission_group_id),
+                ).fetchall()
+                if len(usages) != len(expected_clients):
+                    raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+                actual_usage_ids = {row["usage_id"] for row in usages}
+                if actual_usage_ids != set(expected_clients):
+                    raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+
+                ordered_usage_ids: list[str] = []
+                ordered_client_ids: list[str] = []
+                for usage in usages:
+                    if (
+                        usage["strategy_id"] != authorization["strategy_id"]
+                        or usage["owner_key"] != authorization["owner_key"]
+                        or usage["request_fingerprint"] != request_fingerprint
+                        or usage["status"] != "RESERVED"
+                    ):
+                        raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+                    order = connection.execute(
+                        "SELECT * FROM auto_trade_orders WHERE usage_id = ?",
+                        (usage["usage_id"],),
+                    ).fetchone()
+                    if order is None or any(
+                        (
+                            order["authorization_id"] != authorization_id,
+                            order["strategy_id"] != authorization["strategy_id"],
+                            order["submission_group_id"] != submission_group_id,
+                            order["leg_id"] != usage["leg_id"],
+                            order["client_order_id"]
+                            != expected_clients[usage["usage_id"]],
+                            order["weex_order_id"] is not None,
+                        )
+                    ):
+                        raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+                    ordered_usage_ids.append(usage["usage_id"])
+                    ordered_client_ids.append(order["client_order_id"])
+
+                expires_at = int(_parse_time(authorization["expires_at"]).timestamp())
+                return {
+                    "authorization_id": authorization_id,
+                    "strategy_id": authorization["strategy_id"],
+                    "profile_id": strategy["profile_id"],
+                    "scope_signature": authorization["scope_signature"],
+                    "submission_group_id": submission_group_id,
+                    "request_fingerprint": request_fingerprint,
+                    "usage_count": len(usages),
+                    "usage_ids": ordered_usage_ids,
+                    "client_order_ids": ordered_client_ids,
+                    "expires_at": expires_at,
+                }
+        except (ValueError, StateConflictError):
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise StateConflictError(
+                "unable to read delegated automated-trading submission"
+            ) from exc
+
     def get_submission_group_by_idempotency(
         self,
         *,

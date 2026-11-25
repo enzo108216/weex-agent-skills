@@ -200,6 +200,23 @@
         "McpPartnerFacade"
       ]
     },
+    "scripts/weex_mcp_auto_trade.py": {
+      "role": "One-shot in-process delegated authorization adapter that binds a reserved Auto submission group to one MCP Trade confirm and read-only state recheck.",
+      "when": [
+        "authorizing an automated MCP Trade confirm after quota reservation commits",
+        "binding profile, operation, preview, usage, group, and client-order identities to an opaque one-time ref",
+        "projecting safe delegated authorization audit metadata without persisting refs or credentials"
+      ],
+      "depends_on": [
+        "scripts/weex_auto_trade_state.py",
+        "scripts/weex_mcp_gateway.py",
+        "scripts/weex_mcp_trade_compat.py"
+      ],
+      "surface": [
+        "AutoTradeDelegation",
+        "AutoTradeDelegationError"
+      ]
+    },
     "scripts/weex_profile_store.py": {
       "role": "Shared profile metadata and application-vault backend, including the encrypted Local MCP approval key lifecycle.",
       "when": [
@@ -470,6 +487,7 @@
         "AutoTradeState",
         "StateConflictError",
         "prepare_submission_group",
+        "read_delegated_submission_group",
         "reserve_usage",
         "settle_usage",
         "resolve_uncertain_usage",

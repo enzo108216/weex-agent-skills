@@ -1084,7 +1084,7 @@ class TradeGuardTests(unittest.TestCase):
             "auto_fallback_orders": orders,
         }
         runtime = mock.Mock()
-        runtime.submitter.return_value = [
+        runtime.manual_submitter.return_value = [
             {"leg_id": "leg-0", "status": "ACCEPTED", "orderId": "batch-1"},
             {"leg_id": "leg-1", "status": "ACCEPTED", "orderId": "batch-2"},
         ]
@@ -1092,15 +1092,15 @@ class TradeGuardTests(unittest.TestCase):
             accepted = trade_guard._submit_live_auto_fallback_order(intent)
 
         self.assertEqual(accepted["status"], "ACCEPTED")
-        runtime.submitter.assert_called_once()
-        operation_key, prepared = runtime.submitter.call_args.args
+        runtime.manual_submitter.assert_called_once()
+        operation_key, prepared = runtime.manual_submitter.call_args.args
         self.assertEqual(operation_key, "spot.order.bulk_order")
         self.assertEqual([item["order"]["symbol"] for item in prepared], ["BTCUSDT", "BTCUSDT"])
         client_ids = [item["order"]["newClientOrderId"] for item in prepared]
         self.assertEqual(len(set(client_ids)), 2)
 
         uncertain_runtime = mock.Mock()
-        uncertain_runtime.submitter.side_effect = runtime_module.OfficialRequestUncertain(
+        uncertain_runtime.manual_submitter.side_effect = runtime_module.OfficialRequestUncertain(
             "injected uncertain result"
         )
         with mock.patch.object(
@@ -1110,7 +1110,7 @@ class TradeGuardTests(unittest.TestCase):
 
         self.assertEqual(uncertain["status"], "REVIEW_REQUIRED")
         self.assertEqual(uncertain["error"]["code"], "SUBMISSION_STATE_UNCERTAIN")
-        uncertain_runtime.submitter.assert_called_once()
+        uncertain_runtime.manual_submitter.assert_called_once()
 
     def test_confirm_order_executes_demo_order_with_matching_demo_flag(self) -> None:
         args = mock.Mock(

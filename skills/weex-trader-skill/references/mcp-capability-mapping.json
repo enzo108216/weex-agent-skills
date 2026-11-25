@@ -96,6 +96,17 @@
       "test": "tests/test_weex_mcp_partner_compat.py",
       "direct_rest_fallback": false,
       "automatic_retry": false
+    },
+    "t8_auto_delegated": {
+      "status": "golden_verified",
+      "operations": 6,
+      "manual_trade_matrix_sha256": "d707c666dda2bbe315e68319b336bedd79505f5f76ca2a8758182e446762ff24",
+      "tests": [
+        "tests/test_weex_mcp_auto_trade.py",
+        "tests/test_weex_auto_delegated_state.py"
+      ],
+      "direct_rest_fallback": false,
+      "monitor_delegated_authorization": false
     }
   },
   "inventory_counts": {

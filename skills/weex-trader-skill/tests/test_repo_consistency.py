@@ -50,6 +50,7 @@ MCP_GATEWAY = ROOT / "scripts" / "weex_mcp_gateway.py"
 MCP_READ_FACADE = ROOT / "scripts" / "weex_mcp_read_compat.py"
 MCP_TRADE_FACADE = ROOT / "scripts" / "weex_mcp_trade_compat.py"
 MCP_PARTNER_FACADE = ROOT / "scripts" / "weex_mcp_partner_compat.py"
+MCP_AUTO_TRADE_AUTHORIZER = ROOT / "scripts" / "weex_mcp_auto_trade.py"
 SPOT_API_DEFINITIONS = ROOT / "references" / "spot-api-definitions.json"
 SPOT_API_DEFINITIONS_MD = ROOT / "references" / "spot-api-definitions.md"
 CONTRACT_API_SCRIPT = ROOT / "scripts" / "weex_contract_api.py"
@@ -188,12 +189,14 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertTrue(MCP_READ_FACADE.exists())
         self.assertTrue(MCP_TRADE_FACADE.exists())
         self.assertTrue(MCP_PARTNER_FACADE.exists())
+        self.assertTrue(MCP_AUTO_TRADE_AUTHORIZER.exists())
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
         gateway_path = "scripts/weex_mcp_gateway.py"
         read_facade_path = "scripts/weex_mcp_read_compat.py"
         trade_facade_path = "scripts/weex_mcp_trade_compat.py"
         partner_facade_path = "scripts/weex_mcp_partner_compat.py"
+        auto_authorizer_path = "scripts/weex_mcp_auto_trade.py"
 
         self.assertEqual(
             manifest["routing"]["compatibility"]["local_mcp_gateway"],
@@ -211,11 +214,16 @@ class RepoConsistencyTests(unittest.TestCase):
             manifest["routing"]["compatibility"]["mcp_partner_facade"],
             partner_facade_path,
         )
+        self.assertEqual(
+            manifest["routing"]["compatibility"]["mcp_auto_trade_authorizer"],
+            auto_authorizer_path,
+        )
         for path in (
             gateway_path,
             read_facade_path,
             trade_facade_path,
             partner_facade_path,
+            auto_authorizer_path,
             "scripts/weex_profile_store.py",
             "scripts/weex_agent_state.py",
             "scripts/weex_runtime_setup.py",

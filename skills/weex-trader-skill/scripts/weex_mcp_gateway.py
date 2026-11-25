@@ -46,6 +46,13 @@ _CALLER_FORBIDDEN_ARGUMENTS = frozenset({"credential", "endpoint", "path", "meth
 _CREDENTIAL_FINGERPRINT_DOMAIN = b"weex-trader-vault-credential-v1\0"
 _APPROVAL_SECRET_DOMAIN = b"weex-trader-local-mcp-approval-v1\0"
 _FINGERPRINT_KEY_DOMAIN = b"weex-trader-local-mcp-fingerprint-v1\0"
+_DELEGATED_AUTHORIZATION_CODES = frozenset(
+    {
+        "execution_authorization_invalid",
+        "execution_authorization_denied",
+        "execution_authorization_expired",
+    }
+)
 
 
 class McpGatewayError(RuntimeError):
@@ -65,6 +72,8 @@ class _McpRuntime:
     TenantContext: Any
     ResolvedWeexCredential: Any
     SecretProviderError: Any
+    ExecutionAuthorizationError: Any
+    VerifiedExecutionAuthorization: Any
 
 
 def _load_default_runtime(expected_version: str) -> _McpRuntime:
@@ -85,6 +94,9 @@ def _load_default_runtime(expected_version: str) -> _McpRuntime:
         settings_module = importlib.import_module("weex_mcp.settings")
         tenant_module = importlib.import_module("weex_mcp.tenant_context")
         secret_module = importlib.import_module("weex_mcp.secret_provider")
+        authorization_module = importlib.import_module(
+            "weex_mcp.execution_authorization"
+        )
         runtime = _McpRuntime(
             package_version=installed_version,
             build_local_user_service=local_module.build_local_user_service,
@@ -92,6 +104,8 @@ def _load_default_runtime(expected_version: str) -> _McpRuntime:
             TenantContext=tenant_module.TenantContext,
             ResolvedWeexCredential=secret_module.ResolvedWeexCredential,
             SecretProviderError=secret_module.SecretProviderError,
+            ExecutionAuthorizationError=authorization_module.ExecutionAuthorizationError,
+            VerifiedExecutionAuthorization=authorization_module.VerifiedExecutionAuthorization,
         )
     except Exception as exc:
         raise McpGatewayError(
@@ -215,6 +229,8 @@ def _runtime_symbols_are_valid(runtime: Any) -> bool:
         "TenantContext",
         "ResolvedWeexCredential",
         "SecretProviderError",
+        "ExecutionAuthorizationError",
+        "VerifiedExecutionAuthorization",
     )
     return all(getattr(runtime, name, None) is not None for name in required)
 
@@ -386,6 +402,111 @@ class _PublicOnlySecretProvider:
         )
 
 
+class _CallbackExecutionAuthorizer:
+    """Bridge a neutral Trader callback to the installed MCP authorization SPI."""
+
+    def __init__(self, *, callback: Callable[[dict[str, Any]], dict[str, Any]], runtime: Any) -> None:
+        self._callback = callback
+        self._runtime = runtime
+
+    def _error(self, code: str) -> Exception:
+        messages = {
+            "execution_authorization_invalid": "Delegated execution authorization is invalid.",
+            "execution_authorization_denied": "Delegated execution authorization was denied.",
+            "execution_authorization_expired": "Delegated execution authorization has expired.",
+        }
+        return self._runtime.ExecutionAuthorizationError(code, messages[code])
+
+    def authorize(
+        self,
+        *,
+        context: Any,
+        credential_fingerprint: str,
+        execution: Any,
+        delegated_ref: dict[str, Any],
+    ) -> Any:
+        try:
+            payload = _delegated_authorization_payload(
+                context=context,
+                credential_fingerprint=credential_fingerprint,
+                execution=execution,
+                delegated_ref=delegated_ref,
+            )
+        except (TypeError, ValueError):
+            raise self._error("execution_authorization_invalid") from None
+        try:
+            result = self._callback(payload)
+        except Exception as exc:
+            raw_code = getattr(exc, "code", None)
+            code = (
+                raw_code
+                if isinstance(raw_code, str)
+                and raw_code in _DELEGATED_AUTHORIZATION_CODES
+                else "execution_authorization_denied"
+            )
+            raise self._error(code) from None
+        if not isinstance(result, dict):
+            raise self._error("execution_authorization_invalid")
+        try:
+            return self._runtime.VerifiedExecutionAuthorization(
+                authorization_id=result["authorization_id"],
+                scope_fingerprint=result["scope_fingerprint"],
+                expires_at=result["expires_at"],
+                audit_metadata=result["audit_metadata"],
+            )
+        except (KeyError, TypeError, ValueError):
+            raise self._error("execution_authorization_invalid") from None
+
+
+def _delegated_authorization_payload(
+    *,
+    context: Any,
+    credential_fingerprint: Any,
+    execution: Any,
+    delegated_ref: Any,
+) -> dict[str, Any]:
+    context_payload = {
+        "tenant_id": getattr(context, "tenant_id", None),
+        "user_id": getattr(context, "user_id", None),
+        "session_id": getattr(context, "session_id", None),
+        "request_id": getattr(context, "request_id", None),
+    }
+    if not all(isinstance(value, str) and value for value in context_payload.values()):
+        raise ValueError("authorization context is invalid")
+    if not isinstance(credential_fingerprint, str) or not credential_fingerprint:
+        raise ValueError("credential fingerprint is invalid")
+    if (
+        not isinstance(delegated_ref, dict)
+        or set(delegated_ref) != {"ref"}
+        or not isinstance(delegated_ref.get("ref"), str)
+        or not delegated_ref["ref"]
+    ):
+        raise ValueError("delegated ref is invalid")
+    execution_payload = {
+        "action": getattr(execution, "action", None),
+        "market": getattr(execution, "market", None),
+        "trading_mode": getattr(execution, "trading_mode", None),
+        "summary": getattr(execution, "summary", None),
+        "risk": getattr(execution, "risk", None),
+        "risk_signature": getattr(execution, "risk_signature", None),
+    }
+    if (
+        not all(
+            isinstance(execution_payload[field], str) and execution_payload[field]
+            for field in ("action", "market", "trading_mode", "risk_signature")
+        )
+        or not isinstance(execution_payload["summary"], dict)
+        or not isinstance(execution_payload["risk"], dict)
+    ):
+        raise ValueError("execution authorization payload is invalid")
+    return {
+        "context": context_payload,
+        "credential_fingerprint": credential_fingerprint,
+        "execution": execution_payload,
+        "delegated_ref": dict(delegated_ref),
+    }
+
+
 class LocalMcpGateway:
     """One immutable Local User composition for caller-resolved effective routes.
 
@@ -409,6 +530,7 @@ class LocalMcpGateway:
         credential_loader: Callable[[str], Any] | None = None,
         approval_key_loader: Callable[[], str] | None = None,
         approval_key_status_loader: Callable[[], dict[str, Any]] | None = None,
+        delegated_authorizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         if profile_id is not None and (not isinstance(profile_id, str) or not profile_id):
             raise ValueError("profile_id must be a non-empty string or None.")
@@ -429,6 +551,10 @@ class LocalMcpGateway:
             raise ValueError("request_locale must be a non-empty string.")
         if trade_enabled and profile_id is None:
             raise McpGatewayError("profile_required", "A saved profile is required for private MCP tools.")
+        if delegated_authorizer is not None and not callable(delegated_authorizer):
+            raise ValueError("delegated_authorizer must be callable or None.")
+        if delegated_authorizer is not None and not trade_enabled:
+            raise ValueError("delegated_authorizer requires trade_enabled=True.")
 
         try:
             mapping = (mapping_loader or _load_default_mapping)()
@@ -533,9 +659,17 @@ class LocalMcpGateway:
                 partner_timeout_seconds=self.timeout_seconds,
                 request_locale=request_locale,
             )
+            service_arguments: dict[str, Any] = {
+                "settings": settings,
+                "secret_provider": secret_provider,
+            }
+            if delegated_authorizer is not None:
+                service_arguments["execution_authorizer"] = _CallbackExecutionAuthorizer(
+                    callback=delegated_authorizer,
+                    runtime=runtime,
+                )
             self._service = runtime.build_local_user_service(
-                settings=settings,
-                secret_provider=secret_provider,
+                **service_arguments,
             )
         except McpGatewayError:
             raise

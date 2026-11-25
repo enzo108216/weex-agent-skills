@@ -9,6 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -599,6 +600,63 @@ class McpTradeCompatTests(unittest.TestCase):
                 self.assertEqual(symbol_gateway.calls[0][1]["scope"], "symbol")
                 self.assertEqual(symbol_gateway.calls[0][1]["symbol"], "BTCUSDT")
                 self.assertNotIn("acknowledge_all_symbols", symbol_gateway.calls[0][1])
+
+    def test_delegated_confirm_injects_authorizer_and_never_sets_manual_confirmation(self) -> None:
+        entry = mapping_entry(self.mapping, "spot.order.place_order")
+        gateway = FakeGateway(
+            [
+                {"ok": True, "preview_id": "p", "expires_at": 10, "summary": {}, "risk": {}},
+                {
+                    "ok": True,
+                    "result": {"raw": {"orderId": "o-1"}},
+                    "outcome": {
+                        "class": "accepted",
+                        "write_attempted": True,
+                        "action": "order",
+                        "client_order_id": "stable-id-1",
+                    },
+                },
+            ]
+        )
+        captured: dict[str, object] = {}
+        authorizer = mock.Mock()
+
+        def gateway_factory(**kwargs):
+            captured.update(kwargs)
+            return gateway
+
+        ids = iter(("stable-id-1",))
+        facade = self.trade.McpTradeFacade(
+            settings=self.settings,
+            gateway_factory=gateway_factory,
+            mapping_loader=lambda: copy.deepcopy(self.mapping),
+            client_id_factory=lambda: next(ids),
+            delegated_authorizer=authorizer,
+        )
+        preview = facade.preview(
+            product="spot",
+            endpoint=endpoint_from_mapping(entry),
+            query={},
+            body={
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "1",
+            },
+        )
+        confirmed = facade.confirm_delegated(
+            preview["preview"],
+            delegated_ref="opaque-ref",
+        )
+
+        self.assertTrue(confirmed["ok"])
+        self.assertIs(captured["delegated_authorizer"], authorizer)
+        confirm_arguments = gateway.calls[1][1]
+        self.assertEqual(
+            confirm_arguments["delegated_authorization"],
+            {"ref": "opaque-ref"},
+        )
+        self.assertNotIn("confirmation", confirm_arguments)
 
     def test_definitive_rejection_and_not_sent_are_not_review_required(self) -> None:
         entry = mapping_entry(self.mapping, "spot.order.cancel_order")

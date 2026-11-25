@@ -110,11 +110,13 @@ class McpTradeFacade:
         gateway_factory: Callable[..., Any] = LocalMcpGateway,
         mapping_loader: Callable[[], dict[str, Any]] = _load_default_mapping,
         client_id_factory: Callable[[], str] = _default_client_id,
+        delegated_authorizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.settings = settings
         self._gateway_factory = gateway_factory
         self._gateway: Any | None = None
         self._client_id_factory = client_id_factory
+        self._delegated_authorizer = delegated_authorizer
         try:
             mapping = mapping_loader()
         except Exception as exc:
@@ -133,6 +135,7 @@ class McpTradeFacade:
                 trade_enabled=True,
                 timeout_seconds=self.settings.timeout_seconds,
                 request_locale=self.settings.locale,
+                delegated_authorizer=self._delegated_authorizer,
             )
         return self._gateway
 
@@ -193,12 +196,41 @@ class McpTradeFacade:
         }
 
     def confirm(self, preview: Mapping[str, Any]) -> dict[str, Any]:
+        return self._confirm(preview, delegated_ref=None)
+
+    def confirm_delegated(
+        self,
+        preview: Mapping[str, Any],
+        *,
+        delegated_ref: str,
+    ) -> dict[str, Any]:
+        if not isinstance(delegated_ref, str) or not delegated_ref:
+            raise McpTradeCompatibilityError(
+                "execution_authorization_invalid",
+                "Delegated authorization ref must be a non-empty string.",
+            )
+        if self._delegated_authorizer is None:
+            raise McpTradeCompatibilityError(
+                "execution_authorizer_unconfigured",
+                "Delegated execution authorizer is not configured.",
+            )
+        return self._confirm(preview, delegated_ref=delegated_ref)
+
+    def _confirm(
+        self,
+        preview: Mapping[str, Any],
+        *,
+        delegated_ref: str | None,
+    ) -> dict[str, Any]:
         operation, arguments = self._validate_preview_record(preview)
         confirm_arguments = {
             **arguments,
             "preview_id": preview["preview_id"],
-            "confirmation": {"accepted": True},
         }
+        if delegated_ref is None:
+            confirm_arguments["confirmation"] = {"accepted": True}
+        else:
+            confirm_arguments["delegated_authorization"] = {"ref": delegated_ref}
         try:
             payload = self._get_gateway().call_typed_tool(
                 str(operation["target"]["confirm_tool"]),

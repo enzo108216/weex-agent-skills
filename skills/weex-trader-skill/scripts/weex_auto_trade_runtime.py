@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 import weex_trade_risk_review as risk_review
+from weex_mcp_trade_compat import McpTradeFacade
 from weex_trade_data_aggregator import TradeDataAggregator
 
 
@@ -83,6 +85,14 @@ class OfficialApiBoundary:
                 api_secret=None,
                 api_passphrase=None,
                 profile_name=profile.name if private else None,
+                mcp_read_settings_factory=lambda: api_module.resolve_local_mcp_read_settings(
+                    profile=profile,
+                    active_product="spot",
+                ),
+                mcp_trade_settings_factory=lambda: api_module.resolve_local_mcp_trade_settings(
+                    profile=profile,
+                    active_product="spot",
+                ),
             )
         elif module == "FUTURES":
             import weex_contract_api as api_module
@@ -110,6 +120,14 @@ class OfficialApiBoundary:
                 api_secret=None,
                 api_passphrase=None,
                 profile_name=profile.name if private else None,
+                mcp_read_settings_factory=lambda: api_module.resolve_local_mcp_read_settings(
+                    profile=profile,
+                    active_product="contract",
+                ),
+                mcp_trade_settings_factory=lambda: api_module.resolve_local_mcp_trade_settings(
+                    profile=profile,
+                    active_product="contract",
+                ),
             )
         else:
             raise ValueError("unsupported official product module")
@@ -125,6 +143,7 @@ class OfficialApiBoundary:
         body: dict[str, Any] | None = None,
         public: bool = False,
         mutating: bool = False,
+        delegation: Any | None = None,
     ) -> Any:
         if public and mutating:
             raise ValueError("mutating requests cannot use a public client")
@@ -141,8 +160,54 @@ class OfficialApiBoundary:
             raise ValueError("official endpoint purpose does not match the requested boundary")
         if module == "FUTURES":
             api_module.validate_endpoint_trading_mode(endpoint, "live")
-        prepared = client.prepare_request(endpoint, query=query or {}, body=body or {})
-        response = client.send(prepared)
+        if mutating:
+            if delegation is None:
+                raise ValueError("delegated authorization is required for automated writes")
+            settings_factory = getattr(client, "mcp_trade_settings_factory", None)
+            if not callable(settings_factory):
+                raise ValueError("MCP Trade settings are unavailable")
+            settings = settings_factory()
+            facade = McpTradeFacade(
+                settings=settings,
+                delegated_authorizer=delegation.authorize,
+            )
+            preview = facade.preview(
+                product="spot" if module == "SPOT" else "contract",
+                endpoint=endpoint,
+                query=query or {},
+                body=body or {},
+            )
+            if preview.get("ok") is not True:
+                return {
+                    "_mcp_mutation": True,
+                    "response": {
+                        **preview,
+                        "outcome": {
+                            "class": "not_sent",
+                            "write_attempted": False,
+                            "action": _operation_action(endpoint_key),
+                        },
+                        "trade_status": "NOT_SENT",
+                        "review_required": False,
+                    },
+                }
+            delegation.bind_preview(
+                profile_id=settings.profile_id,
+                preview=preview["preview"],
+                summary=preview["summary"],
+                risk=preview["risk"],
+            )
+            response = facade.confirm_delegated(
+                preview["preview"],
+                delegated_ref=delegation.delegated_ref,
+            )
+            return {"_mcp_mutation": True, "response": response}
+
+        response = client.read_endpoint(
+            endpoint=endpoint,
+            query=query or {},
+            body=body or {},
+        )
         if not response.get("ok"):
             if mutating:
                 status = response.get("status")
@@ -376,51 +441,46 @@ class OfficialAutoTradeRuntime:
         self,
         operation_key: str,
         prepared_legs: list[dict[str, Any]],
+        delegation: Any,
     ) -> list[dict[str, Any]]:
-        if not prepared_legs:
-            raise ValueError("prepared legs are required")
-        module = _operation_module(operation_key)
-        orders = [_required_mapping(item.get("order"), "order") for item in prepared_legs]
-        if operation_key == "spot.order.bulk_order":
-            symbol = _required_text(orders[0].get("symbol"), "symbol").upper()
-            body = {
-                "symbol": symbol,
-                "orderList": [
-                    {key: value for key, value in order.items() if key != "symbol"}
-                    for order in orders
-                ],
-            }
-        elif operation_key == "transaction.place_orders_batch":
-            body = {"batchOrders": orders}
-        else:
-            if len(orders) != 1:
-                raise ValueError("single official operation received multiple legs")
-            body = orders[0]
-        try:
-            payload = self.api.call(
-                module=module,
-                endpoint_key=operation_key,
-                query={},
-                body=body,
-                mutating=True,
-            )
-        except OfficialRequestRejected as exc:
-            results = []
-            for item in prepared_legs:
-                result = {
-                    "leg_id": item["leg_id"],
-                    "client_order_id": item["client_order_id"],
-                    "status": "RELEASED",
-                    "success": False,
-                    "errorCode": exc.error_code,
-                }
-                if exc.error_message is not None:
-                    result["errorMessage"] = exc.error_message
-                results.append(result)
-            return results
-        return _normalize_submission_results(
+        module, body = _submission_request(operation_key, prepared_legs)
+        mutation = self.api.call(
+            module=module,
+            endpoint_key=operation_key,
+            query={},
+            body=body,
+            mutating=True,
+            delegation=delegation,
+        )
+        if not isinstance(mutation, dict) or mutation.get("_mcp_mutation") is not True:
+            raise OfficialRequestUncertain("MCP mutation result envelope is invalid")
+        response = mutation.get("response")
+        if not isinstance(response, dict):
+            raise OfficialRequestUncertain("MCP mutation response is invalid")
+        return _normalize_mcp_submission_results(
             operation_key=operation_key,
-            payload=payload,
+            response=response,
+            prepared_legs=prepared_legs,
+        )
+
+    def manual_submitter(
+        self,
+        operation_key: str,
+        prepared_legs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Use the T6 interactive confirmation boundary for a user-confirmed fallback."""
+
+        module, body = _submission_request(operation_key, prepared_legs)
+        api_module, client = self.api._client(module, private=True)
+        endpoint = api_module.ENDPOINTS.get(operation_key)
+        if endpoint is None:
+            raise ValueError("endpoint is not in the bundled official catalog")
+        response = client.trade_endpoint(endpoint=endpoint, query={}, body=body)
+        if not isinstance(response, dict):
+            raise OfficialRequestUncertain("manual MCP mutation response is invalid")
+        return _normalize_mcp_submission_results(
+            operation_key=operation_key,
+            response=response,
             prepared_legs=prepared_legs,
         )
 
@@ -967,7 +1027,7 @@ def _normalize_submission_results(
             result["client_order_id"] = str(client_id)
         if not is_batch and len(prepared_legs) == 1:
             result["leg_id"] = prepared_legs[0]["leg_id"]
-        order_id = _pick(result, "orderId", "weex_order_id")
+        order_id = _pick(result, "orderId", "weex_order_id", "algoId")
         error_code = _pick(result, "errorCode", "error_code", "rejectionCode")
         error_message = _pick(
             result, "errorMessage", "error_message", "rejectionMessage", "message"
@@ -981,6 +1041,7 @@ def _normalize_submission_results(
                 error_message, max_length=512
             )
         if order_id not in (None, "") and result.get("success") is not False:
+            result["weex_order_id"] = str(order_id)
             result["status"] = "ACCEPTED"
         elif result.get("success") is False and error_code not in (None, ""):
             result["status"] = "RELEASED"
@@ -990,6 +1051,265 @@ def _normalize_submission_results(
     if not normalized and len(prepared_legs) == 1:
         return [{"leg_id": prepared_legs[0]["leg_id"], "status": "REVIEW_REQUIRED"}]
     return normalized
+
+
+def _normalize_mcp_submission_results(
+    *,
+    operation_key: str,
+    response: dict[str, Any],
+    prepared_legs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    expected_action = _operation_action(operation_key)
+    outcome = response.get("outcome")
+    if (
+        not isinstance(outcome, dict)
+        or outcome.get("action") != expected_action
+        or outcome.get("class")
+        not in {"not_sent", "definitive_rejection", "accepted", "unknown", "partial"}
+    ):
+        return _review_required_legs(prepared_legs)
+    is_batch = operation_key in {
+        "spot.order.bulk_order",
+        "transaction.place_orders_batch",
+    }
+    itemized_single = operation_key == "transaction.place_tp_sl_order"
+    if not _valid_mcp_outcome(
+        response=response,
+        outcome=outcome,
+        expected_action=expected_action,
+        is_batch=is_batch,
+        itemized_single=itemized_single,
+    ):
+        return _review_required_legs(prepared_legs)
+
+    raw_results = (
+        _normalize_submission_results(
+            operation_key=operation_key,
+            payload=response.get("data"),
+            prepared_legs=prepared_legs,
+        )
+        if "data" in response
+        else []
+    )
+    raw_by_client: dict[str, dict[str, Any]] = {}
+    for result in raw_results:
+        client_id = str(result.get("client_order_id") or "")
+        if not client_id or client_id in raw_by_client:
+            continue
+        raw_by_client[client_id] = result
+
+    if outcome.get("class") == "not_sent" and outcome.get("items") is None:
+        outcomes = [outcome for _leg in prepared_legs]
+    elif is_batch or itemized_single:
+        items = outcome.get("items")
+        if not isinstance(items, list) or len(items) != len(prepared_legs):
+            return _review_required_legs(prepared_legs)
+        if itemized_single:
+            outcomes = [items[0]]
+        else:
+            item_by_client: dict[str, dict[str, Any]] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    return _review_required_legs(prepared_legs)
+                client_id = str(item.get("client_order_id") or "")
+                if not client_id or client_id in item_by_client:
+                    return _review_required_legs(prepared_legs)
+                item_by_client[client_id] = item
+            if set(item_by_client) != {
+                str(leg.get("client_order_id") or "") for leg in prepared_legs
+            }:
+                return _review_required_legs(prepared_legs)
+            outcomes = [item_by_client[str(leg["client_order_id"])] for leg in prepared_legs]
+    else:
+        if len(prepared_legs) != 1:
+            return _review_required_legs(prepared_legs)
+        outcome_client_id = _safe_outcome_identity(outcome.get("client_order_id"))
+        if outcome_client_id != str(prepared_legs[0].get("client_order_id") or ""):
+            return _review_required_legs(prepared_legs)
+        outcomes = [outcome]
+
+    error = response.get("error")
+    error = error if isinstance(error, dict) else {}
+    error_details = error.get("details")
+    error_details = error_details if isinstance(error_details, dict) else {}
+    fallback_error_code = _optional_text(
+        error_details.get("upstream_code") or error.get("code")
+    )
+    results: list[dict[str, Any]] = []
+    for leg, item in zip(prepared_legs, outcomes):
+        item_class = item.get("class")
+        result: dict[str, Any] = {
+            "leg_id": leg["leg_id"],
+            "client_order_id": leg["client_order_id"],
+        }
+        if item_class == "accepted":
+            if itemized_single:
+                operation_reference = _safe_outcome_identity(
+                    item.get("operation_reference")
+                )
+                if operation_reference is None or len(raw_results) > 1:
+                    result["status"] = "REVIEW_REQUIRED"
+                    results.append(result)
+                    continue
+                accepted = raw_results[0] if raw_results else None
+                raw_client_id = _safe_outcome_identity(
+                    (accepted or {}).get("client_order_id")
+                )
+                raw_order_id = _safe_outcome_identity(
+                    _pick(
+                        accepted or {},
+                        "orderId",
+                        "weex_order_id",
+                        "order_id",
+                        "algoId",
+                    )
+                )
+                if (
+                    raw_client_id is not None
+                    and raw_client_id != str(leg["client_order_id"])
+                ) or (
+                    raw_order_id is not None
+                    and raw_order_id != operation_reference
+                ):
+                    result["status"] = "REVIEW_REQUIRED"
+                else:
+                    if accepted is not None:
+                        result.update(accepted)
+                    result.update(
+                        {
+                            "leg_id": leg["leg_id"],
+                            "client_order_id": leg["client_order_id"],
+                            "weex_order_id": operation_reference,
+                            "status": "ACCEPTED",
+                            "success": True,
+                        }
+                    )
+                results.append(result)
+                continue
+            accepted = raw_by_client.get(str(leg["client_order_id"]))
+            order_id = _pick(accepted or {}, "orderId", "weex_order_id", "order_id")
+            if accepted is None or order_id in (None, ""):
+                result["status"] = "REVIEW_REQUIRED"
+            else:
+                result.update(accepted)
+                result["leg_id"] = leg["leg_id"]
+                result["client_order_id"] = leg["client_order_id"]
+                result["status"] = "ACCEPTED"
+                result["success"] = True
+        elif item_class == "definitive_rejection":
+            error_code = _optional_text(item.get("error_code")) or fallback_error_code
+            if error_code is None:
+                result["status"] = "REVIEW_REQUIRED"
+            else:
+                result.update(
+                    {
+                        "status": "RELEASED",
+                        "success": False,
+                        "error_code": _sanitized_official_error_text(
+                            error_code,
+                            max_length=128,
+                        ),
+                    }
+                )
+        elif item_class == "not_sent":
+            result.update(
+                {
+                    "status": "RELEASED",
+                    "success": False,
+                    "error_code": "not_sent",
+                }
+            )
+        else:
+            result["status"] = "REVIEW_REQUIRED"
+        results.append(result)
+    return results
+
+
+def _valid_mcp_outcome(
+    *,
+    response: dict[str, Any],
+    outcome: dict[str, Any],
+    expected_action: str,
+    is_batch: bool,
+    itemized_single: bool,
+) -> bool:
+    outcome_class = outcome.get("class")
+    attempted = outcome.get("write_attempted")
+    if not isinstance(attempted, bool):
+        return False
+    if (outcome_class == "not_sent") != (attempted is False):
+        return False
+    if (outcome_class == "accepted") != (response.get("ok") is True):
+        return False
+    items = outcome.get("items")
+    if outcome_class == "not_sent" and items is None:
+        return "data" not in response or response.get("data") is None
+    if not is_batch and not itemized_single:
+        return items is None and outcome_class != "partial"
+    if not isinstance(items, list) or not items:
+        return False
+    if itemized_single and len(items) != 1:
+        return False
+    classes: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or item.get("action") != expected_action:
+            return False
+        item_class = item.get("class")
+        item_attempted = item.get("write_attempted")
+        if item_class not in {
+            "not_sent",
+            "definitive_rejection",
+            "accepted",
+            "unknown",
+        } or not isinstance(item_attempted, bool):
+            return False
+        if (item_class == "not_sent") != (item_attempted is False):
+            return False
+        if not any(
+            _safe_outcome_identity(item.get(field)) is not None
+            for field in (
+                "client_order_id",
+                "operation_reference",
+                "reconcile_identity",
+            )
+        ):
+            return False
+        classes.add(str(item_class))
+    if "unknown" in classes:
+        aggregate = "unknown"
+    elif classes == {"accepted"}:
+        aggregate = "accepted"
+    elif classes == {"definitive_rejection"}:
+        aggregate = "definitive_rejection"
+    elif classes == {"not_sent"}:
+        aggregate = "not_sent"
+    elif classes == {"accepted", "definitive_rejection"}:
+        aggregate = "partial"
+    else:
+        return False
+    return aggregate == outcome_class
+
+
+def _safe_outcome_identity(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    normalized = str(value).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", normalized):
+        return None
+    return normalized
+
+
+def _review_required_legs(
+    prepared_legs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "leg_id": leg["leg_id"],
+            "client_order_id": leg.get("client_order_id"),
+            "status": "REVIEW_REQUIRED",
+        }
+        for leg in prepared_legs
+    ]
 
 
 def _find_symbol(payload: Any, symbol: str) -> dict[str, Any]:
@@ -1176,6 +1496,47 @@ def _operation_module(operation_key: str) -> str:
     if operation_key.startswith("transaction."):
         return "FUTURES"
     raise ValueError("unsupported official operation")
+
+
+def _operation_action(operation_key: str) -> str:
+    actions = {
+        "spot.order.place_order": "order",
+        "spot.order.bulk_order": "batch_order",
+        "transaction.place_order": "order",
+        "transaction.place_orders_batch": "batch_order",
+        "transaction.place_pending_order": "conditional_order",
+        "transaction.place_tp_sl_order": "tp_sl",
+    }
+    try:
+        return actions[operation_key]
+    except KeyError:
+        raise ValueError("unsupported official operation") from None
+
+
+def _submission_request(
+    operation_key: str,
+    prepared_legs: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    if not prepared_legs:
+        raise ValueError("prepared legs are required")
+    module = _operation_module(operation_key)
+    orders = [_required_mapping(item.get("order"), "order") for item in prepared_legs]
+    if operation_key == "spot.order.bulk_order":
+        symbol = _required_text(orders[0].get("symbol"), "symbol").upper()
+        body = {
+            "symbol": symbol,
+            "orderList": [
+                {key: value for key, value in order.items() if key != "symbol"}
+                for order in orders
+            ],
+        }
+    elif operation_key == "transaction.place_orders_batch":
+        body = {"batchOrders": orders}
+    else:
+        if len(orders) != 1:
+            raise ValueError("single official operation received multiple legs")
+        body = orders[0]
+    return module, body
 
 
 def _required_module(value: Any) -> str:
