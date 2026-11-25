@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import importlib.util
 import json
 import sys
 import unittest
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
-from urllib import error
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -505,34 +500,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                         {env_name: "https://override.example"},
                     )
 
-    def test_test_origin_request_uses_selected_origin_without_changing_signature(self) -> None:
-        partner = self.require_partner()
-        endpoint = partner.load_endpoint_map()["partner.verify-referrals"]
-        common = {
-            "endpoint": endpoint,
-            "api_key": "test-key",
-            "api_secret": "test-secret",
-            "api_passphrase": "test-passphrase",
-            "timestamp_ms": "1784073600000",
-            "query": {"userIds": "10001"},
-            "body": {},
-        }
-        production = partner.prepare_signed_request(**common)
-        testing = partner.prepare_signed_request(
-            **common,
-            base_url="https://unit-test.weex.tech",
-        )
-
-        self.assertTrue(testing["url"].startswith("https://unit-test.weex.tech/"))
-        self.assertEqual(testing["method"], production["method"])
-        self.assertEqual(testing["query"], production["query"])
-        self.assertEqual(testing["body"], production["body"])
-        self.assertEqual(
-            testing["headers"]["ACCESS-SIGN"],
-            production["headers"]["ACCESS-SIGN"],
-        )
-
-    def test_invalid_test_origin_fails_before_credentials_or_transport(self) -> None:
+    def test_invalid_test_origin_fails_before_mcp_execution(self) -> None:
         partner = self.require_partner()
         events = []
         result = partner.execute_partner_request(
@@ -547,9 +515,8 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 name="main",
                 spot_base_url="https://unit-test.weex.tech.evil.example",
             ),
-            credential_loader=lambda _name: events.append("credentials"),
             preflight=lambda **_kwargs: None,
-            opener=lambda *_args, **_kwargs: events.append("open"),
+            mcp_executor=lambda **_kwargs: events.append("mcp"),
             timeout=1.0,
             environ={},
         )
@@ -558,33 +525,6 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         self.assertEqual(result["error"]["category"], "local_policy")
         self.assertIsNone(result["environment"])
         self.assertEqual(events, [])
-
-    def test_test_environment_uses_stable_errors_and_redacts_origin_variants(self) -> None:
-        partner = self.require_partner()
-        synthetic_test_origin = "https://unit-test.weex.tech"
-        result = partner.normalize_http_result(
-            status=400,
-            headers={},
-            payload={
-                "code": "-1142",
-                "msg": f"arbitrary upstream message {synthetic_test_origin}",
-                "details": {
-                    "mixed": "HTTPS://UNIT-TEST.WEEX.TECH",
-                    "encoded": "https%3A%2F%2Funit-test.weex.tech",
-                },
-            },
-            environment="partner_test",
-        )
-        rendered = json.dumps(result, ensure_ascii=False)
-
-        self.assertEqual(result["error"]["category"], "validation")
-        self.assertNotIn("arbitrary upstream message", rendered)
-        self.assertNotIn("unit-test.weex.tech", rendered.lower())
-        self.assertEqual(result["error"]["code"], "-1142")
-        self.assertEqual(
-            result["error"]["details"]["field_names"],
-            ["code", "details", "msg"],
-        )
 
     def test_test_environment_transport_error_does_not_expose_selected_origin(self) -> None:
         partner = self.require_partner()
@@ -650,72 +590,8 @@ class WeexPartnerApiContractTests(unittest.TestCase):
             with self.subTest(variant=variant):
                 self.assertNotIn(variant.lower(), rendered)
 
-    def test_signature_uses_the_same_doseq_query_string_as_the_url(self) -> None:
+    def test_unknown_or_write_endpoint_is_rejected_before_profile_or_mcp(self) -> None:
         partner = self.require_partner()
-        query = {
-            "userIds": ["10001", "10002"],
-            "startTime": "2026-07-01",
-        }
-        query_string = partner.encode_query(query)
-        self.assertEqual(
-            query_string,
-            "userIds=10001&userIds=10002&startTime=2026-07-01",
-        )
-
-        message = (
-            "1784073600000GET/api/v3/agency/getDealData?"
-            "userIds=10001&userIds=10002&startTime=2026-07-01"
-        )
-        expected = base64.b64encode(
-            hmac.new(b"test-secret", message.encode("utf-8"), hashlib.sha256).digest()
-        ).decode("utf-8")
-        actual = partner.sign_request(
-            secret="test-secret",
-            timestamp_ms="1784073600000",
-            method="GET",
-            path="/api/v3/agency/getDealData",
-            query_string=query_string,
-            body_string="",
-        )
-        self.assertEqual(actual, expected)
-
-    def test_prepare_request_preserves_read_only_post_body(self) -> None:
-        partner = self.require_partner()
-        endpoint = partner.load_endpoint_map()["partner.query-sub-channel-transactions"]
-        prepared = partner.prepare_signed_request(
-            endpoint=endpoint,
-            api_key="test-key",
-            api_secret="test-secret",
-            api_passphrase="test-passphrase",
-            timestamp_ms="1784073600000",
-            query={},
-            body={
-                "productType": "FUTURES",
-                "pageNum": 1,
-                "pageSize": 100,
-            },
-        )
-
-        self.assertEqual(prepared["method"], "POST")
-        self.assertEqual(
-            prepared["url"],
-            "https://api-spot.weex.com/api/v3/rebate/affiliate/querySubChannelTransactions",
-        )
-        self.assertEqual(
-            json.loads(prepared["data"].decode("utf-8"))["productType"],
-            "FUTURES",
-        )
-        self.assertIn("ACCESS-SIGN", prepared["headers"])
-        self.assertNotIn("confirm", prepared)
-
-    def test_unknown_or_write_endpoint_is_rejected_before_credentials_are_loaded(self) -> None:
-        partner = self.require_partner()
-        credential_loader_called = False
-
-        def credential_loader(_profile: str):
-            nonlocal credential_loader_called
-            credential_loader_called = True
-            raise AssertionError("credentials must not be loaded")
 
         with self.assertRaises(partner.PartnerPolicyError):
             partner.execute_partner_request(
@@ -725,28 +601,10 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                     "query": {},
                     "body": {"coin": "USDT"},
                 },
-                credential_loader=credential_loader,
+                profile_resolver=lambda _ref: self.fail("profile must not be resolved"),
                 preflight=lambda **_kwargs: None,
-                opener=lambda *_args, **_kwargs: None,
+                mcp_executor=lambda **_kwargs: self.fail("MCP must not be called"),
             )
-        self.assertFalse(credential_loader_called)
-
-    def test_http_429_is_classified_without_retry_and_keeps_rate_limit_headers(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=429,
-            headers={
-                "X-USED-WEIGHT-1M": "1200",
-                "X-REMAINING-WEIGHT-1M": "0",
-            },
-            payload={"code": "-1003", "msg": "Too many requests"},
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["category"], "rate_limit")
-        self.assertEqual(result["rate_limit"]["used"]["1M"], 1200)
-        self.assertEqual(result["rate_limit"]["remaining"]["1M"], 0)
-        self.assertFalse(result["retry"]["automatic"])
 
     def test_output_sanitizer_redacts_credentials_signatures_and_secret_values(self) -> None:
         partner = self.require_partner()
@@ -869,102 +727,6 @@ class WeexPartnerApiContractTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(observed_timeouts, [12.5])
-
-    def test_http_200_business_error_is_not_treated_as_success(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=200,
-            headers={},
-            payload={"code": "-1050", "msg": "Partner permission denied"},
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["category"], "permission")
-        self.assertEqual(result["error"]["code"], "-1050")
-
-    def test_business_error_hides_unknown_payload_values(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=400,
-            headers={},
-            payload={
-                "code": "-1142",
-                "msg": "Parameter is invalid",
-                "undocumented": {"sensitive": "must-not-leak"},
-            },
-        )
-
-        rendered = json.dumps(result, ensure_ascii=False)
-        self.assertNotIn("must-not-leak", rendered)
-        self.assertEqual(result["error"]["message"], "Parameter is invalid")
-        self.assertEqual(
-            result["error"]["details"],
-            {
-                "field_names": ["code", "msg"],
-                "unknown_field_count": 1,
-                "values_hidden": True,
-            },
-        )
-
-    def test_nested_business_codes_are_hidden_and_http_status_still_classifies(self) -> None:
-        partner = self.require_partner()
-
-        for field, value in (
-            ("code", {"secret": "nested-code-sentinel"}),
-            ("code", ["nested-code-sentinel"]),
-            ("errorCode", {"secret": "nested-code-sentinel"}),
-            ("errorCode", ["nested-code-sentinel"]),
-        ):
-            with self.subTest(field=field, value_type=type(value).__name__):
-                result = partner.normalize_http_result(
-                    status=400,
-                    headers={},
-                    payload={field: value, "msg": "Parameter is invalid"},
-                )
-
-                self.assertFalse(result["ok"])
-                self.assertEqual(result["error"]["category"], "validation")
-                self.assertIsNone(result["error"]["code"])
-                self.assertNotIn("nested-code-sentinel", json.dumps(result, ensure_ascii=False))
-
-    def test_production_transport_error_uses_stable_message_and_hides_exception_value(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=None,
-            headers={},
-            payload={"message": "transport-exception-sentinel"},
-            environment="partner_production",
-        )
-
-        rendered = json.dumps(result, ensure_ascii=False)
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["category"], "transport")
-        self.assertEqual(result["error"]["message"], "Partner transport failed.")
-        self.assertNotIn("transport-exception-sentinel", rendered)
-        self.assertIn("recovery_action", result["error"])
-        self.assertEqual(
-            result["error"]["details"],
-            {"field_names": ["message"], "values_hidden": True},
-        )
-
-    def test_non_json_success_response_is_a_schema_error(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=200,
-            headers={},
-            payload={
-                "code": None,
-                "message": "Partner API returned non-JSON data",
-                "raw_type": "non_json",
-            },
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["category"], "schema")
-        self.assertEqual(
-            result["error"]["details"]["schema_issue"],
-            "non_json_response",
-        )
 
     def test_non_json_http_error_is_a_schema_error(self) -> None:
         partner = self.require_partner()
@@ -1139,7 +901,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         self.assertEqual(attempts, 1)
         self.assertFalse(result["retry"]["automatic"])
 
-    def test_expected_test_environment_mismatch_stops_before_credentials_are_loaded(self) -> None:
+    def test_expected_test_environment_mismatch_stops_before_mcp_execution(self) -> None:
         partner = self.require_partner()
         result = partner.execute_partner_request(
             {
@@ -1160,9 +922,8 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 name="main",
                 spot_base_url="",
             ),
-            credential_loader=lambda _name: self.fail("credentials must not be loaded"),
             preflight=lambda **_kwargs: None,
-            opener=lambda *_args: self.fail("request must not be sent"),
+            mcp_executor=lambda **_kwargs: self.fail("MCP must not be called"),
             timeout=1.0,
             environ={},
         )
@@ -1215,43 +976,6 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 self.assertEqual(result["error"]["category"], "local_policy")
                 self.assertEqual(result["error"]["code"], "invalid_expected_environment")
 
-    def test_http_200_nested_business_code_is_a_schema_error_without_value_leakage(self) -> None:
-        partner = self.require_partner()
-        for field, value in (
-            ("code", {"secret": "nested-code-sentinel"}),
-            ("code", ["nested-code-sentinel"]),
-            ("errorCode", {"secret": "nested-code-sentinel"}),
-            ("errorCode", ["nested-code-sentinel"]),
-        ):
-            with self.subTest(field=field, value_type=type(value).__name__):
-                result = partner.normalize_http_result(
-                    status=200,
-                    headers={},
-                    payload={field: value, "data": [{"uid": "10001"}]},
-                )
-
-                self.assertFalse(result["ok"])
-                self.assertEqual(result["error"]["category"], "schema")
-                self.assertIsNone(result["error"]["code"])
-                self.assertEqual(
-                    result["error"]["details"]["schema_issue"],
-                    "invalid_business_code_type",
-                )
-                self.assertNotIn("nested-code-sentinel", json.dumps(result, ensure_ascii=False))
-
-    def test_nested_business_code_preserves_http_rate_limit_classification(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=429,
-            headers={},
-            payload={"code": {"secret": "nested-code-sentinel"}, "msg": "rate limited"},
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["category"], "rate_limit")
-        self.assertIsNone(result["error"]["code"])
-        self.assertNotIn("nested-code-sentinel", json.dumps(result, ensure_ascii=False))
-
     def test_falsey_non_object_query_and_body_fail_before_preflight_or_profile(self) -> None:
         partner = self.require_partner()
         base = {
@@ -1273,26 +997,6 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                     self.assertFalse(result["ok"])
                     self.assertEqual(result["error"]["category"], "local_policy")
                     self.assertEqual(result["error"]["code"], "invalid_request_container")
-
-    def test_error_details_do_not_echo_arbitrary_payload_keys(self) -> None:
-        partner = self.require_partner()
-        result = partner.normalize_http_result(
-            status=400,
-            headers={},
-            payload={
-                "code": "-1142",
-                "msg": "Parameter is invalid",
-                "private-user-sentinel": "private-value-sentinel",
-            },
-        )
-
-        rendered = json.dumps(result, ensure_ascii=False)
-        self.assertFalse(result["ok"])
-        self.assertNotIn("private-user-sentinel", rendered)
-        self.assertNotIn("private-value-sentinel", rendered)
-        self.assertEqual(result["error"]["details"]["field_names"], ["code", "msg"])
-        self.assertEqual(result["error"]["details"]["unknown_field_count"], 1)
-
 
 if __name__ == "__main__":
     unittest.main()

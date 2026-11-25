@@ -10,12 +10,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from weex_mcp_gateway import (
     DEFAULT_FUTURES_BASE_URL,
     DEFAULT_SPOT_BASE_URL,
     LocalMcpGateway,
     McpGatewayError,
+    describe_local_mcp_request,
 )
 from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
 
@@ -185,10 +187,12 @@ class McpReadFacade:
         *,
         settings: LocalMcpReadSettings,
         gateway_factory: Callable[..., Any] = LocalMcpGateway,
+        request_describer: Callable[..., dict[str, Any]] = describe_local_mcp_request,
         mapping_loader: Callable[[], dict[str, Any]] = _load_default_mapping,
     ) -> None:
         self.settings = settings
         self._gateway_factory = gateway_factory
+        self._request_describer = request_describer
         self._gateway: Any | None = None
         try:
             mapping = mapping_loader()
@@ -252,6 +256,92 @@ class McpReadFacade:
                 "error": {"code": exc.code, "message": exc.message},
             }
         return _serialize_legacy_response(operation, payload)
+
+    def describe(
+        self,
+        *,
+        product: str,
+        endpoint: Any,
+        query: Mapping[str, Any],
+        body: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if product not in _PRODUCTS:
+            raise McpReadCompatibilityError(
+                "unsupported_product",
+                "The requested legacy read product is not supported.",
+            )
+        if not isinstance(query, Mapping) or not isinstance(body, Mapping):
+            raise McpReadCompatibilityError(
+                "invalid_arguments",
+                "Legacy read query and body values must be objects.",
+            )
+        legacy_key = getattr(endpoint, "key", None)
+        operation = self._operations.get((product, legacy_key))
+        if operation is None:
+            raise McpReadCompatibilityError(
+                "unsupported_read_endpoint",
+                "The requested endpoint is not an allowlisted MCP read operation.",
+            )
+        _validate_endpoint_contract(endpoint, operation)
+        arguments = _map_arguments(operation, query=dict(query), body=dict(body))
+        try:
+            description = self._request_describer(
+                name=str(operation["target"]["tool"]),
+                arguments=arguments,
+                effective_spot_base_url=self.settings.spot_base_url,
+                effective_futures_base_url=self.settings.futures_base_url,
+                trade_enabled=False,
+                timeout_seconds=self.settings.timeout_seconds,
+                request_locale=self.settings.locale,
+            )
+        except McpGatewayError as exc:
+            raise McpReadCompatibilityError(exc.code, exc.message) from exc
+        if _request_description_contract_error(
+            operation,
+            description,
+            spot_base_url=self.settings.spot_base_url,
+            futures_base_url=self.settings.futures_base_url,
+        ):
+            raise McpReadCompatibilityError(
+                "request_description_mismatch",
+                "The MCP request description does not match the verified legacy mapping.",
+            )
+        return description
+
+
+def _request_description_contract_error(
+    operation: Mapping[str, Any],
+    description: Any,
+    *,
+    spot_base_url: str,
+    futures_base_url: str,
+) -> str | None:
+    if not isinstance(description, dict):
+        return "shape"
+    url = description.get("url")
+    if (
+        description.get("method") != operation.get("method")
+        or not isinstance(url, str)
+        or not isinstance(description.get("headers"), dict)
+        or not isinstance(description.get("query"), dict)
+        or not isinstance(description.get("body"), dict)
+    ):
+        return "shape"
+    parsed = urlsplit(url)
+    expected_origin = (
+        spot_base_url.rstrip("/")
+        if operation.get("product") == "spot"
+        else futures_base_url.rstrip("/")
+    )
+    if (
+        f"{parsed.scheme}://{parsed.netloc}" != expected_origin
+        or parsed.path != operation.get("path")
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        return "route"
+    return None
 
 
 def _build_read_operations(mapping: Any) -> dict[tuple[str, str], dict[str, Any]]:

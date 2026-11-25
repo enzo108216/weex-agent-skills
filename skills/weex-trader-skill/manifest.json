@@ -3,7 +3,7 @@
   "identity": {
     "name": "weex-trader-skill",
     "source_of_truth": "SKILL.md",
-    "purpose": "WEEX contract and spot REST automation plus normalized analysis payloads and secure saved-profile management."
+    "purpose": "MCP-backed WEEX contract and spot automation plus normalized analysis payloads and secure saved-profile management."
   },
   "path_policy": {
     "skill_root": ".",
@@ -294,7 +294,8 @@
       "mcp_read_facade": "scripts/weex_mcp_read_compat.py",
       "mcp_trade_facade": "scripts/weex_mcp_trade_compat.py",
       "mcp_partner_facade": "scripts/weex_mcp_partner_compat.py",
-      "mcp_auto_trade_authorizer": "scripts/weex_mcp_auto_trade.py"
+      "mcp_auto_trade_authorizer": "scripts/weex_mcp_auto_trade.py",
+      "mcp_request_describer": "scripts/weex_mcp_gateway.py"
     }
   },
   "state": {
@@ -310,7 +311,7 @@
     ],
     "env_vars": {
       "WEEX_TRADER_SKILL_HOME": "Override the runtime state directory for profiles, vault data, and agent cache.",
-      "WEEX_API_TIMEOUT": "Override HTTP timeout in seconds; Partner REST defaults to 30 seconds.",
+      "WEEX_API_TIMEOUT": "Override MCP upstream timeout in seconds; Partner defaults to 30 seconds.",
       "WEEX_AUTO_TRADE_NOTIFICATION_MODE": "Set to disabled only for controlled tests or an operator-approved environment where automated-authorization OS notifications are intentionally suppressed.",
       "WEEX_ORDER_INTENT_TTL_SECONDS": "Override the pending order confirmation TTL in seconds for trade guard flows.",
       "WEEX_GUI_FORCE_FOREGROUND": "Disable GUI auto-detach and keep the GUI entrypoint attached to the current shell, which can reintroduce a Terminal/cmd window."

@@ -23,6 +23,22 @@ Action:
 - install `requirements.lock` with `--require-hashes` using the same interpreter used to launch the scripts
 - retry with the same launcher (`py -3` on Windows, `python3` on macOS/Linux)
 
+### MCP Package Or Contract Is Not Ready
+
+Symptom:
+
+- `mcp_package_missing` or `mcp_version_mismatch`
+- `mcp_runtime_incompatible` or `mcp_contract_mismatch`
+- preflight reports `runtime.mcp.package_ok: false` or `manifest_ok: false`
+
+Action:
+
+- run `python3 scripts/weex_doctor.py mcp --pretty` (`py -3` on Windows)
+- install the exact verified wheel selected by `references/mcp-capability-mapping.json`; do not substitute a same-version wheel with different hashes
+- repair the installed package when the tool/schema/manifest digest does not match
+- note that `scripts/weex_runtime_setup.py` installs `requirements.lock` only and does not install an unpublished MCP candidate
+- retry only after both read and, when needed, Trade readiness are true; never fall back to direct REST
+
 ### Invalid Runtime Environment Override
 
 Symptom:
@@ -71,7 +87,7 @@ Action:
 
 - verify the intended saved profile is selected
 - re-check the saved API Key, Secret Key, and Passphrase
-- review `references/auth-and-signing.md`
+- review `references/auth-and-signing.md`; Trader selects the profile and MCP owns the actual signing/transport boundary
 
 ### Broken Or Missing Default Profile
 
@@ -156,6 +172,7 @@ Useful first checks:
 ```bash
 python3 scripts/weex_profiles_en.py list --pretty
 python3 scripts/weex_vault_en.py status --pretty
+python3 scripts/weex_doctor.py mcp --pretty
 python3 scripts/weex_contract_api.py list-endpoints --pretty
 python3 scripts/weex_spot_api.py list-endpoints --pretty
 ```

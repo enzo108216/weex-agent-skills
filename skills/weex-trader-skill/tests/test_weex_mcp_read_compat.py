@@ -250,6 +250,71 @@ class McpReadCompatTests(unittest.TestCase):
                         locale="en-US",
                     )
 
+    def test_describe_maps_typed_arguments_without_building_gateway(self) -> None:
+        entry = mapping_entry(self.mapping, "spot.market.get_ticker_info")
+        calls = []
+        facade = self.compat.McpReadFacade(
+            settings=self.settings(profile_id=None),
+            gateway_factory=lambda **_kwargs: self.fail(
+                "request description must not construct a gateway"
+            ),
+            request_describer=lambda **kwargs: calls.append(kwargs)
+            or {
+                "method": "GET",
+                "url": "https://api-spot.weex.com/api/v3/market/ticker/price?symbol=BTCUSDT",
+                "headers": {},
+                "query": {"symbol": "BTCUSDT"},
+                "body": {},
+            },
+            mapping_loader=lambda: copy.deepcopy(self.mapping),
+        )
+
+        description = facade.describe(
+            product="spot",
+            endpoint=endpoint_from_mapping(entry),
+            query={"symbol": "BTCUSDT"},
+            body={},
+        )
+
+        self.assertEqual(description["method"], "GET")
+        self.assertEqual(calls[0]["name"], "market_get_symbol_price")
+        self.assertEqual(
+            calls[0]["arguments"],
+            {"market": "spot", "symbol": "BTCUSDT"},
+        )
+        self.assertFalse(calls[0]["trade_enabled"])
+
+    def test_describe_rejects_method_path_and_origin_drift(self) -> None:
+        entry = mapping_entry(self.mapping, "spot.market.get_ticker_info")
+        endpoint = endpoint_from_mapping(entry)
+        valid = {
+            "method": "GET",
+            "url": "https://api-spot.weex.com/api/v3/market/ticker/price?symbol=BTCUSDT",
+            "headers": {},
+            "query": {"symbol": "BTCUSDT"},
+            "body": {},
+        }
+        mutations = (
+            {**valid, "method": "POST"},
+            {**valid, "url": "https://api-spot.weex.com/api/v3/time"},
+            {**valid, "url": "https://evil.example/api/v3/market/ticker/price"},
+        )
+        for description in mutations:
+            with self.subTest(description=description):
+                facade = self.compat.McpReadFacade(
+                    settings=self.settings(profile_id=None),
+                    request_describer=lambda **_kwargs: copy.deepcopy(description),
+                    mapping_loader=lambda: copy.deepcopy(self.mapping),
+                )
+                with self.assertRaises(self.compat.McpReadCompatibilityError) as exc_info:
+                    facade.describe(
+                        product="spot",
+                        endpoint=endpoint,
+                        query={"symbol": "BTCUSDT"},
+                        body={},
+                    )
+                self.assertEqual(exc_info.exception.code, "request_description_mismatch")
+
     def test_resolver_keeps_origin_timeout_locale_precedence_and_profile_id(self) -> None:
         profile = SimpleNamespace(
             profile_id="stable-id",

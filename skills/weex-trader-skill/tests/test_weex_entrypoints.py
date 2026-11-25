@@ -11,8 +11,6 @@ import types
 import unittest
 import json
 from pathlib import Path
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 from unittest import mock
 
 
@@ -72,61 +70,6 @@ runpy.run_path(script_path, run_name="__main__")
             capture_output=True,
             check=False,
         )
-
-    def assert_authenticated_redirect_is_not_followed(self, client: object) -> None:
-        captured_headers: list[dict[str, str]] = []
-
-        class Receiver(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                captured_headers.append(dict(self.headers.items()))
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b'{"ok":true}')
-
-            def log_message(self, *_args: object) -> None:
-                pass
-
-        class Redirector(BaseHTTPRequestHandler):
-            target = ""
-
-            def do_GET(self) -> None:
-                self.send_response(302)
-                self.send_header("Location", self.target)
-                self.end_headers()
-
-            def log_message(self, *_args: object) -> None:
-                pass
-
-        receiver = HTTPServer(("127.0.0.1", 0), Receiver)
-        receiver_thread = Thread(target=receiver.serve_forever, daemon=True)
-        receiver_thread.start()
-        Redirector.target = f"http://127.0.0.1:{receiver.server_port}/capture"
-        redirector = HTTPServer(("127.0.0.1", 0), Redirector)
-        redirector_thread = Thread(target=redirector.serve_forever, daemon=True)
-        redirector_thread.start()
-        try:
-            prepared = {
-                "url": f"http://127.0.0.1:{redirector.server_port}/start",
-                "method": "GET",
-                "data": None,
-                "headers": {
-                    "ACCESS-KEY": "key-secret",
-                    "ACCESS-PASSPHRASE": "pass-secret",
-                    "ACCESS-SIGN": "sign-secret",
-                    "User-Agent": "redirect-regression-test",
-                },
-            }
-
-            response = client.send(prepared)
-        finally:
-            redirector.shutdown()
-            receiver.shutdown()
-            redirector.server_close()
-            receiver.server_close()
-
-        self.assertFalse(response["ok"])
-        self.assertEqual(response["status"], 302)
-        self.assertEqual(captured_headers, [])
 
     def test_profile_manager_help_works_without_gui_runtime(self) -> None:
         completed = self.run_command(str(SCRIPTS / "weex_profile_manager_en.py"), "--help")
@@ -521,7 +464,7 @@ runpy.run_path(script_path, run_name="__main__")
         preflight_mock.assert_called_once_with(command="spot.place-order", auto_setup=True, language=None)
         resolve_mock.assert_not_called()
 
-    def test_contract_prepare_request_rejects_body_for_get(self) -> None:
+    def test_contract_describe_request_rejects_body_for_get(self) -> None:
         import weex_contract_api as contract
 
         endpoint = next(ep for ep in contract.ENDPOINTS.values() if ep.method == "GET" and not ep.auth)
@@ -535,7 +478,7 @@ runpy.run_path(script_path, run_name="__main__")
         )
 
         with self.assertRaises(SystemExit) as exc_info:
-            client.prepare_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
+            client.describe_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
 
         self.assertEqual(str(exc_info.exception), contract.GET_BODY_UNSUPPORTED_MESSAGE)
 
@@ -549,20 +492,24 @@ runpy.run_path(script_path, run_name="__main__")
             api_key="api-key",
             api_secret="api-secret",
             api_passphrase="passphrase",
+            mcp_trade_facade=mock.Mock(),
         )
-        with mock.patch.object(client, "_require_auth"):
-            with self.assertRaisesRegex(SystemExit, "transport"):
-                client.prepare_request(
-                    contract.ENDPOINTS["transaction.cancel_order"],
-                    query={},
-                    body={"orderId": 1},
-                )
-            with self.assertRaisesRegex(SystemExit, "transport"):
-                client.prepare_request(
-                    contract.ENDPOINTS["transaction.cancel_orders_batch"],
-                    query={"orderIdList": [1]},
-                    body={},
-                )
+        client.mcp_trade_facade.describe.side_effect = contract.McpTradeCompatibilityError(
+            "request_transport_mismatch",
+            "The legacy Trade endpoint request transport does not match.",
+        )
+        with self.assertRaisesRegex(SystemExit, "transport"):
+            client.describe_request(
+                contract.ENDPOINTS["transaction.cancel_order"],
+                query={},
+                body={"orderId": 1},
+            )
+        with self.assertRaisesRegex(SystemExit, "transport"):
+            client.describe_request(
+                contract.ENDPOINTS["transaction.cancel_orders_batch"],
+                query={"orderIdList": [1]},
+                body={},
+            )
 
     def test_contract_user_data_post_is_read_only_and_does_not_require_trade_confirmation(self) -> None:
         import weex_contract_api as contract
@@ -595,9 +542,10 @@ runpy.run_path(script_path, run_name="__main__")
             base_url=contract.DEFAULT_BASE_URL,
             timeout=contract.DEFAULT_TIMEOUT,
             locale=contract.DEFAULT_LOCALE,
-            api_key="api-key",
-            api_secret="api-secret",
-            api_passphrase="api-passphrase",
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            mcp_trade_facade=mock.Mock(),
         )
         body = {
             "symbol": "BTCSUSDT",
@@ -610,6 +558,16 @@ runpy.run_path(script_path, run_name="__main__")
             "newClientOrderId": "demo-order-1",
             "TpWorkingType": "CONTRACT_PRICE",
             "SlWorkingType": "MARK_PRICE",
+        }
+        client.mcp_trade_facade.describe.return_value = {
+            "method": "POST",
+            "url": "https://api-contract.weex.com/capi/v3/sim/order",
+            "headers": {
+                "ACCESS-SIGN": "***",
+                "ACCESS-TIMESTAMP": "<generated-at-send>",
+            },
+            "query": {},
+            "body": body,
         }
 
         stdout = io.StringIO()
@@ -641,6 +599,11 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：模拟盘")
         self.assertNotIn("account environment", payload["environment"]["notice"])
         self.assertEqual(payload["headers"]["ACCESS-SIGN"], "***")
+        self.assertEqual(
+            payload["headers"]["ACCESS-TIMESTAMP"],
+            "<generated-at-send>",
+        )
+        client.mcp_trade_facade.describe.assert_called_once()
 
     def test_contract_private_order_query_result_includes_environment_prefix(self) -> None:
         import weex_contract_api as contract
@@ -671,10 +634,9 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["environment"]["trading_mode"], "live")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
 
-    def test_contract_read_uses_explicit_mcp_facade_without_prepare_or_send(self) -> None:
+    def test_contract_read_uses_explicit_mcp_facade_without_request_description(self) -> None:
         import weex_contract_api as contract
 
         client = mock.Mock()
@@ -703,8 +665,7 @@ runpy.run_path(script_path, run_name="__main__")
             query={},
             body={},
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
         self.assertEqual(
             json.loads(stdout.getvalue()),
             {
@@ -761,8 +722,7 @@ runpy.run_path(script_path, run_name="__main__")
             query={},
             body=body,
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["result"], {"orderId": "f-1"})
         self.assertEqual(payload["outcome"]["class"], "accepted")
@@ -823,7 +783,7 @@ runpy.run_path(script_path, run_name="__main__")
             )
 
         self.assertIn("demo_endpoint_requires_demo_mode", str(exc_info.exception))
-        client.prepare_request.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_contract_rejects_mismatched_confirm_flag_for_demo_mutation(self) -> None:
         import weex_contract_api as contract
@@ -844,7 +804,7 @@ runpy.run_path(script_path, run_name="__main__")
             )
 
         self.assertIn("confirm_flag_mode_mismatch", str(exc_info.exception))
-        client.prepare_request.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_contract_rejects_generic_pending_order_for_directional_close(self) -> None:
         import weex_contract_api as contract
@@ -874,7 +834,7 @@ runpy.run_path(script_path, run_name="__main__")
             )
 
         self.assertIn("pending_close_requires_tp_sl", str(exc_info.exception))
-        client.prepare_request.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_contract_place_order_parser_accepts_post_only(self) -> None:
         import weex_contract_api as contract
@@ -909,7 +869,7 @@ runpy.run_path(script_path, run_name="__main__")
         import weex_contract_api as contract
 
         client = mock.Mock()
-        client.prepare_request.return_value = {
+        client.describe_request.return_value = {
             "method": "POST",
             "url": "https://api-contract.weex.com/capi/v3/batchOrders",
             "headers": {},
@@ -930,13 +890,13 @@ runpy.run_path(script_path, run_name="__main__")
             )
 
         self.assertIn("at most 5", str(exc_info.exception))
-        client.prepare_request.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_contract_raw_leverage_requires_at_least_one_leverage_field(self) -> None:
         import weex_contract_api as contract
 
         client = mock.Mock()
-        client.prepare_request.return_value = {
+        client.describe_request.return_value = {
             "method": "POST",
             "url": "https://api-contract.weex.com/capi/v3/account/leverage",
             "headers": {},
@@ -957,13 +917,13 @@ runpy.run_path(script_path, run_name="__main__")
             )
 
         self.assertIn("at least one leverage", str(exc_info.exception).lower())
-        client.prepare_request.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_contract_raw_time_windows_reject_ranges_beyond_official_limits(self) -> None:
         import weex_contract_api as contract
 
         client = mock.Mock()
-        client.prepare_request.return_value = {
+        client.describe_request.return_value = {
             "method": "GET",
             "url": "https://api-contract.weex.com/test",
             "headers": {},
@@ -987,7 +947,7 @@ runpy.run_path(script_path, run_name="__main__")
                     )
                 self.assertIn("7 days", str(exc_info.exception))
 
-        client.prepare_request.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_contract_live_place_order_routes_to_live_endpoint(self) -> None:
         import weex_contract_api as contract
@@ -1078,7 +1038,7 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertIn("demo TP/SL is not supported", preview.stdout)
         self.assertIn("demo TP/SL is not supported", confirm.stdout)
 
-    def test_spot_prepare_request_rejects_body_for_get(self) -> None:
+    def test_spot_describe_request_rejects_body_for_get(self) -> None:
         import weex_spot_api as spot
 
         endpoint = next(ep for ep in spot.ENDPOINTS.values() if ep.method == "GET" and not ep.requires_auth)
@@ -1092,7 +1052,7 @@ runpy.run_path(script_path, run_name="__main__")
         )
 
         with self.assertRaises(SystemExit) as exc_info:
-            client.prepare_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
+            client.describe_request(endpoint, query={}, body={"symbol": "BTCUSDT"})
 
         self.assertEqual(str(exc_info.exception), spot.GET_BODY_UNSUPPORTED_MESSAGE)
 
@@ -1126,20 +1086,82 @@ runpy.run_path(script_path, run_name="__main__")
             api_key="api-key",
             api_secret="api-secret",
             api_passphrase="passphrase",
+            mcp_read_facade=mock.Mock(),
+            mcp_trade_facade=mock.Mock(),
         )
-        with mock.patch.object(client, "_require_auth"):
-            with self.assertRaisesRegex(SystemExit, "transport"):
-                client.prepare_request(
-                    spot.ENDPOINTS["spot.order.cancel_order"],
-                    query={},
-                    body={"orderId": 1},
-                )
-            with self.assertRaisesRegex(SystemExit, "transport"):
-                client.prepare_request(
-                    spot.ENDPOINTS["spot.account.get_bill_records"],
-                    query={"limit": 10},
-                    body={},
-                )
+        transport_error = spot.McpTradeCompatibilityError(
+            "request_transport_mismatch",
+            "The legacy endpoint request transport does not match.",
+        )
+        client.mcp_trade_facade.describe.side_effect = transport_error
+        client.mcp_read_facade.describe.side_effect = spot.McpReadCompatibilityError(
+            transport_error.code,
+            transport_error.message,
+        )
+        with self.assertRaisesRegex(SystemExit, "transport"):
+            client.describe_request(
+                spot.ENDPOINTS["spot.order.cancel_order"],
+                query={},
+                body={"orderId": 1},
+            )
+        with self.assertRaisesRegex(SystemExit, "transport"):
+            client.describe_request(
+                spot.ENDPOINTS["spot.account.get_bill_records"],
+                query={"limit": 10},
+                body={},
+            )
+
+    def test_spot_private_dry_run_describes_auth_without_credentials(self) -> None:
+        import weex_spot_api as spot
+
+        client = spot.WeexSpotClient(
+            base_url=spot.DEFAULT_BASE_URL,
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            mcp_trade_facade=mock.Mock(),
+        )
+        body = {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "type": "MARKET",
+            "quantity": "1",
+            "newClientOrderId": "spot-dry-run-1",
+        }
+        client.mcp_trade_facade.describe.return_value = {
+            "method": "POST",
+            "url": "https://api-spot.weex.com/api/v3/order",
+            "headers": {
+                "ACCESS-SIGN": "***",
+                "ACCESS-TIMESTAMP": "<generated-at-send>",
+            },
+            "query": {},
+            "body": body,
+        }
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = spot.execute_endpoint(
+                client=client,
+                endpoint_key="spot.order.place_order",
+                query={},
+                body=body,
+                dry_run=True,
+                confirm_live=False,
+                pretty=False,
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["body"], body)
+        self.assertEqual(payload["headers"]["ACCESS-SIGN"], "***")
+        self.assertEqual(
+            payload["headers"]["ACCESS-TIMESTAMP"],
+            "<generated-at-send>",
+        )
+        client.mcp_trade_facade.describe.assert_called_once()
 
     def test_spot_private_order_result_includes_live_environment_prefix(self) -> None:
         import weex_spot_api as spot
@@ -1174,13 +1196,12 @@ runpy.run_path(script_path, run_name="__main__")
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         client.read_endpoint.assert_not_called()
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
         self.assertEqual(payload["environment"]["trading_mode"], "live")
         self.assertEqual(payload["environment"]["market"], "spot")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
 
-    def test_spot_read_uses_explicit_mcp_facade_without_prepare_or_send(self) -> None:
+    def test_spot_read_uses_explicit_mcp_facade_without_request_description(self) -> None:
         import weex_spot_api as spot
 
         client = mock.Mock()
@@ -1207,8 +1228,7 @@ runpy.run_path(script_path, run_name="__main__")
             query={"symbol": "BTCUSDT"},
             body={},
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
         self.assertEqual(
             json.loads(stdout.getvalue()),
             {
@@ -1264,8 +1284,7 @@ runpy.run_path(script_path, run_name="__main__")
             query={},
             body=body,
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["outcome"]["class"], "unknown")
         self.assertEqual(payload["trade_status"], "REVIEW_REQUIRED")
@@ -1399,22 +1418,6 @@ runpy.run_path(script_path, run_name="__main__")
         upsert_mock.assert_not_called()
         self.assertIn("contract.example.test", str(exc_info.exception))
 
-    def test_contract_client_does_not_follow_redirects_with_auth_headers(self) -> None:
-        import weex_contract_api as contract
-
-        client = contract.WeexContractClient.__new__(contract.WeexContractClient)
-        client.timeout = 5
-
-        self.assert_authenticated_redirect_is_not_followed(client)
-
-    def test_spot_client_does_not_follow_redirects_with_auth_headers(self) -> None:
-        import weex_spot_api as spot
-
-        client = spot.WeexSpotClient.__new__(spot.WeexSpotClient)
-        client.timeout = 5
-
-        self.assert_authenticated_redirect_is_not_followed(client)
-
     def test_public_spot_cli_bootstraps_agent_state_without_profile_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             env = os.environ.copy()
@@ -1460,17 +1463,14 @@ runpy.run_path(script_path, run_name="__main__")
 
         profile = types.SimpleNamespace(name="main", spot_base_url="https://spot.weex.com")
         previous_resolve_profile = spot.resolve_profile
-        previous_load_profile_credentials = spot.load_profile_credentials
         previous_profile_error = spot.ProfileError
         try:
             spot.resolve_profile = lambda name=None: profile
-            spot.load_profile_credentials = lambda name: None
             spot.ProfileError = RuntimeError
 
             resolved = spot.resolve_runtime_profile(None, True)
         finally:
             spot.resolve_profile = previous_resolve_profile
-            spot.load_profile_credentials = previous_load_profile_credentials
             spot.ProfileError = previous_profile_error
 
         self.assertIs(resolved, profile)
@@ -1480,17 +1480,14 @@ runpy.run_path(script_path, run_name="__main__")
 
         profile = types.SimpleNamespace(name="main", contract_base_url="https://contract.weex.tech")
         previous_resolve_profile = contract.resolve_profile
-        previous_load_profile_credentials = contract.load_profile_credentials
         previous_profile_error = contract.ProfileError
         try:
             contract.resolve_profile = lambda name=None: profile
-            contract.load_profile_credentials = lambda name: None
             contract.ProfileError = RuntimeError
 
             resolved = contract.resolve_runtime_profile(None, True)
         finally:
             contract.resolve_profile = previous_resolve_profile
-            contract.load_profile_credentials = previous_load_profile_credentials
             contract.ProfileError = previous_profile_error
 
         self.assertIs(resolved, profile)

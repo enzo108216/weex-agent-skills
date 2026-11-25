@@ -266,9 +266,44 @@ def fake_runtime(service: FakeService, *, package_version: str = "0.2.0"):
         service.execution_authorizer = kwargs.get("execution_authorizer")
         return service
 
+    def describe_request(*, settings, name, arguments):
+        trade_enabled = bool(getattr(settings, "trade_enabled", False))
+        private = name.startswith("account_") or name.startswith("trade_preview_")
+        return {
+            "method": "POST" if name.startswith("trade_preview_") else "GET",
+            "url": "https://api-spot.weex.com/description",
+            "headers": {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "locale": "en-US",
+                "User-Agent": "weex-mcp/0.1 trade",
+                **(
+                    {
+                    "ACCESS-KEY": "***",
+                    "ACCESS-PASSPHRASE": "***",
+                    "ACCESS-TIMESTAMP": "<generated-at-send>",
+                    "ACCESS-SIGN": "***",
+                    }
+                    if private
+                    else {}
+                ),
+            },
+            "query": {},
+            "body": {},
+            "_meta": {
+                "com.weex/mcp": {
+                    "compatibility": build_manifest(
+                        tool_catalog(trade_enabled=trade_enabled),
+                        trade_enabled=trade_enabled,
+                    )
+                }
+            },
+        }
+
     return SimpleNamespace(
         package_version=package_version,
         build_local_user_service=build_local_user_service,
+        describe_request=describe_request,
         Settings=FakeSettings,
         TenantContext=FakeTenantContext,
         ResolvedWeexCredential=FakeResolvedCredential,
@@ -497,6 +532,114 @@ class VaultSecretProviderTests(GatewayFixture):
 
 
 class LocalMcpGatewayTests(GatewayFixture):
+    def test_request_description_uses_pure_runtime_without_service_or_private_state(self) -> None:
+        manifests = {
+            False: build_manifest(
+                tool_catalog(trade_enabled=False),
+                trade_enabled=False,
+            ),
+            True: build_manifest(
+                tool_catalog(trade_enabled=True),
+                trade_enabled=True,
+            ),
+        }
+        runtime = fake_runtime(
+            FakeService(
+                tools=tool_catalog(trade_enabled=True),
+                manifest=manifests[True],
+                secret_provider=None,
+            )
+        )
+        runtime.build_local_user_service = mock.Mock(
+            side_effect=AssertionError("request description must not build a service")
+        )
+
+        with (
+            mock.patch.object(
+                self.gateway,
+                "_default_profile_loader",
+                side_effect=AssertionError("profile loader must not run"),
+            ),
+            mock.patch.object(
+                self.gateway,
+                "_default_credential_loader",
+                side_effect=AssertionError("credential loader must not run"),
+            ),
+            mock.patch.object(
+                self.gateway,
+                "_default_approval_key_loader",
+                side_effect=AssertionError("approval loader must not run"),
+            ),
+        ):
+            description = self.gateway.describe_local_mcp_request(
+                name="trade_preview_order",
+                arguments={
+                    "market": "spot",
+                    "trading_mode": "live",
+                    "symbol": "BTCUSDT",
+                },
+                effective_spot_base_url="https://api-spot.weex.com",
+                effective_futures_base_url="https://api-contract.weex.com",
+                trade_enabled=True,
+                timeout_seconds=15.0,
+                request_locale="zh-CN",
+                runtime_loader=lambda _expected: runtime,
+                mapping_loader=lambda: mapping_for(manifests),
+            )
+
+        self.assertEqual(description["method"], "POST")
+        runtime.build_local_user_service.assert_not_called()
+        self.assertEqual(self.profile_loads, [])
+        self.assertEqual(self.credential_loads, [])
+
+    def test_request_description_rejects_origin_and_auth_placeholder_drift(self) -> None:
+        manifests = {
+            False: build_manifest(
+                tool_catalog(trade_enabled=False),
+                trade_enabled=False,
+            ),
+            True: build_manifest(
+                tool_catalog(trade_enabled=True),
+                trade_enabled=True,
+            ),
+        }
+        for mutation in ("origin", "signature", "duplicate_signature", "extra_header"):
+            with self.subTest(mutation=mutation):
+                runtime = fake_runtime(
+                    FakeService(
+                        tools=tool_catalog(trade_enabled=True),
+                        manifest=manifests[True],
+                        secret_provider=None,
+                    )
+                )
+                original = runtime.describe_request
+
+                def describe_request(**kwargs):
+                    value = original(**kwargs)
+                    if mutation == "origin":
+                        value["url"] = "https://evil.example/description"
+                    elif mutation == "signature":
+                        value["headers"]["ACCESS-SIGN"] = "real-signature"
+                    elif mutation == "duplicate_signature":
+                        value["headers"]["access-sign"] = "real-signature"
+                    else:
+                        value["headers"]["X-Debug"] = "private-value"
+                    return value
+
+                runtime.describe_request = describe_request
+                with self.assertRaises(self.gateway.McpGatewayError) as exc_info:
+                    self.gateway.describe_local_mcp_request(
+                        name="trade_preview_order",
+                        arguments={"market": "spot"},
+                        effective_spot_base_url="https://api-spot.weex.com",
+                        effective_futures_base_url="https://api-contract.weex.com",
+                        trade_enabled=True,
+                        timeout_seconds=15.0,
+                        runtime_loader=lambda _expected: runtime,
+                        mapping_loader=lambda: mapping_for(manifests),
+                    )
+                self.assertEqual(exc_info.exception.code, "mcp_contract_mismatch")
+
     def test_gateway_ref_is_instance_unique_but_approval_and_credential_fingerprint_are_stable(self) -> None:
         first, first_service = self.make_gateway(trade_enabled=True)
         second, second_service = self.make_gateway(trade_enabled=True)

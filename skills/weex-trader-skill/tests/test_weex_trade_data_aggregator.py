@@ -62,8 +62,7 @@ class McpReadBoundaryTests(unittest.TestCase):
             query={},
             body={},
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
 
     def test_spot_fetcher_uses_explicit_read_endpoint_without_prepare_or_send(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
@@ -95,8 +94,7 @@ class McpReadBoundaryTests(unittest.TestCase):
             query={"symbol": "BTCUSDT"},
             body={},
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
 
 
 class ReplayCollectionTests(unittest.TestCase):

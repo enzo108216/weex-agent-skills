@@ -1,10 +1,10 @@
 ---
-description: Use when the user wants WEEX REST automation for contract or spot trading, market or account queries, or secure saved-profile setup and management.
+description: Use when the user wants MCP-backed WEEX contract or spot trading, market or account queries, or secure saved-profile setup and management.
 name: weex-trader-skill
 ---
 # WEEX Trader Skill
 
-Compatibility requires Python with `requirements.lock` installed, network access for WEEX REST calls, and Tk through an explicitly prepared managed GUI runtime for Windows/macOS GUI profile and vault flows.
+Compatibility requires Python with `requirements.lock` installed, the verified `weex-mcp` package version and manifest selected by `references/mcp-capability-mapping.json`, network access for live WEEX calls, and Tk through an explicitly prepared managed GUI runtime for Windows/macOS GUI profile and vault flows. `scripts/weex_runtime_setup.py` installs only `requirements.lock`; it does not install an unpublished MCP candidate.
 
 Read `manifest.json` for routing rules. Open `file-index.json` only for file-level guidance.
 For every turn that uses this skill, before routing or UI launch, AI must refresh preflight state. For Partner-only turns with a selected saved profile, run `scripts/weex_partner_api.py preflight --profile <saved-profile> --language <zh|en> --pretty`; it refreshes `agent-init.json` and `agent-runtime.json` while projecting only Partner-safe fields to the tool transcript. For other turns, run `scripts/weex_agent_state.py --command skill.preflight --language <zh|en> --pretty`.
@@ -13,9 +13,9 @@ On Windows and macOS, GUI profile and vault flows must use the managed GUI runti
 
 ## Core Entry Points
 
-- `scripts/weex_contract_api.py`: contract/futures REST
-- `scripts/weex_spot_api.py`: spot REST
-- `scripts/weex_partner_api.py`: strict read-only Partner REST executor for the seven allowlisted Partner endpoints
+- `scripts/weex_contract_api.py`: MCP-backed contract/futures compatibility CLI
+- `scripts/weex_spot_api.py`: MCP-backed spot compatibility CLI
+- `scripts/weex_partner_api.py`: strict read-only compatibility executor for the seven allowlisted Local MCP Partner tools
 - `scripts/weex_trade_data_aggregator.py`: normalize live/history into replay, profile, order-risk, and account-risk payloads
 - `scripts/weex_trade_guard.py`: preview order risk, preview TP/SL conditional order risk, scan account risk, persist pending intents, and require explicit confirmation before live orders
 - `scripts/weex_auto_trade.py`: saved-profile-only JSON facade for strategy registration, authorization requests/grants/revocation, order reconciliation, and event inspection
@@ -44,7 +44,7 @@ These auto-detect language from `agent-init.json`.
 
 - Contract/futures tasks: use `scripts/weex_contract_api.py`; simulated futures trading uses explicit `--trading-mode demo` and the 4 official `sim.*` endpoints documented in `references/contract-api-definitions.json`
 - Spot tasks: use `scripts/weex_spot_api.py`
-- Partner queries: accept only structured requests from `weex-partner-skill` and execute them with `scripts/weex_partner_api.py`; profile resolution, Vault credentials, signing, exact-host enforcement, and HTTPS remain owned by this skill
+- Partner queries: accept only structured requests from `weex-partner-skill` and execute them with `scripts/weex_partner_api.py`; Trader owns profile selection, Vault-backed credential-ref injection, exact-host preflight, and the legacy envelope, while MCP owns REST signing and HTTPS transport
 - Replay, profile, or order-risk inputs for the analysis skill: collect live data with `scripts/weex_trade_data_aggregator.py`, then pass the normalized JSON into `weex-analysis-skill`
 - Order preview, TP/SL preview, account-risk scan, and confirmation flows: use `scripts/weex_trade_guard.py`
 - Automatic strategy authorization and authorized-order guard flows: use `scripts/weex_auto_trade.py` for the stable JSON facade, including `submit-auto`, recovery, events, snapshots, and reconciliation; strategies call the CLI as a subprocess and never import `scripts/weex_auto_trade_state.py` or inject production collaborators
@@ -57,12 +57,13 @@ These auto-detect language from `agent-init.json`.
 ## Runtime Prerequisites
 
 - Profile, vault, other private-account flows, and API-definition regeneration require the hashed dependencies in `requirements.lock`
+- Market, Account, Partner, Trade, and zero-network dry-run request descriptions require the exact verified `weex-mcp` candidate; run `scripts/weex_doctor.py mcp --pretty` to inspect package and manifest readiness
 - Windows uses `py -3`; macOS/Linux uses `python3`
 - For one-command local runtime setup, run `scripts/weex_runtime_setup.py --pretty` with the OS-appropriate launcher before private CLI usage
 - If `cryptography` or another dependency is missing, install `requirements.lock` with `--require-hashes` using the same interpreter and retry
 - Private contract and spot CLIs now auto-attempt `scripts/weex_runtime_setup.py` with the current interpreter when required Python dependencies are missing
 - `skill.preflight` also validates `WEEX_API_TIMEOUT` plus any `WEEX_*_API_BASE` overrides; private contract/spot commands now fail fast until those issues are fixed
-- Partner REST requests default to a 30-second timeout because Partner queries can legitimately exceed the 15-second contract/spot default; a valid positive `WEEX_API_TIMEOUT` still overrides it. Timeout failures remain fail-closed and are never retried automatically.
+- Partner MCP requests default to a 30-second upstream timeout because Partner queries can legitimately exceed the 15-second contract/spot default; a valid positive `WEEX_API_TIMEOUT` still overrides it. Timeout failures remain fail-closed and are never retried automatically.
 - Windows/macOS GUI flows ignore system `tkinter` availability and require the managed GUI runtime; if the user declines managed-runtime setup, use the terminal profile manager instead of launching a GUI
 - If `agent-init.json` is missing and AI is about to use an auto-language wrapper, refresh `skill.preflight` first instead of guessing
 

@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Strict read-only WEEX Partner REST executor."""
+"""Strict read-only WEEX Partner compatibility executor backed by Local MCP."""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import hashlib
-import hmac
 import json
 import math
 import os
 import re
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
-from urllib import error, parse, request
+from urllib import parse
 
 from weex_agent_state import ensure_private_runtime_ready, refresh_agent_records
 from weex_mcp_partner_compat import (
@@ -24,7 +20,7 @@ from weex_mcp_partner_compat import (
     McpPartnerCompatibilityError,
     McpPartnerFacade,
 )
-from weex_url_policy import open_weex_request
+from weex_url_policy import REDACTED_WEEX_AUTH_HEADER_NAMES
 
 
 PARTNER_BASE_URL = "https://api-spot.weex.com"
@@ -42,56 +38,6 @@ PARTNER_OVERRIDE_ENV_VARS = (
     "WEEX_SPOT_API_BASE",
     "WEEX_API_BASE",
 )
-AUTHENTICATION_CODES = {
-    "-1040",
-    "-1041",
-    "-1042",
-    "-1043",
-    "-1044",
-    "-1046",
-    "-1047",
-    "-1049",
-}
-PERMISSION_CODES = {
-    "-1050",
-    "-1051",
-    "-1052",
-    "-1053",
-    "-1055",
-    "-1056",
-    "-1057",
-    "-1058",
-    "-1190",
-}
-VALIDATION_CODES = {
-    "-1045",
-    "-1128",
-    "-1135",
-    "-1140",
-    "-1141",
-    "-1142",
-    "-1150",
-    "-1160",
-    "-1170",
-    "-1171",
-}
-UPSTREAM_CODES = {"-1000", "-1054"}
-REDACTED_HEADER_NAMES = {
-    "ACCESS-KEY",
-    "ACCESS-PASSPHRASE",
-    "ACCESS-SIGN",
-}
-STABLE_ERROR_MESSAGES = {
-    "authentication": "Partner authentication failed.",
-    "permission": "Partner permission validation failed.",
-    "rate_limit": "Partner rate limit was reached.",
-    "validation": "Partner request validation failed.",
-    "transport": "Partner transport failed.",
-    "schema": "Partner response schema validation failed.",
-    "upstream": "Partner upstream service failed.",
-}
-
-
 class PartnerPolicyError(ValueError):
     """Raised before credentials are loaded when a Partner request is unsafe."""
 
@@ -398,33 +344,6 @@ def build_partner_preflight_envelope(
     }
 
 
-def encode_query(query: Mapping[str, Any]) -> str:
-    return parse.urlencode(query, doseq=True)
-
-
-def compact_json(value: Optional[Mapping[str, Any]]) -> str:
-    if not value:
-        return ""
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def sign_request(
-    *,
-    secret: str,
-    timestamp_ms: str,
-    method: str,
-    path: str,
-    query_string: str,
-    body_string: str,
-) -> str:
-    message = f"{timestamp_ms}{method.upper()}{path}"
-    if query_string:
-        message += f"?{query_string}"
-    message += body_string
-    digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
-    return base64.b64encode(digest).decode("utf-8")
-
-
 def _validate_endpoint_parameters(
     endpoint: Endpoint,
     query: Mapping[str, Any],
@@ -445,57 +364,6 @@ def _validate_endpoint_parameters(
         raise PartnerPolicyError("The read-only Partner POST does not accept query parameters")
 
 
-def prepare_signed_request(
-    *,
-    endpoint: Endpoint,
-    api_key: str,
-    api_secret: str,
-    api_passphrase: str,
-    timestamp_ms: str,
-    query: Optional[Mapping[str, Any]] = None,
-    body: Optional[Mapping[str, Any]] = None,
-    locale: str = DEFAULT_LOCALE,
-    base_url: str = PARTNER_BASE_URL,
-) -> Dict[str, Any]:
-    canonical_base_url = validate_partner_base_url(base_url)
-    query_payload = dict(query or {})
-    body_payload = dict(body or {})
-    _validate_endpoint_parameters(endpoint, query_payload, body_payload)
-    if not api_key or not api_secret or not api_passphrase:
-        raise PartnerPolicyError("Saved profile credentials are incomplete")
-
-    query_string = encode_query(query_payload)
-    body_string = compact_json(body_payload)
-    signature = sign_request(
-        secret=api_secret,
-        timestamp_ms=timestamp_ms,
-        method=endpoint.method,
-        path=endpoint.path,
-        query_string=query_string,
-        body_string=body_string,
-    )
-    url = f"{canonical_base_url}{endpoint.path}"
-    if query_string:
-        url += f"?{query_string}"
-    return {
-        "method": endpoint.method,
-        "url": url,
-        "headers": {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "locale": locale,
-            "User-Agent": "weex-trader-skill-partner/1.0",
-            "ACCESS-KEY": api_key,
-            "ACCESS-PASSPHRASE": api_passphrase,
-            "ACCESS-TIMESTAMP": timestamp_ms,
-            "ACCESS-SIGN": signature,
-        },
-        "data": body_string.encode("utf-8") if endpoint.method == "POST" else None,
-        "query": query_payload,
-        "body": body_payload,
-    }
-
-
 def _replace_secret_values(value: str, secrets: Sequence[str]) -> str:
     result = value
     for secret in secrets:
@@ -510,7 +378,7 @@ def sanitize_for_output(value: Any, secret_values: Iterable[str] = ()) -> Any:
         sanitized: Dict[str, Any] = {}
         for key, item in value.items():
             key_text = _replace_secret_values(str(key), secrets)
-            if key_text.upper() in REDACTED_HEADER_NAMES:
+            if key_text.upper() in REDACTED_WEEX_AUTH_HEADER_NAMES:
                 sanitized[key_text] = "***"
             else:
                 sanitized[key_text] = sanitize_for_output(item, secrets)
@@ -617,168 +485,6 @@ def sanitize_partner_result(
     return dict(sanitized)
 
 
-def _header_value(headers: Mapping[str, Any], name: str) -> Optional[str]:
-    target = name.lower()
-    for key, value in headers.items():
-        if str(key).lower() == target:
-            return str(value)
-    return None
-
-
-def _rate_limit_metadata(headers: Mapping[str, Any]) -> Dict[str, Dict[str, int]]:
-    result: Dict[str, Dict[str, int]] = {"used": {}, "remaining": {}}
-    for key, value in headers.items():
-        upper = str(key).upper()
-        bucket: Optional[str] = None
-        group: Optional[str] = None
-        if upper.startswith("X-USED-WEIGHT-"):
-            group = "used"
-            bucket = upper.removeprefix("X-USED-WEIGHT-")
-        elif upper.startswith("X-REMAINING-WEIGHT-"):
-            group = "remaining"
-            bucket = upper.removeprefix("X-REMAINING-WEIGHT-")
-        if group and bucket:
-            try:
-                result[group][bucket] = int(str(value))
-            except ValueError:
-                continue
-    return result
-
-
-def _business_code(payload: Any) -> Optional[str]:
-    if not isinstance(payload, Mapping):
-        return None
-    for name in ("code", "errorCode"):
-        if name in payload and payload[name] is not None:
-            value = payload[name]
-            if isinstance(value, (Mapping, list, tuple, set)):
-                continue
-            return str(value)
-    return None
-
-
-def classify_error(status: Optional[int], payload: Any) -> str:
-    code = _business_code(payload)
-    if isinstance(payload, Mapping) and payload.get("raw_type") == "non_json":
-        return "schema"
-    if status == 429:
-        return "rate_limit"
-    if status == 401 or code in AUTHENTICATION_CODES:
-        return "authentication"
-    if status == 403 or code in PERMISSION_CODES:
-        return "permission"
-    if status == 400 or code in VALIDATION_CODES:
-        return "validation"
-    if status is not None and status >= 500 or code in UPSTREAM_CODES:
-        return "upstream"
-    if status is None:
-        return "transport"
-    return "upstream"
-
-
-def _payload_is_business_error(payload: Any) -> bool:
-    if isinstance(payload, Mapping) and payload.get("raw_type") == "non_json":
-        return True
-    code = _business_code(payload)
-    return code not in {None, "0", "00000", "200"}
-
-
-def _safe_error_message(payload: Any) -> str:
-    if isinstance(payload, Mapping):
-        for field in ("msg", "message"):
-            value = payload.get(field)
-            if value is not None and not isinstance(value, (Mapping, list, tuple, set)):
-                return str(value)
-    return "Partner API request failed."
-
-
-def _safe_error_details(payload: Any) -> Dict[str, Any]:
-    details: Dict[str, Any] = {"values_hidden": True}
-    if isinstance(payload, Mapping):
-        safe_field_names = {
-            "code", "errorCode", "msg", "message", "details", "raw_type",
-        }
-        details["field_names"] = sorted(
-            str(key) for key in payload if key in safe_field_names
-        )
-        unknown_field_count = sum(1 for key in payload if key not in safe_field_names)
-        if unknown_field_count:
-            details["unknown_field_count"] = unknown_field_count
-        if payload.get("raw_type") == "non_json":
-            details["raw_type"] = "non_json"
-    else:
-        details["value_type"] = type(payload).__name__
-    return details
-
-
-def normalize_http_result(
-    *,
-    status: Optional[int],
-    headers: Optional[Mapping[str, Any]],
-    payload: Any,
-    environment: str = PARTNER_PRODUCTION_ENVIRONMENT,
-) -> Dict[str, Any]:
-    if environment not in PARTNER_ENVIRONMENTS:
-        raise PartnerPolicyError("Partner response environment is invalid.")
-    response_headers = dict(headers or {})
-    successful_http = status is not None and 200 <= status < 300
-    invalid_business_code_type = isinstance(payload, Mapping) and any(
-        isinstance(payload.get(field), (Mapping, list, tuple, set))
-        for field in ("code", "errorCode")
-        if field in payload
-    )
-    ok = (
-        successful_http
-        and not invalid_business_code_type
-        and not _payload_is_business_error(payload)
-    )
-    result: Dict[str, Any] = {
-        "ok": ok,
-        "status": status,
-        "rate_limit": _rate_limit_metadata(response_headers),
-        "retry": {"automatic": False},
-    }
-    if ok:
-        result["data"] = payload
-    else:
-        category = (
-            "schema"
-            if invalid_business_code_type and successful_http
-            else classify_error(status, payload)
-        )
-        safe_details = _safe_error_details(payload)
-        if category == "schema":
-            if invalid_business_code_type:
-                safe_details["schema_issue"] = "invalid_business_code_type"
-            elif isinstance(payload, Mapping) and payload.get("raw_type") == "non_json":
-                safe_details["schema_issue"] = "non_json_response"
-        recovery_actions = {
-            "authentication": "Verify the saved API key, passphrase, timestamp, and Vault credentials.",
-            "permission": "Verify Partner API permission, IP allowlist, and account status with WEEX.",
-            "rate_limit": "Stop requests and wait for WEEX rate-limit weight to recover; do not retry automatically.",
-            "validation": "Correct the request parameters and submit a new query.",
-            "transport": "Check network connectivity and submit a new query; no automatic retry was attempted.",
-            "schema": "Stop using this response and verify the current WEEX Partner response contract.",
-            "upstream": "Wait for the WEEX service to recover and submit a new query manually.",
-        }
-        result["error"] = {
-            "category": category,
-            "http_status": status,
-            "code": _business_code(payload),
-            "message": (
-                STABLE_ERROR_MESSAGES[category]
-                if (
-                    environment == PARTNER_TEST_ENVIRONMENT
-                    or category in {"transport", "schema"}
-                )
-                else _safe_error_message(payload)
-            ),
-            "details": safe_details,
-            "recovery_action": recovery_actions[category],
-        }
-    return result
-
-
 def _local_failure(
     *,
     endpoint: Endpoint,
@@ -813,10 +519,10 @@ def _local_failure(
     }
 
 
-def _load_profile_dependencies():
-    from weex_profile_store import load_profile_credentials, resolve_profile
+def _load_profile_resolver():
+    from weex_profile_store import resolve_profile
 
-    return load_profile_credentials, resolve_profile
+    return resolve_profile
 
 
 def _default_preflight(**kwargs: Any) -> None:
@@ -827,36 +533,11 @@ def _default_preflight(**kwargs: Any) -> None:
     )
 
 
-def _default_open(prepared: Mapping[str, Any], timeout: float):
-    req = request.Request(
-        url=str(prepared["url"]),
-        method=str(prepared["method"]),
-        data=prepared.get("data"),
-        headers=dict(prepared["headers"]),
-    )
-    return open_weex_request(req, timeout=timeout, headers=prepared["headers"])
-
-
-def _read_response(response: Any) -> tuple[int, Dict[str, Any], Any]:
-    raw = response.read().decode("utf-8", errors="replace")
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return int(response.status), dict(response.headers), {
-            "code": None,
-            "message": "Partner API returned non-JSON data",
-            "raw_type": "non_json",
-        }
-    return int(response.status), dict(response.headers), payload
-
-
 def execute_partner_request(
     payload: Mapping[str, Any],
     *,
-    credential_loader: Optional[Callable[[str], Any]] = None,
     profile_resolver: Optional[Callable[[str], Any]] = None,
     preflight: Optional[Callable[..., None]] = None,
-    opener: Optional[Callable[[Mapping[str, Any], float], Any]] = None,
     mcp_executor: Optional[Callable[..., Dict[str, Any]]] = None,
     environ: Optional[Mapping[str, str]] = None,
     timeout: Optional[float] = None,
@@ -936,10 +617,8 @@ def execute_partner_request(
         )
 
     try:
-        if credential_loader is None or profile_resolver is None:
-            default_loader, default_resolver = _load_profile_dependencies()
-            credential_loader = credential_loader or default_loader
-            profile_resolver = profile_resolver or default_resolver
+        if profile_resolver is None:
+            profile_resolver = _load_profile_resolver()
         profile = profile_resolver(profile_ref)
     except Exception:
         return _local_failure(
@@ -1050,7 +729,7 @@ def _output(payload: Mapping[str, Any], pretty: bool) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Strict read-only WEEX Partner REST executor")
+    parser = argparse.ArgumentParser(description="Strict read-only WEEX Partner MCP compatibility executor")
     subparsers = parser.add_subparsers(dest="command", required=True)
     list_parser = subparsers.add_parser("list-endpoints")
     list_parser.add_argument("--pretty", action="store_true")

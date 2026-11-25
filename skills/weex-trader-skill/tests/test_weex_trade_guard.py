@@ -245,7 +245,6 @@ class TradeGuardTests(unittest.TestCase):
         fake_contract_api.normalize_contract_trade_symbol.side_effect = lambda symbol: symbol.upper()
         fake_contract_api.generate_client_oid.return_value = "generated-client-id"
         fake_client = mock.Mock()
-        fake_client.send.return_value = {"ok": True, "data": {}}
 
         with mock.patch.object(
             trade_guard.TradeDataAggregator,

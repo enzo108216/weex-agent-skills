@@ -146,7 +146,7 @@ The GUI keeps the existing `profile_id`, so rename is safer here than in ad hoc 
 
 ## Notes
 
-- private REST commands require a saved profile
+- private MCP-backed commands require a saved profile
 - public commands such as `ticker` and `list-endpoints` do not require a valid default profile
 - on Windows and macOS, the GUI entrypoints must use an explicitly prepared managed CPython 3.12.13 runtime even when the current interpreter can launch Tk; AI should explain the pinned setup and ask for confirmation before running `scripts/weex_gui_bootstrap.py ensure --accept-managed-runtime --pretty`
 - on Windows and macOS, the GUI entrypoints can also auto-detach from non-interactive/tool-managed shells so the UI keeps running after the launcher shell exits without needing an extra Terminal/cmd window in the normal detached-launch path; the detached launcher points the child process at the managed runtime

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 
 MAPPING_PATH = Path(__file__).resolve().parent.parent / "references" / "mcp-capability-mapping.json"
@@ -68,6 +69,7 @@ class McpGatewayError(RuntimeError):
 class _McpRuntime:
     package_version: str
     build_local_user_service: Any
+    describe_request: Any
     Settings: Any
     TenantContext: Any
     ResolvedWeexCredential: Any
@@ -100,6 +102,7 @@ def _load_default_runtime(expected_version: str) -> _McpRuntime:
         runtime = _McpRuntime(
             package_version=installed_version,
             build_local_user_service=local_module.build_local_user_service,
+            describe_request=local_module.describe_request,
             Settings=settings_module.Settings,
             TenantContext=tenant_module.TenantContext,
             ResolvedWeexCredential=secret_module.ResolvedWeexCredential,
@@ -225,6 +228,7 @@ def _runtime_symbols_are_valid(runtime: Any) -> bool:
     required = (
         "package_version",
         "build_local_user_service",
+        "describe_request",
         "Settings",
         "TenantContext",
         "ResolvedWeexCredential",
@@ -302,6 +306,252 @@ def _select_verified_candidate(
             "The verified WEEX MCP profile matrix is incomplete.",
         )
     return candidate, dict(selected[0])
+
+
+def describe_local_mcp_request(
+    *,
+    name: str,
+    arguments: Mapping[str, Any],
+    effective_spot_base_url: str,
+    effective_futures_base_url: str,
+    trade_enabled: bool,
+    timeout_seconds: float,
+    request_locale: str = "en-US",
+    runtime_loader: Callable[[str], Any] | None = None,
+    mapping_loader: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Describe a typed Local MCP request without building a service or reading secrets."""
+
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty string.")
+    if not isinstance(arguments, Mapping):
+        raise ValueError("arguments must be an object.")
+    if not isinstance(trade_enabled, bool):
+        raise ValueError("trade_enabled must be a boolean.")
+    if not isinstance(effective_spot_base_url, str) or not effective_spot_base_url:
+        raise ValueError("effective_spot_base_url must be a non-empty string.")
+    if not isinstance(effective_futures_base_url, str) or not effective_futures_base_url:
+        raise ValueError("effective_futures_base_url must be a non-empty string.")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be a positive finite number.")
+    if not isinstance(request_locale, str) or not request_locale:
+        raise ValueError("request_locale must be a non-empty string.")
+
+    try:
+        mapping = (mapping_loader or _load_default_mapping)()
+        candidate, expected_manifest = _select_verified_candidate(
+            mapping,
+            trade_enabled=trade_enabled,
+        )
+        expected_version = str(candidate["package_version"])
+        runtime = (runtime_loader or _load_default_runtime)(expected_version)
+    except McpGatewayError:
+        raise
+    except Exception as exc:
+        raise McpGatewayError(
+            "mcp_runtime_incompatible",
+            "The WEEX MCP request-description runtime is unavailable.",
+        ) from exc
+    if not _runtime_symbols_are_valid(runtime):
+        raise McpGatewayError(
+            "mcp_runtime_incompatible",
+            "The installed WEEX MCP package does not expose the required public Local runtime API.",
+        )
+    if runtime.package_version != expected_version:
+        raise McpGatewayError(
+            "mcp_version_mismatch",
+            "The installed WEEX MCP package version does not match the verified contract.",
+        )
+
+    try:
+        settings = runtime.Settings(
+            trade_enabled=trade_enabled,
+            spot_base_url=effective_spot_base_url,
+            futures_base_url=effective_futures_base_url,
+            market_timeout_seconds=float(timeout_seconds),
+            market_max_attempts=1,
+            market_retry_base_delay_seconds=0.0,
+            account_timeout_seconds=float(timeout_seconds),
+            partner_timeout_seconds=float(timeout_seconds),
+            request_locale=request_locale,
+        )
+        description = runtime.describe_request(
+            settings=settings,
+            name=name,
+            arguments=dict(arguments),
+        )
+    except McpGatewayError:
+        raise
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        message = getattr(exc, "message", None)
+        if isinstance(code, str) and code and isinstance(message, str) and message:
+            raise McpGatewayError(code, message) from exc
+        raise McpGatewayError(
+            "mcp_request_description_failed",
+            "The verified WEEX MCP request-description API failed.",
+        ) from exc
+    return _validate_request_description(
+        description,
+        name=name,
+        arguments=arguments,
+        candidate=candidate,
+        expected_manifest=expected_manifest,
+        trade_enabled=trade_enabled,
+        effective_spot_base_url=effective_spot_base_url,
+        effective_futures_base_url=effective_futures_base_url,
+    )
+
+
+def _validate_request_description(
+    value: Any,
+    *,
+    name: str,
+    arguments: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    expected_manifest: Mapping[str, Any],
+    trade_enabled: bool,
+    effective_spot_base_url: str,
+    effective_futures_base_url: str,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise McpGatewayError(
+            "mcp_contract_mismatch",
+            "The WEEX MCP request description is invalid.",
+        )
+    method = value.get("method")
+    url = value.get("url")
+    headers = value.get("headers")
+    query = value.get("query")
+    body = value.get("body")
+    metadata_value = value.get("_meta")
+    weex_metadata = (
+        metadata_value.get("com.weex/mcp")
+        if isinstance(metadata_value, dict)
+        else None
+    )
+    manifest = (
+        weex_metadata.get("compatibility")
+        if isinstance(weex_metadata, dict)
+        else None
+    )
+    if (
+        method not in {"GET", "POST", "DELETE"}
+        or not isinstance(url, str)
+        or not url.startswith("https://")
+        or not isinstance(headers, dict)
+        or not all(
+            isinstance(key, str) and isinstance(item, str)
+            for key, item in headers.items()
+        )
+        or not isinstance(query, dict)
+        or not isinstance(body, dict)
+        or not isinstance(manifest, dict)
+    ):
+        raise McpGatewayError(
+            "mcp_contract_mismatch",
+            "The WEEX MCP request description is invalid.",
+        )
+    parsed_url = urlsplit(url)
+    described_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    market = str(arguments.get("market") or "").strip().lower()
+    expected_origin = (
+        effective_spot_base_url.rstrip("/")
+        if market == "spot"
+        else effective_futures_base_url.rstrip("/")
+        if market in {"contract", "futures"}
+        else None
+    )
+    auth_header_placeholders = {
+        "access-key": "***",
+        "access-passphrase": "***",
+        "access-timestamp": "<generated-at-send>",
+        "access-sign": "***",
+    }
+    private_request = name.startswith("account_") or name.startswith(
+        "trade_preview_"
+    )
+    normalized_headers: dict[str, str] = {}
+    duplicate_header = False
+    for key, item in headers.items():
+        normalized_key = key.casefold()
+        if normalized_key in normalized_headers:
+            duplicate_header = True
+        normalized_headers[normalized_key] = item
+    expected_header_names = {
+        "accept",
+        "content-type",
+        "locale",
+        "user-agent",
+        *(auth_header_placeholders if private_request else ()),
+    }
+    if (
+        expected_origin is None
+        or described_origin != expected_origin
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.fragment
+        or duplicate_header
+        or set(normalized_headers) != expected_header_names
+        or (
+            private_request
+            and any(
+                normalized_headers.get(key) != item
+                for key, item in auth_header_placeholders.items()
+            )
+        )
+    ):
+        raise McpGatewayError(
+            "mcp_contract_mismatch",
+            "The WEEX MCP request description violates the Local route or redaction contract.",
+        )
+    manifest_payload = dict(manifest)
+    stored_manifest_digest = manifest_payload.pop("manifest_digest", None)
+    expected_modules = [
+        "account",
+        "market",
+        "partner",
+        *(["trade"] if trade_enabled else []),
+    ]
+    expected_values = {
+        "package_version": candidate["package_version"],
+        "tool_contract_version": candidate["tool_contract_version"],
+        "runtime_profile": LOCAL_RUNTIME_PROFILE,
+        "trade_enabled": trade_enabled,
+        "credential_modes": ["credential_ref"],
+        "delegated_authorization": trade_enabled,
+        "modules": expected_modules,
+    }
+    if (
+        not isinstance(stored_manifest_digest, str)
+        or _DIGEST_PATTERN.fullmatch(stored_manifest_digest) is None
+        or _canonical_digest(manifest_payload) != stored_manifest_digest
+        or any(
+            manifest.get(field) != item for field, item in expected_values.items()
+        )
+        or not isinstance(manifest.get("tools"), list)
+        or len(manifest["tools"]) != expected_manifest["tool_count"]
+        or any(
+            manifest.get(field) != expected_manifest[field]
+            for field in ("tool_set_digest", "schema_digest", "manifest_digest")
+        )
+    ):
+        raise McpGatewayError(
+            "mcp_contract_mismatch",
+            "The WEEX MCP request-description contract does not match Trader.",
+        )
+    return {
+        "method": method,
+        "url": url,
+        "headers": dict(headers),
+        "query": dict(query),
+        "body": dict(body),
+    }
 
 
 class VaultSecretProvider:
@@ -1157,5 +1407,6 @@ __all__ = [
     "LocalMcpGateway",
     "McpGatewayError",
     "VaultSecretProvider",
+    "describe_local_mcp_request",
     "probe_local_mcp_runtime",
 ]

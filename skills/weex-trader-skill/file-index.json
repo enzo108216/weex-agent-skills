@@ -45,7 +45,7 @@
       ]
     },
     "scripts/weex_contract_api.py": {
-      "role": "Primary contract/futures REST CLI, including official simulated futures sim.* endpoint routing through explicit trading_mode.",
+      "role": "Primary MCP-backed contract/futures compatibility CLI, including official simulated futures sim.* endpoint routing through explicit trading_mode.",
       "when": [
         "contract market data",
         "contract balances or positions",
@@ -57,7 +57,9 @@
       "depends_on": [
         "references/contract-api-definitions.json",
         "scripts/weex_profile_store.py",
-        "scripts/weex_mcp_read_compat.py"
+        "scripts/weex_mcp_gateway.py",
+        "scripts/weex_mcp_read_compat.py",
+        "scripts/weex_mcp_trade_compat.py"
       ],
       "surface": [
         "list-endpoints",
@@ -69,7 +71,7 @@
       ]
     },
     "scripts/weex_spot_api.py": {
-      "role": "Primary spot REST CLI.",
+      "role": "Primary MCP-backed spot compatibility CLI.",
       "when": [
         "spot market data",
         "spot balances",
@@ -79,7 +81,9 @@
       "depends_on": [
         "references/spot-api-definitions.json",
         "scripts/weex_profile_store.py",
-        "scripts/weex_mcp_read_compat.py"
+        "scripts/weex_mcp_gateway.py",
+        "scripts/weex_mcp_read_compat.py",
+        "scripts/weex_mcp_trade_compat.py"
       ],
       "surface": [
         "list-endpoints",
@@ -129,11 +133,12 @@
       ]
     },
     "scripts/weex_mcp_gateway.py": {
-      "role": "Profile-bound embedded Local MCP boundary with verified package/manifest preflight, safe runtime readiness, Vault-backed credential refs, approval-key binding, and strict typed-tool envelopes.",
+      "role": "Profile-bound embedded Local MCP boundary with verified package/manifest preflight, pure typed request description, safe runtime readiness, Vault-backed credential refs, approval-key binding, and strict typed-tool envelopes.",
       "when": [
         "constructing a Local User MCP service for one profile, effective Spot/Futures route pair, and Trade mode",
         "validating the verified MCP candidate package and compatibility manifest before a business request",
         "calling an allowlisted typed MCP tool without exposing plaintext credentials or raw REST routing",
+        "describing one typed request without constructing a service, loading credentials, signing, or sending network traffic",
         "probing package and manifest readiness without loading credentials or sending a business request"
       ],
       "depends_on": [
@@ -144,12 +149,13 @@
         "LocalMcpGateway",
         "VaultSecretProvider",
         "McpGatewayError and strict structuredContent return",
+        "describe_local_mcp_request",
         "runtime_status",
         "probe_local_mcp_runtime"
       ]
     },
     "scripts/weex_mcp_read_compat.py": {
-      "role": "Mapping-driven Contract/Spot read compatibility facade that preserves legacy routing precedence and JSON envelopes while calling verified Local MCP typed tools.",
+      "role": "Mapping-driven Contract/Spot read compatibility facade that preserves legacy routing precedence and JSON envelopes while calling verified Local MCP typed tools and the pure MCP request descriptor.",
       "when": [
         "mapping a legacy Contract or Spot read endpoint to a typed MCP tool",
         "resolving effective Spot/Futures origins, timeout, and locale for Local MCP reads",
@@ -163,11 +169,11 @@
       "surface": [
         "LocalMcpReadSettings",
         "resolve_local_mcp_read_settings",
-        "McpReadFacade"
+        "McpReadFacade.execute/describe"
       ]
     },
     "scripts/weex_mcp_trade_compat.py": {
-      "role": "Mapping-driven manual Trade preview/confirm facade that binds canonical legacy arguments, opaque MCP previews, stable profile/origin settings, and conservative mutation outcomes.",
+      "role": "Mapping-driven manual Trade preview/confirm and zero-network description facade that binds canonical legacy arguments, opaque MCP previews, stable profile/origin settings, and conservative mutation outcomes.",
       "when": [
         "mapping a legacy Contract or Spot write endpoint to an MCP preview/confirm tool pair",
         "persisting a credential-free manual Trade preview for later confirmation",
@@ -181,7 +187,7 @@
       "surface": [
         "LocalMcpTradeSettings",
         "resolve_local_mcp_trade_settings",
-        "McpTradeFacade"
+        "McpTradeFacade.preview/describe/confirm"
       ]
     },
     "scripts/weex_mcp_partner_compat.py": {
@@ -268,7 +274,7 @@
       ]
     },
     "scripts/weex_url_policy.py": {
-      "role": "Shared allowlist and shape validation for WEEX REST base URLs.",
+      "role": "Shared allowlist and shape validation for WEEX API base URLs plus auth-header names used only for output redaction.",
       "when": [
         "validating custom contract or spot REST hosts",
         "checking WEEX_API_BASE and market-specific API base overrides",
@@ -824,7 +830,7 @@
       ]
     },
     "references/auth-and-signing.md": {
-      "role": "Compact auth and signing reference for private REST calls.",
+      "role": "Compact boundary reference for Trader credential-ref injection and MCP-owned private REST signing/transport.",
       "when": [
         "signing behavior",
         "auth header debugging",

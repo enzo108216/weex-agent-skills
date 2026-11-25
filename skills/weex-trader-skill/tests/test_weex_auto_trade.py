@@ -3888,8 +3888,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
             {"preview_id": "p"},
             delegated_ref="opaque-ref",
         )
-        client.prepare_request.assert_not_called()
-        client.send.assert_not_called()
+        client.describe_request.assert_not_called()
 
         with self.assertRaisesRegex(ValueError, "delegated authorization"):
             boundary.call(

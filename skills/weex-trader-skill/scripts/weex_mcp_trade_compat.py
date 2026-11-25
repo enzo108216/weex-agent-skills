@@ -11,11 +11,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from weex_mcp_gateway import LocalMcpGateway, McpGatewayError
+from weex_mcp_gateway import (
+    LocalMcpGateway,
+    McpGatewayError,
+    describe_local_mcp_request,
+)
 from weex_mcp_read_compat import (
     EXPECTED_MAPPING_VERSION,
     LocalMcpReadSettings,
     _load_default_mapping,
+    _request_description_contract_error,
     resolve_local_mcp_read_settings,
 )
 
@@ -108,12 +113,14 @@ class McpTradeFacade:
         *,
         settings: LocalMcpTradeSettings,
         gateway_factory: Callable[..., Any] = LocalMcpGateway,
+        request_describer: Callable[..., dict[str, Any]] = describe_local_mcp_request,
         mapping_loader: Callable[[], dict[str, Any]] = _load_default_mapping,
         client_id_factory: Callable[[], str] = _default_client_id,
         delegated_authorizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.settings = settings
         self._gateway_factory = gateway_factory
+        self._request_describer = request_describer
         self._gateway: Any | None = None
         self._client_id_factory = client_id_factory
         self._delegated_authorizer = delegated_authorizer
@@ -194,6 +201,45 @@ class McpTradeFacade:
             "risk": dict(payload["risk"]),
             "expires_at": expires_at,
         }
+
+    def describe(
+        self,
+        *,
+        product: str,
+        endpoint: Any,
+        query: Mapping[str, Any],
+        body: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        operation = self._operation(product=product, endpoint=endpoint)
+        arguments = _map_trade_arguments(
+            operation,
+            query=dict(query),
+            body=dict(body),
+            client_id_factory=self._client_id_factory,
+        )
+        try:
+            description = self._request_describer(
+                name=str(operation["target"]["tool"]),
+                arguments=arguments,
+                effective_spot_base_url=self.settings.spot_base_url,
+                effective_futures_base_url=self.settings.futures_base_url,
+                trade_enabled=True,
+                timeout_seconds=self.settings.timeout_seconds,
+                request_locale=self.settings.locale,
+            )
+        except McpGatewayError as exc:
+            raise McpTradeCompatibilityError(exc.code, exc.message) from exc
+        if _request_description_contract_error(
+            operation,
+            description,
+            spot_base_url=self.settings.spot_base_url,
+            futures_base_url=self.settings.futures_base_url,
+        ):
+            raise McpTradeCompatibilityError(
+                "request_description_mismatch",
+                "The MCP request description does not match the verified legacy mapping.",
+            )
+        return description
 
     def confirm(self, preview: Mapping[str, Any]) -> dict[str, Any]:
         return self._confirm(preview, delegated_ref=None)

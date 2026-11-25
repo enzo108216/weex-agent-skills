@@ -213,6 +213,46 @@ class McpTradeCompatTests(unittest.TestCase):
             client_id_factory=lambda: next(ids),
         )
 
+    def test_describe_maps_typed_arguments_without_building_gateway(self) -> None:
+        entry = mapping_entry(self.mapping, "spot.order.place_order")
+        calls = []
+        facade = self.trade.McpTradeFacade(
+            settings=self.settings,
+            gateway_factory=lambda **_kwargs: self.fail(
+                "request description must not construct a gateway"
+            ),
+            request_describer=lambda **kwargs: calls.append(kwargs)
+            or {
+                "method": "POST",
+                "url": "https://api-spot.weex.com/api/v3/order",
+                "headers": {},
+                "query": {},
+                "body": {"symbol": "BTCUSDT"},
+            },
+            mapping_loader=lambda: copy.deepcopy(self.mapping),
+            client_id_factory=lambda: "stable-dry-run-id",
+        )
+
+        description = facade.describe(
+            product="spot",
+            endpoint=endpoint_from_mapping(entry),
+            query={},
+            body={
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "1",
+            },
+        )
+
+        self.assertEqual(description["method"], "POST")
+        self.assertEqual(calls[0]["name"], "trade_preview_order")
+        self.assertEqual(
+            calls[0]["arguments"]["client_order_id"],
+            "stable-dry-run-id",
+        )
+        self.assertTrue(calls[0]["trade_enabled"])
+
     def test_preview_maps_spot_batch_once_with_nested_aliases_and_stable_ids(self) -> None:
         entry = mapping_entry(self.mapping, "spot.order.bulk_order")
         gateway = FakeGateway(

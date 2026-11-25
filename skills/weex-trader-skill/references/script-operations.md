@@ -14,7 +14,7 @@ py -3 -m pip install --require-hashes -r requirements.lock
 python3 -m pip install --require-hashes -r requirements.lock
 ```
 
-Before private contract or spot commands, run `scripts/weex_agent_state.py --command skill.preflight ...` and inspect `runtime.host.requirements_ready`, `runtime.host.missing_modules`, and `runtime.env_validation`. The private REST CLIs now stop immediately when those checks fail instead of waiting until profile or order execution.
+Before private contract or spot commands, run `scripts/weex_agent_state.py --command skill.preflight ...` and inspect `runtime.host.requirements_ready`, `runtime.host.missing_modules`, `runtime.env_validation`, and MCP readiness. The private MCP-backed CLIs stop immediately when those checks fail instead of waiting until profile or order execution.
 
 One-command runtime setup:
 
@@ -56,7 +56,7 @@ Notes:
 - explicit `ensure --accept-managed-runtime` downloads a pinned uv installer, verifies its SHA256, provisions a managed CPython 3.12.13 virtual environment, and installs `requirements.lock` with hash verification
 - user-facing AI flows should offer to perform this command after confirmation instead of requiring non-technical users to copy and run it themselves
 - the profile and vault GUI entrypoints will automatically re-launch themselves inside that managed runtime when they are started directly from a non-managed interpreter
-- this managed bootstrap is for the Windows/macOS GUI flows; terminal/private REST commands still run on the interpreter you launched and therefore still need their own preflight/runtime checks
+- this managed bootstrap is for the Windows/macOS GUI flows; terminal/private MCP-backed commands still run on the interpreter you launched and therefore still need their own preflight/runtime checks
 - the profile and vault GUI entrypoints also auto-detach when they are started from a non-interactive/tool-managed shell on macOS or Windows
 - explicit detached launch uses a transient `.app` wrapper on macOS and prefers `pythonw.exe` or another hidden background process on Windows
 - detached-launch records and logs are stored under `~/.weex-trader-skill/gui-launchers`; the launcher keeps only recent records and trims each `.log` file to 256 KiB
@@ -173,7 +173,10 @@ For raw contract calls, `--profile is a global argument`; place it before `call`
 
 For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 
-Use `--dry-run` when you need to inspect the signed request without sending a mutating request:
+Use `--dry-run` when you need a redacted, zero-network request description. The
+CLI maps the legacy endpoint to a typed tool and calls the MCP Core library
+descriptor; it does not load Vault credentials, generate a timestamp or
+exchange signature, construct a Local service, or send a request:
 
 ```bash
 # Windows users: replace python3 with py -3

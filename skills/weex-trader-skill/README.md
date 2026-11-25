@@ -140,7 +140,7 @@ Keep the detailed analysis workflow, analysis commands, and result semantics in 
 Use this safety order for trading tasks:
 
 - run `skill.preflight` first so profile, runtime, env, and GUI-routing facts are fresh before private actions
-- use a saved profile for private REST access instead of pasting credentials into ad hoc commands
+- use a saved profile for private MCP-backed access instead of pasting credentials into ad hoc commands
 - choose the trading mode explicitly for account queries and direct non-preview actions: `live` maps to `真实盘` in Chinese and `real trading` in English; `demo` maps to `模拟盘` in Chinese and `demo trading` in English
 - keep `live` and `demo` as internal command values only; when speaking to the user, use localized trading-mode labels such as `模拟盘` and `真实盘` in Chinese or `demo trading` and `real trading` in English, not environment labels, not account labels, and not raw `live` or `demo`
 - for natural-language private account queries and direct non-preview actions, if the user did not clearly choose `模拟盘` or `真实盘` in Chinese, or `demo trading` or `real trading` in English, ask them to choose before calling private commands

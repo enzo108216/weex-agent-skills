@@ -265,11 +265,30 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
                 self.assertEqual(response["legacy_container"], expected_response_container(product, definition))
                 self.assertEqual(response["raw_policy"], "preserve_for_compat_serializer")
                 self.assertEqual(response["http_status_policy"], "compat_serializer_only")
-                self.assertEqual(item["dry_run"], {"owner": "trader_facade", "network": False})
+                self.assertEqual(
+                    item["dry_run"],
+                    {
+                        "owner": (
+                            "not_exposed"
+                            if product == "partner"
+                            else "mcp_core_library"
+                        ),
+                        "network": False,
+                    },
+                )
                 self.assertEqual(item["error_policy"], {"name": "typed_fail_closed_v1", "fail_closed": True})
                 self.assertIn(item["evidence"]["status"], {"field_audit_required", "tool_extension_required"})
                 self.assertIn(item["evidence"]["capability"], {"existing_path", "missing_endpoint"})
                 self.assertEqual(item["evidence"]["source"], payload["source_catalogs"][product])
+
+        self.assertEqual(
+            payload["shared_policies"]["dry_run"],
+            {
+                "owner": "mcp_core_library",
+                "network": False,
+                "exposed_products": ["contract", "spot"],
+            },
+        )
 
     def test_mcp_capability_mapping_assigns_eleven_missing_capabilities_to_ten_tools(self) -> None:
         payload = json.loads(MCP_CAPABILITY_MAPPING.read_text(encoding="utf-8"))
@@ -331,7 +350,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(payload["mapping_version"], "trader-mcp-capability-v2")
 
         candidate = payload["verified_mcp_candidate"]
-        source_commit = "f63c7fb0cd76dba12b9442119312e318e157a4a5"
+        source_commit = "d24fa5517e481648970ca57ba340bdba4e5eef9f"
         self.assertEqual(
             {
                 key: candidate[key]
@@ -355,8 +374,8 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             candidate["distribution_sha256"],
             {
-                "wheel": "0c78c43e77628ad1f683c49752aaa989b8d36bad3829e0b4206f563a34ee4891",
-                "sdist": "b62c9ed50e25abc9c3faacaced961ede106d085c3dd23d6af9345f5ac1a97f0c",
+                "wheel": "741354baa880f2b32e038bfdf566f89a4152454fef806ede01edebf6304d4388",
+                "sdist": "b83aab3374447f9ead5088ff204b34b3aecf3eb54e78dde6d779b1f3e038b791",
             },
         )
         for digest in candidate["distribution_sha256"].values():

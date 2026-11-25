@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""WEEX Spot REST API helper.
+"""MCP-backed WEEX Spot compatibility CLI.
 
 - Endpoint definitions loaded from references/spot-api-definitions.json
-- Private auth from a secure saved profile
+- Private operations delegated through the verified Local MCP gateway
 - Supports generic endpoint calls and deterministic order placement
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
-import hashlib
-import hmac
 import json
 import os
 import secrets
@@ -19,7 +16,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib import error, parse, request
 
 from weex_agent_state import RuntimePreflightError, ensure_private_runtime_ready, refresh_agent_records
 from weex_mcp_read_compat import (
@@ -33,10 +29,9 @@ from weex_mcp_trade_compat import (
     resolve_local_mcp_trade_settings,
 )
 from weex_profile_language import resolve_language
-from weex_url_policy import BaseUrlPolicyError, open_weex_request, validate_weex_base_url
+from weex_url_policy import BaseUrlPolicyError, validate_weex_base_url
 
 ProfileError = RuntimeError
-load_profile_credentials = None
 resolve_profile = None
 
 DEFAULT_BASE_URL = "https://api-spot.weex.com"
@@ -50,12 +45,12 @@ PRIVATE_PROFILE_REQUIRED_MESSAGE = (
     "scripts/weex_profile_manager.py or scripts/weex_profiles.py, or pass --profile <name>."
 )
 PROFILE_RUNTIME_DEPENDENCY_MISSING = (
-    "Unable to enable saved-profile support for the WEEX Spot REST API helper "
+    "Unable to enable saved-profile support for the MCP-backed WEEX Spot CLI "
     "because Python dependency '{module_name}' is missing. Run scripts/weex_runtime_setup.py --pretty "
     "or install requirements.lock with --require-hashes using this interpreter and retry."
 )
 PROFILE_RUNTIME_UNAVAILABLE = (
-    "Unable to enable saved-profile support for the WEEX Spot REST API helper "
+    "Unable to enable saved-profile support for the MCP-backed WEEX Spot CLI "
     "because its runtime dependencies are unavailable."
 )
 
@@ -103,15 +98,14 @@ ENDPOINTS = load_endpoint_map()
 
 
 def _load_profile_runtime_dependencies() -> None:
-    global ProfileError, load_profile_credentials, resolve_profile
+    global ProfileError, resolve_profile
 
-    if load_profile_credentials is not None and resolve_profile is not None:
+    if resolve_profile is not None:
         return
 
     try:
         from weex_profile_store import (
             ProfileError as profile_error_type,
-            load_profile_credentials as load_profile_credentials_fn,
             resolve_profile as resolve_profile_fn,
         )
     except ModuleNotFoundError as exc:
@@ -121,7 +115,6 @@ def _load_profile_runtime_dependencies() -> None:
         raise SystemExit(PROFILE_RUNTIME_UNAVAILABLE) from exc
 
     ProfileError = profile_error_type
-    load_profile_credentials = load_profile_credentials_fn
     resolve_profile = resolve_profile_fn
 
 
@@ -153,12 +146,6 @@ def parse_json_arg(raw: str, arg_name: str) -> Dict[str, Any]:
     return parsed
 
 
-def compact_json(value: Optional[Dict[str, Any]]) -> str:
-    if not value:
-        return ""
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-
-
 class WeexSpotClient:
     def __init__(
         self,
@@ -182,9 +169,6 @@ class WeexSpotClient:
             raise SystemExit(str(exc)) from exc
         self.timeout = timeout
         self.locale = locale
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.api_passphrase = api_passphrase
         self.profile_name = profile_name
         self.user_agent = user_agent
         self.mcp_read_settings = mcp_read_settings
@@ -228,33 +212,6 @@ class WeexSpotClient:
                 "status": None,
                 "error": {"code": exc.code, "message": exc.message},
             }
-
-    def _require_auth(self) -> None:
-        _load_profile_runtime_dependencies()
-        if self.profile_name and (not self.api_key or not self.api_secret or not self.api_passphrase):
-            try:
-                creds = load_profile_credentials(self.profile_name)
-            except ProfileError as exc:
-                raise SystemExit(str(exc)) from exc
-            self.api_key = creds.api_key
-            self.api_secret = creds.api_secret
-            self.api_passphrase = creds.api_passphrase
-        missing = []
-        if not self.api_key:
-            missing.append("API Key")
-        if not self.api_secret:
-            missing.append("Secret Key")
-        if not self.api_passphrase:
-            missing.append("Passphrase")
-        if missing:
-            if self.profile_name:
-                raise SystemExit(
-                    f"Missing private API credentials in profile '{self.profile_name}'. "
-                    "Update the saved profile with scripts/weex_profile_manager.py "
-                    "or scripts/weex_profiles.py and retry: "
-                    + ", ".join(missing)
-                )
-            raise SystemExit(PRIVATE_PROFILE_REQUIRED_MESSAGE)
 
     def trade_endpoint(
         self,
@@ -341,108 +298,50 @@ class WeexSpotClient:
                 "trade_status": "NOT_SENT",
                 "review_required": False,
             }
-    def _sign(self, timestamp_ms: str, method: str, path: str, query_string: str, body_str: str) -> str:
-        message = f"{timestamp_ms}{method}{path}"
-        if query_string:
-            message += f"?{query_string}"
-        message += body_str
-        digest = hmac.new(
-            self.api_secret.encode("utf-8"),
-            message.encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
-        return base64.b64encode(digest).decode("utf-8")
-
-    def prepare_request(
+    def describe_request(
         self,
         endpoint: Endpoint,
         query: Optional[Dict[str, Any]] = None,
         body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        method = endpoint.method.upper()
         q = query or {}
         b = body or {}
-        if method == "GET" and b:
+        if endpoint.method.upper() == "GET" and b:
             raise SystemExit(GET_BODY_UNSUPPORTED_MESSAGE)
-        if endpoint.request_transport == "query" and b:
-            raise SystemExit(
-                f"request_transport_mismatch: {endpoint.key} requires query fields; "
-                "pass them with --query and leave --body empty"
-            )
-        if endpoint.request_transport == "body" and q:
-            raise SystemExit(
-                f"request_transport_mismatch: {endpoint.key} requires a JSON body; "
-                "pass fields with --body and leave --query empty"
-            )
-        query_string = parse.urlencode(q, doseq=True)
-        body_str = compact_json(b)
-
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "locale": self.locale,
-            "User-Agent": self.user_agent,
-        }
-
-        if endpoint.requires_auth:
-            self._require_auth()
-            ts = str(int(time.time() * 1000))
-            sign = self._sign(ts, method, endpoint.path, query_string, body_str)
-            headers.update(
-                {
-                    "ACCESS-KEY": self.api_key,
-                    "ACCESS-PASSPHRASE": self.api_passphrase,
-                    "ACCESS-TIMESTAMP": ts,
-                    "ACCESS-SIGN": sign,
-                }
-            )
-
-        url = f"{self.base_url}{endpoint.path}"
-        if query_string:
-            url = f"{url}?{query_string}"
-
-        data = body_str.encode("utf-8") if body_str and method != "GET" else None
-        return {
-            "method": method,
-            "url": url,
-            "headers": headers,
-            "data": data,
-            "query": q,
-            "body": b,
-        }
-
-    def send(self, prepared: Dict[str, Any]) -> Dict[str, Any]:
-        req = request.Request(
-            url=prepared["url"],
-            method=prepared["method"],
-            data=prepared["data"],
-            headers=prepared["headers"],
-        )
         try:
-            with open_weex_request(req, timeout=self.timeout, headers=prepared["headers"]) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
-                try:
-                    payload = json.loads(raw)
-                except json.JSONDecodeError:
-                    payload = {"raw": raw}
-                return {"ok": True, "status": resp.status, "data": payload}
-        except error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                payload = {"raw": raw}
-            return {"ok": False, "status": exc.code, "error": payload}
-        except error.URLError as exc:
-            return {"ok": False, "status": None, "error": {"message": str(exc)}}
-
-
-def sanitize_headers(headers: Dict[str, str]) -> Dict[str, str]:
-    result = dict(headers)
-    for k in ["ACCESS-KEY", "ACCESS-PASSPHRASE", "ACCESS-SIGN"]:
-        if k in result:
-            result[k] = "***"
-    return result
+            if is_mutating(endpoint):
+                if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                    self.mcp_trade_facade = McpTradeFacade(
+                        settings=self.mcp_trade_settings_factory()
+                    )
+                if self.mcp_trade_facade is None:
+                    raise McpTradeCompatibilityError(
+                        "mcp_trade_unavailable",
+                        "The verified MCP Trade facade is not configured.",
+                    )
+                return self.mcp_trade_facade.describe(
+                    product="spot",
+                    endpoint=endpoint,
+                    query=q,
+                    body=b,
+                )
+            if self.mcp_read_settings is None and self.mcp_read_settings_factory is not None:
+                self.mcp_read_settings = self.mcp_read_settings_factory()
+            if self.mcp_read_facade is None and self.mcp_read_settings is not None:
+                self.mcp_read_facade = McpReadFacade(settings=self.mcp_read_settings)
+            if self.mcp_read_facade is None:
+                raise McpReadCompatibilityError(
+                    "mcp_read_unavailable",
+                    "The verified MCP read facade is not configured.",
+                )
+            return self.mcp_read_facade.describe(
+                product="spot",
+                endpoint=endpoint,
+                query=q,
+                body=b,
+            )
+        except (McpReadCompatibilityError, McpTradeCompatibilityError) as exc:
+            raise SystemExit(f"{exc.code}: {exc.message}") from exc
 
 
 def output_json(payload: Dict[str, Any], pretty: bool) -> None:
@@ -497,13 +396,13 @@ def execute_endpoint(
         )
 
     if dry_run:
-        prepared = client.prepare_request(endpoint, query=query, body=body)
+        prepared = client.describe_request(endpoint, query=query, body=body)
         preview = {
             "dry_run": True,
             "endpoint": endpoint.key,
             "method": prepared["method"],
             "url": prepared["url"],
-            "headers": sanitize_headers(prepared["headers"]),
+            "headers": prepared["headers"],
             "query": query,
             "body": body,
         }
@@ -665,7 +564,7 @@ def cmd_place_order(args: argparse.Namespace, client: WeexSpotClient) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="WEEX Spot REST API helper",
+        description="MCP-backed WEEX Spot compatibility CLI",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -690,7 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser(
         "list-endpoints",
-        help="List supported spot REST endpoints",
+        help="List the supported official spot endpoint catalog",
         description="List the spot endpoint definitions bundled with this skill.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -700,13 +599,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_call = sub.add_parser(
         "call",
         help="Call a spot endpoint by key with JSON query/body",
-        description="Call a specific spot REST endpoint using raw JSON query and body payloads.",
+        description="Call a specific official spot endpoint through MCP using JSON query and body payloads.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p_call.add_argument("--endpoint", required=True, choices=sorted(ENDPOINTS.keys()), help="Exact endpoint key from list-endpoints")
     p_call.add_argument("--query", default="{}", help="JSON object string")
     p_call.add_argument("--body", default="{}", help="JSON object string")
-    p_call.add_argument("--dry-run", action="store_true", help="Preview the signed request without sending it")
+    p_call.add_argument("--dry-run", action="store_true", help="Show the MCP redacted request description without signing or sending")
     p_call.add_argument("--confirm-live", action="store_true", help="Allow live mutating requests")
     p_call.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
@@ -732,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_place.add_argument("--price", default=None, help="Limit price; usually required for LIMIT orders and omitted for MARKET orders")
     p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "gtc", "ioc", "fok"], help="Execution policy for LIMIT orders: GTC, IOC, or FOK")
     p_place.add_argument("--new-client-order-id", default=None, help="Optional client-defined order identifier; auto-generated when omitted")
-    p_place.add_argument("--dry-run", action="store_true", help="Build and sign the request without sending it")
+    p_place.add_argument("--dry-run", action="store_true", help="Show the MCP redacted request description without signing or sending")
     p_place.add_argument("--confirm-live", action="store_true", help="Required to actually send the order instead of refusing live mutation")
     p_place.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 

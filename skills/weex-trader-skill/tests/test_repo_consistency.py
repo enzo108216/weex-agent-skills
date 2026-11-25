@@ -174,6 +174,88 @@ def load_api_definition_generator():
 
 
 class RepoConsistencyTests(unittest.TestCase):
+    def test_trader_business_runtime_has_no_direct_rest_or_exchange_signing_owner(self) -> None:
+        business_files = (
+            ROOT / "scripts" / "weex_contract_api.py",
+            ROOT / "scripts" / "weex_spot_api.py",
+            ROOT / "scripts" / "weex_partner_api.py",
+            ROOT / "scripts" / "weex_auto_trade_runtime.py",
+            ROOT / "scripts" / "weex_trade_guard.py",
+        )
+        forbidden = (
+            "open_weex_request",
+            "urlopen(",
+            "request.Request(",
+            "hmac.new(",
+            ".send(prepared",
+        )
+        for path in business_files:
+            source = path.read_text(encoding="utf-8")
+            for marker in forbidden:
+                with self.subTest(path=path.name, marker=marker):
+                    self.assertNotIn(marker, source)
+
+        for path in (
+            ROOT / "scripts" / "weex_contract_api.py",
+            ROOT / "scripts" / "weex_spot_api.py",
+        ):
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("describe_request", source)
+            self.assertNotIn("def prepare_request", source)
+            self.assertNotIn("def send", source)
+            method = source.split("    def describe_request(", 1)[1].split(
+                "\n\ndef output_json",
+                1,
+            )[0]
+            self.assertIn("mcp_trade_facade.describe", method)
+            self.assertIn("mcp_read_facade.describe", method)
+            self.assertNotIn("endpoint.path", method)
+            self.assertNotIn("self.base_url", method)
+            self.assertNotIn("urlencode", method)
+
+        partner = (ROOT / "scripts" / "weex_partner_api.py").read_text(
+            encoding="utf-8"
+        )
+        for removed_owner in (
+            "def sign_request",
+            "def prepare_signed_request",
+            "def _default_open",
+            "def _read_response",
+            "def normalize_http_result",
+        ):
+            self.assertNotIn(removed_owner, partner)
+
+        url_policy = (ROOT / "scripts" / "weex_url_policy.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("urllib.request", url_policy)
+        self.assertNotIn("from urllib import request", url_policy)
+        self.assertNotIn("open_weex_request", url_policy)
+
+        network_import_allowlist = {
+            "generate_weex_api_definitions.py",
+            "weex_gui_bootstrap.py",
+        }
+        hmac_import_allowlist = {
+            "weex_mcp_auto_trade.py",
+            "weex_mcp_gateway.py",
+        }
+        for path in (ROOT / "scripts").glob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if "import requests" in source or "import urllib.request" in source:
+                self.assertIn(path.name, network_import_allowlist)
+            if "import hmac" in source:
+                self.assertIn(path.name, hmac_import_allowlist)
+
+        bootstrap = (ROOT / "scripts" / "weex_gui_bootstrap.py").read_text(
+            encoding="utf-8"
+        )
+        generator = (
+            ROOT / "scripts" / "generate_weex_api_definitions.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("urllib.request.urlopen", bootstrap)
+        self.assertIn("requests.get", generator)
+
     def test_manifest_and_file_index_register_mcp_capability_mapping(self) -> None:
         self.assertTrue(MCP_CAPABILITY_MAPPING.exists())
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
