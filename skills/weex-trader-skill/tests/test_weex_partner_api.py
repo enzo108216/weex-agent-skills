@@ -53,6 +53,57 @@ EXPECTED_ENDPOINTS = {
     ),
 }
 
+
+def mcp_partner_success(*, settings, endpoint, data=None, status=200):
+    return {
+        "ok": True,
+        "status": status,
+        "rate_limit": {"used": {}, "remaining": {}},
+        "retry": {"automatic": False},
+        "data": {"code": "00000", "data": []} if data is None else data,
+        "endpoint": endpoint.key,
+        "method": endpoint.method,
+        "path": endpoint.path,
+        "weight": endpoint.weight,
+        "operation_class": endpoint.operation_class,
+        "profile": {
+            "resolved_profile_id": settings.profile_id,
+            "name": settings.profile_name,
+        },
+        "api_domain": "partner",
+        "environment": settings.environment,
+        "capability_mode": "read_only_query",
+    }
+
+
+def mcp_partner_error(*, settings, endpoint, category, code, status=None, details=None):
+    return {
+        "ok": False,
+        "status": status,
+        "rate_limit": {"used": {}, "remaining": {}},
+        "retry": {"automatic": False},
+        "error": {
+            "category": category,
+            "http_status": status,
+            "code": code,
+            "message": "Partner request failed.",
+            "details": {} if details is None else details,
+            "recovery_action": "Inspect the Partner failure and retry only when safe.",
+        },
+        "endpoint": endpoint.key,
+        "method": endpoint.method,
+        "path": endpoint.path,
+        "weight": endpoint.weight,
+        "operation_class": endpoint.operation_class,
+        "profile": {
+            "resolved_profile_id": settings.profile_id,
+            "name": settings.profile_name,
+        },
+        "api_domain": "partner",
+        "environment": settings.environment,
+        "capability_mode": "read_only_query",
+    }
+
 EXPECTED_DOC_SUFFIXES = {
     "partner.get-affiliate-uids": "GetAffiliateUIDs",
     "partner.get-channel-user-trade-and-asset": "GetChannelUserTradeAndAsset",
@@ -539,8 +590,14 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         partner = self.require_partner()
         synthetic_test_origin = "https://unit-test.weex.tech"
 
-        def opener(_prepared, _timeout):
-            raise error.URLError(f"failed to reach {synthetic_test_origin}")
+        def mcp_executor(*, settings, endpoint, **_kwargs):
+            return mcp_partner_error(
+                settings=settings,
+                endpoint=endpoint,
+                category="transport",
+                code="partner_transport_error",
+                details={"reason": "URLError", "origin": synthetic_test_origin},
+            )
 
         result = partner.execute_partner_request(
             {
@@ -549,18 +606,13 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 "query": {"userIds": "10001"},
                 "body": {},
             },
-            credential_loader=lambda _name: SimpleNamespace(
-                api_key="test-key",
-                api_secret="test-secret",
-                api_passphrase="test-passphrase",
-            ),
             profile_resolver=lambda _ref: SimpleNamespace(
                 profile_id="stable-id",
                 name="main",
                 spot_base_url=synthetic_test_origin,
             ),
             preflight=lambda **_kwargs: None,
-            opener=opener,
+            mcp_executor=mcp_executor,
             timeout=1.0,
             environ={},
         )
@@ -736,17 +788,11 @@ class WeexPartnerApiContractTests(unittest.TestCase):
             events.append(f"profile:{profile_ref}")
             return SimpleNamespace(profile_id="stable-id", name="main", spot_base_url="")
 
-        def credential_loader(profile_name):
-            events.append(f"credentials:{profile_name}")
-            return SimpleNamespace(
-                api_key="test-key",
-                api_secret="test-secret",
-                api_passphrase="test-passphrase",
-            )
-
-        def opener(prepared, _timeout):
-            events.append(f"open:{prepared['url']}")
-            return FakeResponse()
+        def mcp_executor(*, settings, endpoint, query, body):
+            events.append(f"mcp:{endpoint.key}")
+            self.assertEqual(query, {"userIds": "10001,10002"})
+            self.assertEqual(body, {})
+            return mcp_partner_success(settings=settings, endpoint=endpoint)
 
         result = partner.execute_partner_request(
             {
@@ -755,32 +801,26 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 "query": {"userIds": "10001,10002"},
                 "body": {},
             },
-            credential_loader=credential_loader,
             profile_resolver=profile_resolver,
             preflight=preflight,
-            opener=opener,
+            mcp_executor=mcp_executor,
             environ={},
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(events[:3], ["preflight", "profile:main", "credentials:main"])
-        self.assertTrue(events[3].startswith("open:https://api-spot.weex.com/"))
+        self.assertEqual(
+            events,
+            ["preflight", "profile:main", "mcp:partner.verify-referrals"],
+        )
         self.assertEqual(result["profile"]["resolved_profile_id"], "stable-id")
 
     def test_execute_uses_30_second_partner_default_timeout(self) -> None:
         partner = self.require_partner()
         observed_timeouts = []
 
-        class FakeResponse:
-            status = 200
-            headers = {}
-
-            def read(self):
-                return b'{"code":"00000","data":[]}'
-
-        def opener(_prepared, timeout):
-            observed_timeouts.append(timeout)
-            return FakeResponse()
+        def mcp_executor(*, settings, endpoint, **_kwargs):
+            observed_timeouts.append(settings.timeout_seconds)
+            return mcp_partner_success(settings=settings, endpoint=endpoint)
 
         result = partner.execute_partner_request(
             {
@@ -789,18 +829,13 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 "query": {"userIds": "10001"},
                 "body": {},
             },
-            credential_loader=lambda _name: SimpleNamespace(
-                api_key="test-key",
-                api_secret="test-secret",
-                api_passphrase="test-passphrase",
-            ),
             profile_resolver=lambda _ref: SimpleNamespace(
                 profile_id="stable-id",
                 name="main",
                 spot_base_url="",
             ),
             preflight=lambda **_kwargs: None,
-            opener=opener,
+            mcp_executor=mcp_executor,
             environ={},
         )
 
@@ -811,12 +846,9 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         partner = self.require_partner()
         observed_timeouts = []
 
-        class FakeResponse:
-            status = 200
-            headers = {}
-
-            def read(self):
-                return b'{"code":"00000","data":[]}'
+        def mcp_executor(*, settings, endpoint, **_kwargs):
+            observed_timeouts.append(settings.timeout_seconds)
+            return mcp_partner_success(settings=settings, endpoint=endpoint)
 
         result = partner.execute_partner_request(
             {
@@ -825,20 +857,13 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 "query": {"userIds": "10001"},
                 "body": {},
             },
-            credential_loader=lambda _name: SimpleNamespace(
-                api_key="test-key",
-                api_secret="test-secret",
-                api_passphrase="test-passphrase",
-            ),
             profile_resolver=lambda _ref: SimpleNamespace(
                 profile_id="stable-id",
                 name="main",
                 spot_base_url="",
             ),
             preflight=lambda **_kwargs: None,
-            opener=lambda _prepared, timeout: (
-                observed_timeouts.append(timeout) or FakeResponse()
-            ),
+            mcp_executor=mcp_executor,
             environ={"WEEX_API_TIMEOUT": "12.5"},
         )
 
@@ -944,13 +969,14 @@ class WeexPartnerApiContractTests(unittest.TestCase):
     def test_non_json_http_error_is_a_schema_error(self) -> None:
         partner = self.require_partner()
 
-        def opener(prepared, _timeout):
-            raise error.HTTPError(
-                prepared["url"],
-                500,
-                "Internal Server Error",
-                {"Content-Type": "text/html"},
-                BytesIO(b"<html>upstream failure</html>"),
+        def mcp_executor(*, settings, endpoint, **_kwargs):
+            return mcp_partner_error(
+                settings=settings,
+                endpoint=endpoint,
+                category="schema",
+                code="partner_response_schema_error",
+                status=500,
+                details={"raw_type": "non_json"},
             )
 
         result = partner.execute_partner_request(
@@ -960,18 +986,13 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 "query": {"userIds": "10001"},
                 "body": {},
             },
-            credential_loader=lambda _name: SimpleNamespace(
-                api_key="test-key",
-                api_secret="test-secret",
-                api_passphrase="test-passphrase",
-            ),
             profile_resolver=lambda _ref: SimpleNamespace(
                 profile_id="stable-id",
                 name="main",
                 spot_base_url="",
             ),
             preflight=lambda **_kwargs: None,
-            opener=opener,
+            mcp_executor=mcp_executor,
             timeout=1.0,
             environ={},
         )
@@ -1050,6 +1071,15 @@ class WeexPartnerApiContractTests(unittest.TestCase):
 
     def test_incomplete_vault_credentials_return_profile_vault_envelope(self) -> None:
         partner = self.require_partner()
+
+        def mcp_executor(*, settings, endpoint, **_kwargs):
+            return mcp_partner_error(
+                settings=settings,
+                endpoint=endpoint,
+                category="profile_vault",
+                code="vault_credentials_unavailable",
+            )
+
         result = partner.execute_partner_request(
             {
                 "endpoint": "partner.verify-referrals",
@@ -1063,7 +1093,7 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 name="main",
                 spot_base_url="",
             ),
-            credential_loader=lambda _name: SimpleNamespace(api_key="test-key"),
+            mcp_executor=mcp_executor,
             timeout=1.0,
             environ={},
         )
@@ -1076,15 +1106,15 @@ class WeexPartnerApiContractTests(unittest.TestCase):
         partner = self.require_partner()
         attempts = 0
 
-        def opener(prepared, _timeout):
+        def mcp_executor(*, settings, endpoint, **_kwargs):
             nonlocal attempts
             attempts += 1
-            raise error.HTTPError(
-                prepared["url"],
-                302,
-                "Found",
-                {},
-                None,
+            return mcp_partner_error(
+                settings=settings,
+                endpoint=endpoint,
+                category="redirect",
+                code="partner_redirect_forbidden",
+                status=302,
             )
 
         result = partner.execute_partner_request(
@@ -1094,18 +1124,13 @@ class WeexPartnerApiContractTests(unittest.TestCase):
                 "query": {"userIds": "10001"},
                 "body": {},
             },
-            credential_loader=lambda _name: SimpleNamespace(
-                api_key="test-key",
-                api_secret="test-secret",
-                api_passphrase="test-passphrase",
-            ),
             profile_resolver=lambda _ref: SimpleNamespace(
                 profile_id="stable-id",
                 name="main",
                 spot_base_url="",
             ),
             preflight=lambda **_kwargs: None,
-            opener=opener,
+            mcp_executor=mcp_executor,
             environ={},
         )
 

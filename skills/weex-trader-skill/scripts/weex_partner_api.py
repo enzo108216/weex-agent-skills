@@ -19,6 +19,11 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 from urllib import error, parse, request
 
 from weex_agent_state import ensure_private_runtime_ready, refresh_agent_records
+from weex_mcp_partner_compat import (
+    LocalMcpPartnerSettings,
+    McpPartnerCompatibilityError,
+    McpPartnerFacade,
+)
 from weex_url_policy import open_weex_request
 
 
@@ -852,6 +857,7 @@ def execute_partner_request(
     profile_resolver: Optional[Callable[[str], Any]] = None,
     preflight: Optional[Callable[..., None]] = None,
     opener: Optional[Callable[[Mapping[str, Any], float], Any]] = None,
+    mcp_executor: Optional[Callable[..., Dict[str, Any]]] = None,
     environ: Optional[Mapping[str, str]] = None,
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -980,93 +986,52 @@ def execute_partner_request(
             environment=partner_environment,
         )
     try:
-        credentials = credential_loader(str(getattr(profile, "name", profile_ref)))
-        secret_values = (
-            str(credentials.api_key),
-            str(credentials.api_secret),
-            str(credentials.api_passphrase),
+        settings = LocalMcpPartnerSettings(
+            profile_id=str(getattr(profile, "profile_id", "")),
+            profile_name=str(getattr(profile, "name", profile_ref)),
+            origin=partner_origin,
+            environment=partner_environment,
+            timeout_seconds=effective_timeout,
+            locale=str(payload.get("locale") or DEFAULT_LOCALE),
         )
-        if not all(secret_values):
-            raise ValueError("incomplete credentials")
+        if mcp_executor is None:
+            result = McpPartnerFacade(settings=settings).execute(
+                endpoint=endpoint,
+                query=query,
+                body=body,
+            )
+        else:
+            result = mcp_executor(
+                settings=settings,
+                endpoint=endpoint,
+                query=dict(query),
+                body=dict(body),
+            )
+    except McpPartnerCompatibilityError as exc:
+        return _local_failure(
+            endpoint=endpoint,
+            profile_ref=profile_ref,
+            category="runtime_preflight",
+            code=exc.code,
+            message=exc.message,
+            recovery_action="Repair the verified Local MCP Partner runtime and retry.",
+            environment=partner_environment,
+        )
     except Exception:
         return _local_failure(
             endpoint=endpoint,
             profile_ref=profile_ref,
-            category="profile_vault",
-            code="vault_credentials_unavailable",
-            message="The saved profile credentials could not be loaded from the Application Vault.",
-            recovery_action="Set up or unlock the trader Application Vault, then verify the profile credentials.",
-        )
-    prepared = prepare_signed_request(
-        endpoint=endpoint,
-        api_key=secret_values[0],
-        api_secret=secret_values[1],
-        api_passphrase=secret_values[2],
-        timestamp_ms=str(int(time.time() * 1000)),
-        query=query,
-        body=body,
-        locale=str(payload.get("locale") or DEFAULT_LOCALE),
-        base_url=partner_origin,
-    )
-
-    try:
-        response_or_context = (opener or _default_open)(prepared, effective_timeout)
-        if hasattr(response_or_context, "__enter__"):
-            with response_or_context as response:
-                status, response_headers, response_payload = _read_response(response)
-        else:
-            status, response_headers, response_payload = _read_response(response_or_context)
-        result = normalize_http_result(
-            status=status,
-            headers=response_headers,
-            payload=response_payload,
+            category="runtime_preflight",
+            code="partner_mcp_executor_failed",
+            message="The verified Local MCP Partner executor failed.",
+            recovery_action="Repair the verified Local MCP Partner runtime and retry.",
             environment=partner_environment,
         )
-    except error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        try:
-            response_payload = json.loads(raw)
-        except json.JSONDecodeError:
-            response_payload = {
-                "code": None,
-                "message": "Partner API returned non-JSON error data",
-                "raw_type": "non_json",
-            }
-        result = normalize_http_result(
-            status=exc.code,
-            headers=dict(exc.headers or {}),
-            payload=response_payload,
-            environment=partner_environment,
-        )
-    except (error.URLError, TimeoutError, OSError) as exc:
-        result = normalize_http_result(
-            status=None,
-            headers={},
-            payload={"message": str(exc)},
-            environment=partner_environment,
-        )
-
-    result.update(
-        {
-            "endpoint": endpoint.key,
-            "method": endpoint.method,
-            "path": endpoint.path,
-            "weight": endpoint.weight,
-            "operation_class": endpoint.operation_class,
-            "profile": {
-                "resolved_profile_id": str(getattr(profile, "profile_id", "")),
-                "name": str(getattr(profile, "name", profile_ref)),
-            },
-            "api_domain": "partner",
-            "environment": partner_environment,
-            "capability_mode": "read_only_query",
-        }
-    )
     return sanitize_partner_result(
         result,
         origin=partner_origin,
         environment=partner_environment,
-        secret_values=secret_values,
+        secret_values=(),
     )
 
 

@@ -530,6 +530,7 @@ class LocalMcpGateway:
                 market_max_attempts=1,
                 market_retry_base_delay_seconds=0.0,
                 account_timeout_seconds=self.timeout_seconds,
+                partner_timeout_seconds=self.timeout_seconds,
                 request_locale=request_locale,
             )
             self._service = runtime.build_local_user_service(

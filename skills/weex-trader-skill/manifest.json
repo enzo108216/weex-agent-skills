@@ -292,7 +292,8 @@
       "mcp_capability_mapping": "references/mcp-capability-mapping.json",
       "local_mcp_gateway": "scripts/weex_mcp_gateway.py",
       "mcp_read_facade": "scripts/weex_mcp_read_compat.py",
-      "mcp_trade_facade": "scripts/weex_mcp_trade_compat.py"
+      "mcp_trade_facade": "scripts/weex_mcp_trade_compat.py",
+      "mcp_partner_facade": "scripts/weex_mcp_partner_compat.py"
     }
   },
   "state": {

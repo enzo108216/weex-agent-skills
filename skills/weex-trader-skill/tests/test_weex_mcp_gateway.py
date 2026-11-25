@@ -794,6 +794,7 @@ class LocalMcpGatewayTests(GatewayFixture):
         self.assertEqual(service.settings.request_locale, "zh-CN")
         self.assertEqual(service.settings.market_timeout_seconds, 7.5)
         self.assertEqual(service.settings.account_timeout_seconds, 7.5)
+        self.assertEqual(service.settings.partner_timeout_seconds, 7.5)
         self.assertEqual(service.settings.market_max_attempts, 1)
         self.assertEqual(service.settings.market_retry_base_delay_seconds, 0.0)
 

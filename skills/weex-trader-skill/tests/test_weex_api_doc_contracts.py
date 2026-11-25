@@ -331,7 +331,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(payload["mapping_version"], "trader-mcp-capability-v2")
 
         candidate = payload["verified_mcp_candidate"]
-        source_commit = "120534c12da4de5c1c14f9d2c868e0d2d655810e"
+        source_commit = "f63c7fb0cd76dba12b9442119312e318e157a4a5"
         self.assertEqual(
             {
                 key: candidate[key]
@@ -355,8 +355,8 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             candidate["distribution_sha256"],
             {
-                "wheel": "cd3d66909703eb9dde6f14898a0310e6d44231b478d1054a79134bb1095784d2",
-                "sdist": "e9c687c4f60b4acce9f97a7902feb9fbd391e0a26c2465209ace4930ace2d402",
+                "wheel": "0c78c43e77628ad1f683c49752aaa989b8d36bad3829e0b4206f563a34ee4891",
+                "sdist": "b62c9ed50e25abc9c3faacaced961ede106d085c3dd23d6af9345f5ac1a97f0c",
             },
         )
         for digest in candidate["distribution_sha256"].values():

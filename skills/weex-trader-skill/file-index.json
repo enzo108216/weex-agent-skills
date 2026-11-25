@@ -89,7 +89,7 @@
       ]
     },
     "scripts/weex_partner_api.py": {
-      "role": "Strict read-only executor for the seven allowlisted WEEX Partner endpoints plus a transcript-safe Partner profile preflight, using the production default or a saved HTTPS `*.weex.tech` test origin.",
+      "role": "Strict read-only compatibility executor for seven typed Local MCP Partner tools plus a transcript-safe Partner profile preflight, using the production default or a saved HTTPS `*.weex.tech` test origin.",
       "when": [
         "executing structured Partner queries from weex-partner-skill",
         "validating and classifying the Partner production or test origin before credential loading",
@@ -99,7 +99,8 @@
         "references/partner-api-definitions.json",
         "scripts/weex_profile_store.py",
         "scripts/weex_agent_state.py",
-        "scripts/weex_url_policy.py"
+        "scripts/weex_url_policy.py",
+        "scripts/weex_mcp_partner_compat.py"
       ],
       "surface": [
         "list-endpoints",
@@ -181,6 +182,22 @@
         "LocalMcpTradeSettings",
         "resolve_local_mcp_trade_settings",
         "McpTradeFacade"
+      ]
+    },
+    "scripts/weex_mcp_partner_compat.py": {
+      "role": "Mapping-driven Partner compatibility facade that calls the seven Local MCP Partner tools and restores the legacy executor envelope without loading plaintext credentials.",
+      "when": [
+        "mapping one allowlisted Partner request to a typed Local MCP tool",
+        "restoring Partner profile, environment, status, rate-limit, retry, data, and typed-error metadata",
+        "preserving Partner production/test origin binding and single-request execution"
+      ],
+      "depends_on": [
+        "references/mcp-capability-mapping.json",
+        "scripts/weex_mcp_gateway.py"
+      ],
+      "surface": [
+        "LocalMcpPartnerSettings",
+        "McpPartnerFacade"
       ]
     },
     "scripts/weex_profile_store.py": {
