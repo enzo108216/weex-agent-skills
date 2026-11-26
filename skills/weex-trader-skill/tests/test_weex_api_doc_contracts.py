@@ -560,6 +560,14 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
             },
         )
 
+        currency_response = params_by_name(
+            by_key["spot.config.currency_info"],
+            "response_params",
+        )
+        self.assertIn("networkList[].depositDesc", currency_response)
+        self.assertIn("networkList[].withdrawDesc", currency_response)
+        self.assertNotIn("networkList[].depositDesc / withdrawDesc", currency_response)
+
     def test_contract_definitions_match_current_official_contract(self) -> None:
         payload, by_key = load_definitions("contract")
         self.assertEqual(len(payload["definitions"]), 47)

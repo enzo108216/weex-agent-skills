@@ -25,7 +25,10 @@
       "profile_manager": "references/profile-manager.md",
       "profile_onboarding": "references/profile-onboarding.md",
       "linux_vault": "references/linux-vault.md",
-      "troubleshooting": "references/troubleshooting.md"
+      "troubleshooting": "references/troubleshooting.md",
+      "mcp_boundary_contract": "references/mcp-boundary-contract-v1.json",
+      "mcp_boundary_validator": "scripts/validate_mcp_boundary_contract.py",
+      "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py"
     }
   },
   "routing": {
@@ -291,6 +294,11 @@
     },
     "compatibility": {
       "mcp_capability_mapping": "references/mcp-capability-mapping.json",
+      "mcp_boundary_contract": "references/mcp-boundary-contract-v1.json",
+      "mcp_compat_field_inventory": "references/mcp-compat-field-inventory-v1.json",
+      "mcp_compat_field_source_matrix": "references/mcp-compat-field-source-matrix-v1.json",
+      "mcp_boundary_contract_validator": "scripts/validate_mcp_boundary_contract.py",
+      "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py",
       "local_mcp_gateway": "scripts/weex_mcp_gateway.py",
       "mcp_read_facade": "scripts/weex_mcp_read_compat.py",
       "mcp_trade_facade": "scripts/weex_mcp_trade_compat.py",

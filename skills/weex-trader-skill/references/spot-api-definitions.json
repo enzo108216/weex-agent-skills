@@ -518,9 +518,14 @@
           "description": "Explorer URL for the contract."
         },
         {
-          "name": "networkList[].depositDesc / withdrawDesc",
+          "name": "networkList[].depositDesc",
           "type": "String",
-          "description": "Optional status messages when deposits/withdrawals are disabled."
+          "description": "Optional status message when deposits are disabled."
+        },
+        {
+          "name": "networkList[].withdrawDesc",
+          "type": "String",
+          "description": "Optional status message when withdrawals are disabled."
         }
       ],
       "rate_limits": [],

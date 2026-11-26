@@ -513,6 +513,31 @@ def apply_known_overrides(product: str, docs: List[ParsedDoc]) -> None:
                     "description": "Raw response is an array of spot symbols available for API trading.",
                 }
             ]
+        currency_info = find_doc(docs, "spot.config.currency_info")
+        if currency_info is not None:
+            normalized_response_params: List[Dict[str, str]] = []
+            for row in currency_info.response_params:
+                if row.get("name") != "networkList[].depositDesc / withdrawDesc":
+                    normalized_response_params.append(row)
+                    continue
+                for field_name, description in (
+                    (
+                        "networkList[].depositDesc",
+                        "Optional status message when deposits are disabled.",
+                    ),
+                    (
+                        "networkList[].withdrawDesc",
+                        "Optional status message when withdrawals are disabled.",
+                    ),
+                ):
+                    normalized_response_params.append(
+                        {
+                            **row,
+                            "name": field_name,
+                            "description": description,
+                        }
+                    )
+            currency_info.response_params = normalized_response_params
         copy_response("spot.order.history_orders", "spot.order.order_details")
 
     if product == "contract":

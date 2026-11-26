@@ -244,7 +244,8 @@ NONE
 | `networkList[].depositDust` | `String` | Minimum deposit amount that will be credited. |
 | `networkList[].contractAddress` | `String` | Contract address (if applicable). |
 | `networkList[].contractAddressUrl` | `String` | Explorer URL for the contract. |
-| `networkList[].depositDesc / withdrawDesc` | `String` | Optional status messages when deposits/withdrawals are disabled. |
+| `networkList[].depositDesc` | `String` | Optional status message when deposits are disabled. |
+| `networkList[].withdrawDesc` | `String` | Optional status message when withdrawals are disabled. |
 
 ## spot.config.get_api_trading_symbols — Get Spot API Trading Symbols
 

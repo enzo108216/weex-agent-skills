@@ -266,6 +266,39 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn(mapping_path, file_index["file_guide"])
         self.assertIn("79", file_index["file_guide"][mapping_path]["role"])
 
+    def test_manifest_and_file_index_register_candidate_mcp_boundary_contract(self) -> None:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        skill_text = SKILL.read_text(encoding="utf-8")
+        expected = {
+            "mcp_boundary_contract": "references/mcp-boundary-contract-v1.json",
+            "mcp_compat_field_inventory": "references/mcp-compat-field-inventory-v1.json",
+            "mcp_compat_field_source_matrix": "references/mcp-compat-field-source-matrix-v1.json",
+            "mcp_boundary_contract_validator": "scripts/validate_mcp_boundary_contract.py",
+            "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py",
+        }
+
+        for key, path in expected.items():
+            with self.subTest(key=key):
+                self.assertEqual(manifest["routing"]["compatibility"][key], path)
+                self.assertIn(path, file_index["file_guide"])
+                self.assertTrue((ROOT / path).is_file())
+        self.assertEqual(
+            manifest["read_order"]["open_if_needed"]["mcp_boundary_contract"],
+            expected["mcp_boundary_contract"],
+        )
+        self.assertEqual(
+            manifest["read_order"]["open_if_needed"]["mcp_boundary_validator"],
+            expected["mcp_boundary_contract_validator"],
+        )
+        self.assertEqual(
+            manifest["read_order"]["open_if_needed"]["mcp_boundary_pair_validator"],
+            expected["mcp_boundary_pair_validator"],
+        )
+        self.assertIn("candidate implementation contract", skill_text)
+        self.assertIn("validate_mcp_boundary_contract.py", skill_text)
+        self.assertIn("verify_mcp_boundary_pair.py", skill_text)
+
     def test_manifest_and_file_index_register_local_mcp_readiness_without_lockfile_dependency(self) -> None:
         self.assertTrue(MCP_GATEWAY.exists())
         self.assertTrue(MCP_READ_FACADE.exists())
