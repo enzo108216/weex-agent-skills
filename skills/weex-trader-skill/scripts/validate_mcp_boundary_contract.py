@@ -454,6 +454,13 @@ def validate_implementation_contract(contract: dict[str, Any]) -> None:
             raise ValueError(f"grant consumer API return schema mismatch: {operation}")
         if definition.get("allowed_caller") != "mcp_dispatch_only":
             raise ValueError(f"grant consumer API caller mismatch: {operation}")
+    if grant_api["claim"].get("strong_failure_guarantee") != {
+        "durable_claim": "must_return_valid_grant_claim",
+        "invalid_return": "grant_state_unchanged",
+        "process_termination": "recover_unfinalized_claim_to_review_required",
+        "raised_exception": "grant_state_unchanged",
+    }:
+        raise ValueError("grant consumer claim failure guarantee mismatch")
     expected_return_refs = {
         "load": "#/schema_components/execution_grant/$defs/issued_grant",
         "claim": "#/schema_components/execution_grant/$defs/grant_claim",

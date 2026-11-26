@@ -106,6 +106,15 @@ class McpBoundaryContractTests(unittest.TestCase):
                 "now",
             ],
         )
+        self.assertEqual(
+            contract["grant_consumer_api"]["claim"]["strong_failure_guarantee"],
+            {
+                "durable_claim": "must_return_valid_grant_claim",
+                "invalid_return": "grant_state_unchanged",
+                "process_termination": "recover_unfinalized_claim_to_review_required",
+                "raised_exception": "grant_state_unchanged",
+            },
+        )
         for operation in contract["grant_consumer_api"].values():
             self.assertEqual(operation["allowed_caller"], "mcp_dispatch_only")
             self.assertEqual(
@@ -324,6 +333,27 @@ class McpBoundaryContractTests(unittest.TestCase):
         contract["boundary_contract_digest"] = validator.canonical_digest(body)
 
         with self.assertRaisesRegex(ValueError, "input schema"):
+            validator.validate_documents(
+                skill_root=ROOT,
+                contract=contract,
+                inventory=inventory,
+                matrix=matrix,
+            )
+
+    def test_validator_rejects_claim_failure_guarantee_drift(self) -> None:
+        validator = load_validator()
+        self.assertIsNotNone(validator, "MCP boundary validator is missing")
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        contract["grant_consumer_api"]["claim"]["strong_failure_guarantee"][
+            "raised_exception"
+        ] = "review_required"
+        body = dict(contract)
+        body.pop("boundary_contract_digest")
+        contract["boundary_contract_digest"] = validator.canonical_digest(body)
+
+        with self.assertRaisesRegex(ValueError, "claim failure guarantee"):
             validator.validate_documents(
                 skill_root=ROOT,
                 contract=contract,

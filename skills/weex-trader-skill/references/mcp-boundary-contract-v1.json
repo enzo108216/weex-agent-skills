@@ -23,7 +23,7 @@
     "transaction.place_pending_order",
     "transaction.place_tp_sl_order"
   ],
-  "boundary_contract_digest": "sha256:bf2e49afa2111210977c21399ec6af4083752811290eae7e9afee8c14861be90",
+  "boundary_contract_digest": "sha256:07d3e11874c1f8956680b87e725061f486c9a001236bbf105b12be8dce2322a1",
   "candidate_versions": {
     "grant": "1",
     "intent": "2",
@@ -15555,11 +15555,17 @@
         "execution_binding_digest",
         "now"
       ],
+      "strong_failure_guarantee": {
+        "durable_claim": "must_return_valid_grant_claim",
+        "invalid_return": "grant_state_unchanged",
+        "process_termination": "recover_unfinalized_claim_to_review_required",
+        "raised_exception": "grant_state_unchanged"
+      },
       "return_schema": {
         "$ref": "#/schema_components/execution_grant/$defs/grant_claim"
       },
       "returns": "GrantClaim",
-      "semantics": "Atomic key, tool, digest, expiry, and revocation validation; a grant enters CLAIMED at most once."
+      "semantics": "Atomic key, tool, digest, expiry, and revocation validation; a grant enters CLAIMED at most once. Normal exceptions and invalid returns provide the strong guarantee that durable grant state is unchanged. A durable claim must return a valid GrantClaim; process termination after a durable claim is recovered to REVIEW_REQUIRED."
     },
     "finalize": {
       "allowed_caller": "mcp_dispatch_only",
