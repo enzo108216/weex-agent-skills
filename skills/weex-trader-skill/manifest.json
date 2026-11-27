@@ -30,7 +30,8 @@
       "mcp_boundary_contract_v1": "references/mcp-boundary-contract-v1.json",
       "manual_mutation_intent_contract": "references/manual-mutation-intent-v2.json",
       "mcp_boundary_validator": "scripts/validate_mcp_boundary_contract.py",
-      "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py"
+      "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py",
+      "mcp_contract_matrix": "scripts/verify_mcp_contract_matrix.py"
     }
   },
   "routing": {
@@ -324,6 +325,7 @@
       "mcp_compat_field_source_matrix": "references/mcp-compat-field-source-matrix-v1.json",
       "mcp_boundary_contract_validator": "scripts/validate_mcp_boundary_contract.py",
       "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py",
+      "mcp_contract_matrix": "scripts/verify_mcp_contract_matrix.py",
       "local_mcp_gateway": "scripts/weex_mcp_gateway.py",
       "mcp_read_facade": "scripts/weex_mcp_read_compat.py",
       "mcp_trade_facade": "scripts/weex_mcp_trade_compat.py",

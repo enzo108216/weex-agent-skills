@@ -229,6 +229,24 @@
         "--require-artifact-pin"
       ]
     },
+    "scripts/verify_mcp_contract_matrix.py": {
+      "role": "Offline acceptance check for two fixed Trader revisions and their exact MCP wheels, including rejection of both cross-version pairs.",
+      "when": [
+        "verifying local candidate and rollback preflight in both Trade modes",
+        "reproducing an artifact pin mismatch without credentials or business requests"
+      ],
+      "depends_on": [
+        "references/mcp-capability-mapping.json",
+        "scripts/weex_mcp_gateway.py"
+      ],
+      "surface": [
+        "--old-skill-revision",
+        "--old-mcp-wheel",
+        "--candidate-skill-revision",
+        "--candidate-mcp-wheel",
+        "--evidence-dir"
+      ]
+    },
     "scripts/weex_mcp_gateway.py": {
       "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare and restart recovery, pure ExecutionGrant construction, Direct grant context, and strict wrapper transport metadata.",
       "when": [
