@@ -247,6 +247,13 @@
         "--evidence-dir"
       ]
     },
+    "scripts/weex_mcp_stg_contract_harness.py": {
+      "role": "Offline T17 rehearsal for the frozen Direct action list, typed read-back, bounded cleanup and sticky stop conditions.",
+      "when": [
+        "validating T17 controls without calling STG or using credentials"
+      ],
+      "surface": ["--fake-only", "--evidence-dir"]
+    },
     "scripts/weex_mcp_gateway.py": {
       "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare and restart recovery, pure ExecutionGrant construction, Direct grant context, and strict wrapper transport metadata.",
       "when": [
