@@ -2,7 +2,7 @@
   "approval": {
     "approved_at": "2026-11-27",
     "approved_by": "user",
-    "authorization_source": "Current conversation: the user explicitly authorized D-028 and the T13B/T14 typed projection and Spot time bounds revision.",
+    "authorization_source": "Current conversation: the user explicitly authorized D-028 and the T13B/T14 typed projection and Spot time bounds revision and the Spot POST_ONLY and Partner sub-channel date revisions.",
     "excluded": [
       "production",
       "T18",
@@ -12,13 +12,15 @@
       "publish"
     ],
     "scope": [
-      "package 0.3.3 candidate",
+      "package 0.3.4 candidate",
       "Host-private reconciliation",
       "ReconciliationResult safe evidence",
       "manual intent evidence digest ownership",
       "two-stage confirmation contract",
       "witnessed typed order results and read fields",
-      "Spot bill time bounds"
+      "Spot bill time bounds",
+      "Spot limit POST_ONLY",
+      "Partner sub-channel calendar dates"
     ],
     "status": "USER_CONFIRMED_CANDIDATE"
   },
@@ -30,13 +32,13 @@
     "transaction.place_pending_order",
     "transaction.place_tp_sl_order"
   ],
-  "boundary_contract_digest": "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53",
+  "boundary_contract_digest": "sha256:15a8e64916a3227b32c431afae9b6b9de55ca350cf2291c6722f33694b828e38",
   "candidate_versions": {
     "grant": "2",
     "intent": "2",
     "manifest": "2",
     "output": "1",
-    "package": "0.3.3",
+    "package": "0.3.4",
     "prepare": "1",
     "request_description": "2",
     "status": "CANDIDATE_NEEDS_RELEASE_OWNER",
@@ -1741,12 +1743,12 @@
   },
   "capability_output_paths_digest": "sha256:3d86cb518a230515fbf9beea231ddc0db8a889e3541e9128b9a8f67342f774f0",
   "compatibility": {
-    "direct_contract_digest": "sha256:d9395d33b42b795fe160fedf3a39dc3bddcc36237791ba2d65274bf7bedf964a",
+    "direct_contract_digest": "sha256:3a1bb1e3e1e042dbe1c63195608a490c48b7958a8590b99fdd0df5a7b6160f7a",
     "field_decisions": 2448,
     "inventory_digest": "sha256:95737d9647cdecd8eae2d67a9fbb823cc9b56753522459fa55603cfea73fddc1",
     "inventory_path": "references/mcp-compat-field-inventory-v1.json",
     "legacy_mapping_digest": "sha256:1ad4fede4ae9211dcd9e1e6d87ccffbe09b77eb183d71cadeb8cf0c63f9c1821",
-    "matrix_digest": "sha256:4ad74cc1d4f097b32568fb357244f74ccae72a82f3cc9b6269e411c2a2da36de",
+    "matrix_digest": "sha256:e22f0bf10bdea948a2ae98cd9fab3dc6b0d09880fb3ca197af9dc7191d29e4e7",
     "matrix_path": "references/mcp-compat-field-source-matrix-v1.json",
     "removed_breaking": 0,
     "source_catalog_digests": {
@@ -1845,14 +1847,6 @@
                 ]
               },
               "properties": {
-                "time_in_force": {
-                  "enum": [
-                    "GTC",
-                    "IOC",
-                    "FOK"
-                  ],
-                  "type": "string"
-                },
                 "trading_mode": {
                   "const": "live"
                 }
@@ -5993,7 +5987,8 @@
                         "enum": [
                           "GTC",
                           "IOC",
-                          "FOK"
+                          "FOK",
+                          "POST_ONLY"
                         ],
                         "type": "string"
                       },
@@ -15502,7 +15497,7 @@
       ]
     }
   ],
-  "direct_tools_digest": "sha256:d9395d33b42b795fe160fedf3a39dc3bddcc36237791ba2d65274bf7bedf964a",
+  "direct_tools_digest": "sha256:3a1bb1e3e1e042dbe1c63195608a490c48b7958a8590b99fdd0df5a7b6160f7a",
   "forbidden_public_arguments": [
     "credential",
     "permissions",
@@ -15785,7 +15780,7 @@
   "legacy_write_mapping_digest": "sha256:9699ae17fb0409d4e2a8581ea60583c729a767d0374c6c05ae901bdf6e8f5631",
   "manual_intent_contract": {
     "path": "references/manual-mutation-intent-v2.json",
-    "schema_digest": "sha256:450bcd9ea8a2725961ab90254bac2c2df417e2faf9d962e771f428e9f2ccc86e",
+    "schema_digest": "sha256:ef5fd583400c324a202d5630ace2832e8f5af4494fe293fc6162f10b07f4456d",
     "schema_version": 2
   },
   "mcp_host_private_api": {

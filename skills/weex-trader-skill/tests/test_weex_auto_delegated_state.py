@@ -174,7 +174,7 @@ class DurableAutoGrantTests(unittest.TestCase):
         try:
             from weex_mcp import execution_authorization, trade_execution
         except ModuleNotFoundError:
-            self.skipTest("fixed MCP 0.3.3 runtime is required")
+            self.skipTest("fixed MCP 0.3.4 runtime is required")
         self.authorization_model = execution_authorization
         self.execution_model = trade_execution
 

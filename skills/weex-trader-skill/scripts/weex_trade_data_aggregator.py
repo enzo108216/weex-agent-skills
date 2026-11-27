@@ -1673,6 +1673,7 @@ class TradeDataAggregator:
                 price_series.extend(
                     _normalize_klines(
                         self.fetcher.fetch_futures_klines(
+                            profile_name=profile_name,
                             symbol=normalized_symbol,
                             start_ms=start_ms,
                             end_ms=end_ms,
@@ -1923,11 +1924,14 @@ class TradeDataAggregator:
                 )
             if symbol:
                 current_price = _safe_current_price(
-                    fetch_latest_price=lambda: self.fetcher.fetch_futures_latest_price(symbol=symbol),
+                    fetch_latest_price=lambda: self.fetcher.fetch_futures_latest_price(
+                        profile_name=profile_name, symbol=symbol,
+                    ),
                     market="futures",
                     symbol=symbol,
                     degraded_reasons=degraded_reasons,
                     fetch_klines=lambda: self.fetcher.fetch_futures_klines(
+                        profile_name=profile_name,
                         symbol=symbol,
                         start_ms=start_ms,
                         end_ms=end_ms,
@@ -2132,11 +2136,14 @@ class TradeDataAggregator:
                 )
             if market_snapshot_symbol:
                 current_price = _safe_current_price(
-                    fetch_latest_price=lambda: self.fetcher.fetch_futures_latest_price(symbol=market_snapshot_symbol),
+                    fetch_latest_price=lambda: self.fetcher.fetch_futures_latest_price(
+                        profile_name=profile_name, symbol=market_snapshot_symbol,
+                    ),
                     market="futures",
                     symbol=market_snapshot_symbol,
                     degraded_reasons=degraded_reasons,
                     fetch_klines=lambda: self.fetcher.fetch_futures_klines(
+                        profile_name=profile_name,
                         symbol=market_snapshot_symbol,
                         start_ms=start_ms,
                         end_ms=end_ms,
@@ -2282,11 +2289,16 @@ class WeexApiFetcher:
         )
         return contract_api, client
 
-    def _build_public_contract_client(self) -> tuple[Any, Any]:
+    def _build_public_contract_client(self, profile_name: str = "") -> tuple[Any, Any]:
         contract_api = self._contract_module()
         contract_api.refresh_agent_records(command="trade-aggregator.contract.public")
+        profile = contract_api.resolve_runtime_profile(
+            requested_profile=profile_name,
+            allow_invalid_default=False,
+        ) if profile_name else None
         read_settings = resolve_local_mcp_read_settings(
             profile=None,
+            explicit_futures_base_url=profile.contract_base_url if profile else None,
             active_product="contract",
         )
         client = contract_api.WeexContractClient(
@@ -2364,7 +2376,7 @@ class WeexApiFetcher:
         trading_mode: str = DEFAULT_TRADING_MODE,
     ) -> Any:
         if public:
-            contract_api, client = self._build_public_contract_client()
+            contract_api, client = self._build_public_contract_client(profile_name)
         else:
             contract_api, client = self._build_contract_client(profile_name)
         endpoint = contract_api.ENDPOINTS[endpoint_key]
@@ -2677,6 +2689,7 @@ class WeexApiFetcher:
     def fetch_futures_klines(
         self,
         *,
+        profile_name: str = "",
         symbol: str,
         start_ms: int,
         end_ms: int,
@@ -2687,7 +2700,7 @@ class WeexApiFetcher:
         while cursor <= end_ms:
             chunk_end = min(end_ms, cursor + chunk_ms - 1)
             payload = self._send_contract_request(
-                profile_name="",
+                profile_name=profile_name,
                 endpoint_key="market.get_history_klines",
                 query={
                     "symbol": symbol,
@@ -2858,9 +2871,9 @@ class WeexApiFetcher:
             public=True,
         )
 
-    def fetch_futures_latest_price(self, *, symbol: str) -> Any:
+    def fetch_futures_latest_price(self, *, profile_name: str = "", symbol: str) -> Any:
         return self._send_contract_request(
-            profile_name="",
+            profile_name=profile_name,
             endpoint_key="market.get_symbol_price",
             query={
                 "symbol": symbol,

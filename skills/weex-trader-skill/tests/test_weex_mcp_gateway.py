@@ -30,7 +30,7 @@ SOURCE_CATALOG_DIGESTS = {
     "partner": "sha256:" + "8" * 64,
 }
 VERSIONS = {
-    "package": "0.3.3",
+    "package": "0.3.4",
     "tool_contract": "2",
     "manifest": "2",
     "output": "1",
@@ -138,7 +138,7 @@ def build_manifest(tools: list[dict[str, object]], *, trade_enabled: bool) -> di
     )
     manifest: dict[str, object] = {
         "manifest_version": 2,
-        "package_version": "0.3.3",
+        "package_version": "0.3.4",
         "tool_contract_version": "2",
         "runtime_profile": "local_user",
         "trade_enabled": trade_enabled,
@@ -158,7 +158,7 @@ def build_static_manifest(tools: list[dict[str, object]]) -> dict[str, object]:
     manifest: dict[str, object] = {
         "status": "CANDIDATE_NEEDS_RELEASE_OWNER",
         "versions": dict(VERSIONS),
-        "package_version": "0.3.3",
+        "package_version": "0.3.4",
         "composition_kind": "local_user",
         "tools": [item["name"] for item in projections],
         "input_schema_digest": canonical_digest(
@@ -219,7 +219,7 @@ def mapping_for(
         "mapping_version": "trader-mcp-capability-v2",
         "verified_mcp_candidate": {
             "official_repository": "https://github.com/weex-labs/weex-mcp",
-            "package_version": "0.3.3",
+            "package_version": "0.3.4",
             "tool_contract_version": "2",
             "manifest_version": 2,
             "source_commit": "45c7bf5ae63db360cf6ec0e18d92806d3f416391",
@@ -475,7 +475,7 @@ class GrantConsumerSpy:
         raise AttributeError(name)
 
 
-def fake_runtime(service: FakeService, *, package_version: str = "0.3.3"):
+def fake_runtime(service: FakeService, *, package_version: str = "0.3.4"):
     def build_local_user_service(**kwargs):
         service.settings = kwargs["settings"]
         service.secret_provider = kwargs["secret_provider"]
@@ -750,7 +750,7 @@ class LocalMcpGatewayTests(GatewayFixture):
             timeout_seconds=7.5,
             request_locale="zh-CN",
         )
-        self.assertEqual(gateway.runtime_status()["version"], "0.3.3")
+        self.assertEqual(gateway.runtime_status()["version"], "0.3.4")
         self.assertEqual(
             service.settings.spot_base_url,
             "https://stg-spotpro-openapi.weex.tech",
@@ -1413,16 +1413,16 @@ class LocalMcpGatewayTests(GatewayFixture):
             side_effect=module.metadata.PackageNotFoundError,
         ):
             with self.assertRaises(module.McpGatewayError) as missing:
-                module._load_default_runtime("0.3.3")
+                module._load_default_runtime("0.3.4")
         self.assertEqual(missing.exception.code, "mcp_package_missing")
 
         with mock.patch.object(module.metadata, "version", return_value="0.2.0"):
             with self.assertRaises(module.McpGatewayError) as mismatch:
-                module._load_default_runtime("0.3.3")
+                module._load_default_runtime("0.3.4")
         self.assertEqual(mismatch.exception.code, "mcp_version_mismatch")
 
         with (
-            mock.patch.object(module.metadata, "version", return_value="0.3.3"),
+            mock.patch.object(module.metadata, "version", return_value="0.3.4"),
             mock.patch.object(
                 module.importlib,
                 "import_module",
@@ -1445,7 +1445,7 @@ class LocalMcpGatewayTests(GatewayFixture):
                 "weex_mcp.execution_authorization": SimpleNamespace(ExecutionGrant=object()),
             }
             importer.side_effect = lambda name: modules[name]
-            runtime = module._load_default_runtime("0.3.3")
+            runtime = module._load_default_runtime("0.3.4")
         self.assertIs(
             runtime.AuthenticatedInvocationContext,
             modules["weex_mcp.invocation_context"].AuthenticatedInvocationContext,

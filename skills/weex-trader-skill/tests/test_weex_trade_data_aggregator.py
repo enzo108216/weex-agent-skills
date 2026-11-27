@@ -32,6 +32,30 @@ class WindowSplitTests(unittest.TestCase):
 
 
 class McpReadBoundaryTests(unittest.TestCase):
+    def test_public_futures_read_uses_the_named_profile_route_without_credentials(self) -> None:
+        fetcher = aggregator.WeexApiFetcher()
+        contract_api = fetcher._contract_module()
+        stg_origin = "https://stg-api-contract.weex.tech"
+        profile = mock.Mock(contract_base_url=stg_origin)
+        with (
+            mock.patch.object(contract_api, "refresh_agent_records"),
+            mock.patch.object(contract_api, "resolve_runtime_profile", return_value=profile) as resolve,
+            mock.patch.object(contract_api, "WeexContractClient") as client_cls,
+        ):
+            client_cls.return_value.read_endpoint.return_value = {"ok": True, "data": {"price": "100"}}
+            payload = fetcher._send_contract_request(
+                profile_name="stg", endpoint_key="market.get_symbol_price",
+                query={"symbol": "BTCUSDT", "priceType": "MARK"}, public=True,
+            )
+
+        self.assertEqual(payload, {"price": "100"})
+        kwargs = client_cls.call_args.kwargs
+        self.assertEqual(kwargs["base_url"], stg_origin)
+        self.assertIsNone(kwargs["mcp_read_settings"].profile_id)
+        for key in ("api_key", "api_secret", "api_passphrase", "profile_name"):
+            self.assertIsNone(kwargs[key])
+        resolve.assert_called_once_with(requested_profile="stg", allow_invalid_default=False)
+
     def test_contract_fetcher_uses_explicit_read_endpoint_without_prepare_or_send(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
         endpoint = object()
@@ -1557,7 +1581,7 @@ class ReplayCollectionTests(unittest.TestCase):
         self.assertEqual(eth_position["mark_price"], 3150.0)
         self.assertEqual(eth_position["notional"], 1575.0)
         self.assertEqual(result["positions"][0]["unrealized_pnl"], 51.2)
-        fetcher.fetch_futures_latest_price.assert_called_once_with(symbol="ETHUSDT")
+        fetcher.fetch_futures_latest_price.assert_called_once_with(profile_name="demo", symbol="ETHUSDT")
 
     def test_collect_account_risk_payload_does_not_use_open_value_when_market_lookup_fails(self) -> None:
         fetcher = mock.Mock()

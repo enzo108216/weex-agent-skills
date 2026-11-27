@@ -5,7 +5,7 @@
     "transport_meta",
     "typed_result"
   ],
-  "direct_contract_digest": "sha256:d9395d33b42b795fe160fedf3a39dc3bddcc36237791ba2d65274bf7bedf964a",
+  "direct_contract_digest": "sha256:3a1bb1e3e1e042dbe1c63195608a490c48b7958a8590b99fdd0df5a7b6160f7a",
   "entries": [
     {
       "fields": [
@@ -21133,7 +21133,7 @@
   "field_path_contract": "rfc6901-pattern-v1",
   "inventory_digest": "sha256:95737d9647cdecd8eae2d67a9fbb823cc9b56753522459fa55603cfea73fddc1",
   "legacy_mapping_digest": "sha256:1ad4fede4ae9211dcd9e1e6d87ccffbe09b77eb183d71cadeb8cf0c63f9c1821",
-  "matrix_digest": "sha256:4ad74cc1d4f097b32568fb357244f74ccae72a82f3cc9b6269e411c2a2da36de",
+  "matrix_digest": "sha256:e22f0bf10bdea948a2ae98cd9fab3dc6b0d09880fb3ca197af9dc7191d29e4e7",
   "review_status": "REVIEWED",
   "schema_version": 2,
   "source_mapping": "skills/weex-trader-skill/references/mcp-capability-mapping.json",

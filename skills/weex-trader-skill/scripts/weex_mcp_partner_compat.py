@@ -449,6 +449,16 @@ def _map_arguments(
             "unsupported_fields",
             "The Partner request contains fields outside the verified mapping.",
         )
+    if operation["legacy_key"] == "partner.query-sub-channel-transactions":
+        for field in ("startTime", "endTime"):
+            value = supplied.get(field)
+            if value is not None and (
+                not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value)
+            ):
+                raise McpPartnerCompatibilityError(
+                    "invalid_arguments",
+                    f"{field} must use YYYY-MM-DD. Replace any Unix millisecond value with a calendar date.",
+                )
     arguments: dict[str, Any] = {}
     decisions = operation["field_decisions"]
     for source, value in supplied.items():

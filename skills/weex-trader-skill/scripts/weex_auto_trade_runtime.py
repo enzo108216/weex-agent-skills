@@ -15,6 +15,7 @@ from weex_trade_data_aggregator import TradeDataAggregator
 
 
 RULE_VERSION = "weex_trade_risk_review.v1"
+SPOT_HISTORY_PAGE_SIZE = 200
 
 
 class OfficialRequestRejected(RuntimeError):
@@ -647,7 +648,7 @@ def _query_spot_resolution_history(
     client_order_id: str,
 ) -> dict[str, Any] | None:
     page = 1
-    limit = 1000
+    limit = SPOT_HISTORY_PAGE_SIZE
     seen_order_ids: set[str] = set()
     matches: list[dict[str, Any]] = []
     while True:
@@ -725,7 +726,7 @@ def _query_spot_order_facts(
         boundary=boundary,
         symbol=symbol,
         order_id=order_id,
-        client_order_id=client_order_id,
+        client_order_id=_required_text(client_order_id, "client_order_id"),
     )
     return _query_order_and_trade_facts(
         boundary=boundary,
@@ -742,10 +743,10 @@ def _query_spot_history_order(
     boundary: Any,
     symbol: str,
     order_id: str,
-    client_order_id: str | None,
+    client_order_id: str,
 ) -> dict[str, Any]:
     page = 1
-    limit = 1000
+    limit = SPOT_HISTORY_PAGE_SIZE
     seen_order_ids: set[str] = set()
     while True:
         rows = _extract_rows(
@@ -761,13 +762,11 @@ def _query_spot_history_order(
             item
             for item in rows
             if str(_pick(item, "orderId", "order_id") or "") == order_id
-            and (
-                client_order_id is None
-                or str(_pick(item, "clientOrderId", "client_order_id") or "")
-                == client_order_id
-            )
+            and str(_pick(item, "clientOrderId", "client_order_id") or "") == client_order_id
         ]
         if len(matches) == 1:
+            if str(_pick(matches[0], "symbol") or "").upper() != symbol:
+                raise ValueError("official order query returned a different symbol")
             return dict(matches[0])
         if len(matches) > 1:
             break
@@ -1385,6 +1384,11 @@ def _pick(mapping: dict[str, Any], *keys: str) -> Any:
 def _official_error_code(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
+    details = payload.get("details")
+    if payload.get("code") == "upstream_error" and isinstance(details, dict):
+        upstream_code = details.get("upstream_code")
+        if isinstance(upstream_code, str) and upstream_code:
+            return upstream_code
     for key in ("code", "errorCode", "error_code"):
         value = payload.get(key)
         if value not in (None, "") and not isinstance(value, (dict, list, tuple, set)):

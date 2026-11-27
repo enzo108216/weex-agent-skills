@@ -5035,7 +5035,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
         self.assertEqual(facts["outcome"], "RELEASED")
         self.assertEqual(facts["evidence_source"], "WEEX_SPOT_ORDER_NOT_FOUND")
         self.assertIsNone(facts["weex_order_id"])
-        self.assertEqual(api.calls[1]["query"], {"symbol": "BTCUSDT", "limit": 1000, "page": 1})
+        self.assertEqual(api.calls[1]["query"], {"symbol": "BTCUSDT", "limit": 200, "page": 1})
 
     def test_official_usage_resolution_rejects_non_advancing_spot_history_pagination(self) -> None:
         import weex_auto_trade_runtime as runtime_module
@@ -5046,7 +5046,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                 "clientOrderId": f"other-client-{index}",
                 "symbol": "BTCUSDT",
             }
-            for index in range(1000)
+            for index in range(200)
         ]
         api = self.FakeApi(
             {
@@ -5076,7 +5076,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                 profile_name="strategy-live",
                 api=api,
             )
-        self.assertEqual(api.calls[-1]["query"], {"symbol": "BTCUSDT", "limit": 1000, "page": 2})
+        self.assertEqual(api.calls[-1]["query"], {"symbol": "BTCUSDT", "limit": 200, "page": 2})
 
     def test_official_usage_resolution_keeps_futures_without_order_id_unresolved(self) -> None:
         import weex_auto_trade_runtime as runtime_module
@@ -5104,23 +5104,38 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
 
     def test_spot_reconciliation_falls_back_to_history_after_archived_order_error(self) -> None:
         import weex_auto_trade_runtime as runtime_module
+        import weex_spot_api as spot_module
 
-        api = self.FakeApi(
+        client = Mock()
+        client.read_endpoint.side_effect = [
             {
-                ("SPOT", "spot.order.order_details"): runtime_module.OfficialReadRequestFailed(
-                    error_code="-2200",
-                    error_message="Order does not exist",
-                ),
-                ("SPOT", "spot.order.history_orders"): [
+                "ok": False,
+                "error": {
+                    "code": "upstream_error",
+                    "message": "WEEX account API returned an error.",
+                    "details": {"upstream_code": "-2200"},
+                },
+            },
+            {
+                "ok": True,
+                "data": [{"orderId": f"other-{index}"} for index in range(200)],
+            },
+            {
+                "ok": True,
+                "data": [
                     {
                         "orderId": "s-archived",
                         "clientOrderId": "client-s-archived",
+                        "symbol": "BTCUSDT",
                         "status": "FILLED",
                         "executedQty": "1",
                         "cummulativeQuoteQty": "10",
                     }
                 ],
-                ("SPOT", "spot.order.transaction_details"): [
+            },
+            {
+                "ok": True,
+                "data": [
                     {
                         "orderId": "s-archived",
                         "qty": "1",
@@ -5129,19 +5144,21 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                         "commissionAsset": "USDT",
                     }
                 ],
-            }
-        )
-
-        facts = runtime_module.query_official_order_facts(
-            order={
-                "module": "SPOT",
-                "symbol": "BTCUSDT",
-                "weex_order_id": "s-archived",
-                "client_order_id": "client-s-archived",
             },
-            profile_name="strategy-live",
-            api=api,
-        )
+        ]
+        api = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
+
+        with patch.object(api, "_client", return_value=(spot_module, client)):
+            facts = runtime_module.query_official_order_facts(
+                order={
+                    "module": "SPOT",
+                    "symbol": "BTCUSDT",
+                    "weex_order_id": "s-archived",
+                    "client_order_id": "client-s-archived",
+                },
+                profile_name="strategy-live",
+                api=api,
+            )
 
         self.assertEqual(facts["reconciliation_status"], "COMPLETE")
         self.assertEqual(facts["exchange_status"], "FILLED")
@@ -5154,14 +5171,18 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
             "WEEX_SPOT_HISTORY_ORDER_AND_TRADES",
         )
         self.assertEqual(
-            [call["endpoint_key"] for call in api.calls],
+            [call.kwargs["endpoint"].key for call in client.read_endpoint.call_args_list],
             [
                 "spot.order.order_details",
+                "spot.order.history_orders",
                 "spot.order.history_orders",
                 "spot.order.transaction_details",
             ],
         )
-        self.assertTrue(all(not call["mutating"] for call in api.calls))
+        self.assertEqual(
+            [call.kwargs["query"] for call in client.read_endpoint.call_args_list[1:3]],
+            [{"symbol": "BTCUSDT", "limit": 200, "page": page} for page in (1, 2)],
+        )
 
     def test_spot_history_fallback_keeps_incomplete_fill_or_fee_evidence_partial(self) -> None:
         import weex_auto_trade_runtime as runtime_module
@@ -5197,6 +5218,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                             {
                                 "orderId": "s-archived",
                                 "clientOrderId": "client-s-archived",
+                                "symbol": "BTCUSDT",
                                 "status": "FILLED",
                                 "executedQty": "1",
                                 "cummulativeQuoteQty": "10",
@@ -5230,6 +5252,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                 {
                     "orderId": "s-archived",
                     "clientOrderId": "different-client-id",
+                    "symbol": "BTCUSDT",
                     "status": "FILLED",
                 }
             ],
@@ -5257,6 +5280,28 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                         api=api,
                     )
                 self.assertTrue(all(not call["mutating"] for call in api.calls))
+
+    def test_spot_history_fallback_rejects_a_matching_order_on_a_different_symbol(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        api = self.FakeApi({
+            ("SPOT", "spot.order.order_details"): runtime_module.OfficialReadRequestFailed(
+                error_code="-2200",
+            ),
+            ("SPOT", "spot.order.history_orders"): [
+                {"orderId": "s-archived", "clientOrderId": "client-s-archived", "symbol": "ETHUSDT"},
+            ],
+        })
+        with self.assertRaisesRegex(ValueError, "different symbol"):
+            runtime_module.query_official_order_facts(
+                order={
+                    "module": "SPOT", "symbol": "BTCUSDT", "weex_order_id": "s-archived",
+                    "client_order_id": "client-s-archived",
+                },
+                profile_name="strategy-live",
+                api=api,
+            )
+        self.assertEqual(len(api.calls), 2)
 
     def test_futures_plan_reconciliation_uses_plan_then_actual_order_endpoints(self) -> None:
         import weex_auto_trade_runtime as runtime_module

@@ -9,17 +9,17 @@
   },
   "verified_mcp_candidate": {
     "official_repository": "https://github.com/weex-labs/weex-mcp",
-    "package_version": "0.3.3",
+    "package_version": "0.3.4",
     "tool_contract_version": "2",
     "manifest_version": 2,
-    "source_commit": "d2d501174267adadf7fdc0e3d0e3f22132f57b76",
+    "source_commit": "968f72b8ad6ad8fc5edaeba07e216e2d4a31a96b",
     "publication_status": "unpublished",
     "distribution_sha256": {
-      "wheel": "426cc69571ed4fd3196b6b695ba3e530c5bc18995a8ffcecf15af346a8fdbdbd",
-      "sdist": "08d670a762444c20e32946818ba76b4e5e4319ff46f287eb113cc1439747b13e"
+      "wheel": "3632bbe2a10ba636f3655d7b4382039b5530af90f9e19ba2eb5dd3283ea927c9",
+      "sdist": "d015ececacf5c86ed51461d41c997a86799145d89bdb3dec92e90be065bed3de"
     },
     "versions": {
-      "package": "0.3.3",
+      "package": "0.3.4",
       "tool_contract": "2",
       "manifest": "2",
       "output": "1",
@@ -28,11 +28,11 @@
       "transport_meta": "1",
       "grant": "2"
     },
-    "boundary_contract_digest": "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53",
-    "direct_tools_digest": "sha256:d9395d33b42b795fe160fedf3a39dc3bddcc36237791ba2d65274bf7bedf964a",
+    "boundary_contract_digest": "sha256:15a8e64916a3227b32c431afae9b6b9de55ca350cf2291c6722f33694b828e38",
+    "direct_tools_digest": "sha256:3a1bb1e3e1e042dbe1c63195608a490c48b7958a8590b99fdd0df5a7b6160f7a",
     "legacy_mapping_digest": "sha256:1ad4fede4ae9211dcd9e1e6d87ccffbe09b77eb183d71cadeb8cf0c63f9c1821",
     "inventory_digest": "sha256:95737d9647cdecd8eae2d67a9fbb823cc9b56753522459fa55603cfea73fddc1",
-    "matrix_digest": "sha256:4ad74cc1d4f097b32568fb357244f74ccae72a82f3cc9b6269e411c2a2da36de",
+    "matrix_digest": "sha256:e22f0bf10bdea948a2ae98cd9fab3dc6b0d09880fb3ca197af9dc7191d29e4e7",
     "source_catalog_digests": {
       "contract": "sha256:7bb353ef83f9fcdf6edcc9e25078b1fad1896e1c207bc60bf86935cec52a732e",
       "spot": "sha256:e6835a8bdd983115c68e8a8afddf8e99461f7eb33a29bd15bd0a72e7712c516f",
@@ -44,18 +44,18 @@
         "trade_enabled": false,
         "tool_count": 31,
         "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
-        "schema_digest": "sha256:3f0fd16d225a552743b5a25326af9cd8b4e24c3243d0b36c6c01ff61374abe93",
-        "manifest_digest": "sha256:4121e86f91f44b45161bcb239000727d3baec7a8cf868867200a2ce599a75aff",
-        "boundary_static_manifest_digest": "sha256:3fa0e01f93e414a76f701c4c6fd1e07525357684c7535a6e282a9b5dada37e8d"
+        "schema_digest": "sha256:81082c1c674b395dc9f75aac88a45e3fc254ca7f067e36dcd88dea0db8ed1879",
+        "manifest_digest": "sha256:989a1fd6ddf536e70e489baa73d6265786c82dfcb8d705117bee0fe482c9a494",
+        "boundary_static_manifest_digest": "sha256:972132d87cd33918ca539e92190b6722c0d60eaabb2cef056dae196c604da790"
       },
       {
         "runtime_profile": "local_user",
         "trade_enabled": true,
         "tool_count": 45,
         "tool_set_digest": "sha256:246242baa02e371244c55fa3bb94747f2df3222d189796b29a1ec0280c4f2b59",
-        "schema_digest": "sha256:d00f0e892f0a948caf957fd0919dfb82bff6fc3c29fe1a0844707a1c15eefc14",
-        "manifest_digest": "sha256:e5dc58157e072a94c86a2dd017cc381ef1bb46a65bdf0db6bed313da80b147b5",
-        "boundary_static_manifest_digest": "sha256:a9a0fe675428bb49e6531a4b26863da1df7545d3761ec16310c9d865ffc7fbba"
+        "schema_digest": "sha256:d37b4f7c217dfe9539f231f881d4d448c4f83c811e8d5a643fbf68d43f2ccb80",
+        "manifest_digest": "sha256:e77d8667b207e1471d6c6cd91dbd618acccc57e3ce8a34f5f522e8ed7c35db51",
+        "boundary_static_manifest_digest": "sha256:4aa9a1e11737e48921c484d45a574c1e19ad0af1612cea35dcd87df18e9cdbef"
       }
     ]
   },

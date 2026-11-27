@@ -462,7 +462,8 @@
           "skill_required": "production_only",
           "transport": "body",
           "official_description_zh": "开始时间戳(UTC毫秒)",
-          "official_description_en": "Start timestamp (UTC milliseconds)"
+          "official_description_en": "Start timestamp (UTC milliseconds)",
+          "skill_input_format": "YYYY-MM-DD or paired null in verified test mode"
         },
         {
           "wire_name": "endTime",
@@ -471,7 +472,8 @@
           "skill_required": "production_only",
           "transport": "body",
           "official_description_zh": "结束时间戳(UTC毫秒)",
-          "official_description_en": "End timestamp (UTC milliseconds)"
+          "official_description_en": "End timestamp (UTC milliseconds)",
+          "skill_input_format": "YYYY-MM-DD or paired null in verified test mode"
         },
         {
           "wire_name": "productType",

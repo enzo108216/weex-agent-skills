@@ -677,7 +677,7 @@ def validate_manual_intent_contract(
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "package": {"const": "0.3.3"},
+            "package": {"const": "0.3.4"},
             "tool_contract": {"const": "2"},
             "prepare": {"const": "1"},
             "intent": {"const": "2"},
@@ -1302,7 +1302,7 @@ def validate_v2_revision(
     if contract.get("schema_version") != 2:
         raise ValueError("boundary v2 schema version mismatch")
     expected_versions = dict(contract_v1.get("candidate_versions", {}))
-    expected_versions.update({"package": "0.3.3", "grant": "2"})
+    expected_versions.update({"package": "0.3.4", "grant": "2"})
     if contract.get("candidate_versions") != expected_versions:
         raise ValueError("boundary v2 candidate versions mismatch")
     if contract.get("source_baselines") != {
@@ -1350,6 +1350,11 @@ def validate_v2_revision(
     conditional_cancel["output_schema"]["properties"]["result"]["properties"]["upstream_order_id"] = {
         "type": "string", "pattern": "^(0|[1-9][0-9]*)$",
     }
+    place_order = next(tool for tool in expected_direct_tools if tool["name"] == "trade_place_order")
+    del place_order["input_schema"]["allOf"][0]["then"]["properties"]["time_in_force"]
+    batch_order = next(tool for tool in expected_direct_tools if tool["name"] == "trade_place_batch_orders")
+    spot_leg = batch_order["input_schema"]["allOf"][0]["then"]["properties"]["orders"]["items"]
+    spot_leg["properties"]["time_in_force"]["enum"].append("POST_ONLY")
     if contract.get("direct_tools_digest") != canonical_digest(expected_direct_tools):
         raise ValueError("boundary v2 Direct tool contract unexpectedly changed")
     if contract.get("legacy_write_mapping_digest") != contract_v1.get(
@@ -1769,7 +1774,7 @@ def validate_documents(
     ):
         raise ValueError("boundary v2 approval identity or date mismatch")
     if approval.get("authorization_source") != (
-        "Current conversation: the user explicitly authorized D-028 and the T13B/T14 typed projection and Spot time bounds revision."
+        "Current conversation: the user explicitly authorized D-028 and the T13B/T14 typed projection and Spot time bounds revision and the Spot POST_ONLY and Partner sub-channel date revisions."
     ):
         raise ValueError("boundary v2 approval source mismatch")
     if set(approval.get("excluded", [])) != {
@@ -1782,13 +1787,15 @@ def validate_documents(
     }:
         raise ValueError("boundary v2 approval exclusions mismatch")
     if approval.get("scope") != [
-        "package 0.3.3 candidate",
+        "package 0.3.4 candidate",
         "Host-private reconciliation",
         "ReconciliationResult safe evidence",
         "manual intent evidence digest ownership",
         "two-stage confirmation contract",
         "witnessed typed order results and read fields",
         "Spot bill time bounds",
+        "Spot limit POST_ONLY",
+        "Partner sub-channel calendar dates",
     ]:
         raise ValueError("boundary v2 approval scope mismatch")
     validate_implementation_contract(contract)

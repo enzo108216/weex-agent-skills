@@ -1431,8 +1431,8 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
                 "profile": "main",
                 "scope": {"mode": "uids", "uids": [10001]},
                 "time_range": {
-                    "start": "2026-07-01T00:00:00Z",
-                    "end": "2026-07-10T00:00:00Z",
+                    "start": "2026-07-01",
+                    "end": "2026-07-10",
                 },
                 "filters": {"product_type": "SPOT"},
             },
@@ -2607,6 +2607,23 @@ class WeexPartnerCliPolicyTests(unittest.TestCase):
                 now=datetime(2026, 7, 17, tzinfo=timezone.utc),
             )
         self.assertEqual(exc_info.exception.code, "invalid_continuation")
+
+    def test_sub_agent_query_sends_calendar_dates_without_converting_to_milliseconds(self) -> None:
+        partner = self.require_partner()
+        query = {
+            "operation": "get-sub-agent-stats",
+            "profile": "main",
+            "scope": {"mode": "all", "all_confirmed": True},
+            "time_range": {"start": "2026-07-15", "end": "2026-07-16"},
+            "filters": {"product_type": "SPOT"},
+        }
+        now = datetime(2026, 7, 17, tzinfo=timezone.utc)
+        plan = partner.plan_query(query, now=now)
+        body = partner.build_executor_requests(plan)[0]["body"]
+        self.assertEqual((body["startTime"], body["endTime"]), ("2026-07-15", "2026-07-16"))
+        query["time_range"] = {"start": "1784073600000", "end": "1784160000000"}
+        with self.assertRaisesRegex(partner.PartnerQueryError, "YYYY-MM-DD"):
+            partner.plan_query(query, now=now)
 
     def test_test_environment_sub_agent_query_uses_documented_null_time_contract(self) -> None:
         partner = self.require_partner()

@@ -139,6 +139,17 @@ class SpotManualMutationTests(unittest.TestCase):
         client.preview_trade_endpoint.assert_not_called()
         client.trade_endpoint.assert_not_called()
 
+    def test_spot_post_only_limit_shortcut_preserves_placement_confirmation(self) -> None:
+        args = spot.build_parser().parse_args([
+            "place-order", "--symbol", "ETHUSDT", "--side", "BUY",
+            "--order-type", "LIMIT", "--quantity", "0.001", "--price", "100",
+            "--time-in-force", "post_only",
+        ])
+        with mock.patch.object(spot, "execute_endpoint", return_value=0) as execute:
+            self.assertEqual(spot.cmd_place_order(args, mock.Mock()), 0)
+        self.assertEqual(execute.call_args.kwargs["body"]["timeInForce"], "POST_ONLY")
+        self.assertFalse(execute.call_args.kwargs["confirm_live"])
+
     def test_confirm_and_reconcile_intent_forward_only_durable_identity(self) -> None:
         facade = mock.Mock()
         facade.confirm_intent.return_value = {"ok": True}

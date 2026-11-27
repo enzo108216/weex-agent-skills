@@ -700,7 +700,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_place.add_argument("--order-type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET executes at market price after confirmation")
     p_place.add_argument("--quantity", required=True, help="Order quantity in the format expected by WEEX for this spot market")
     p_place.add_argument("--price", default=None, help="Limit price; usually required for LIMIT orders and omitted for MARKET orders")
-    p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "gtc", "ioc", "fok"], help="Execution policy for LIMIT orders: GTC, IOC, or FOK")
+    p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "POST_ONLY", "gtc", "ioc", "fok", "post_only"], help="Execution policy for LIMIT orders: GTC, IOC, FOK, or POST_ONLY")
     p_place.add_argument("--new-client-order-id", default=None, help="Optional client-defined order identifier; auto-generated when omitted")
     p_place.add_argument("--dry-run", action="store_true", help="Show the MCP redacted request description without signing or sending")
     p_place.add_argument("--confirm-live", action="store_true", help="Legacy flag; confirm a prepared live mutation with weex_trade_guard.py confirm-mutation")

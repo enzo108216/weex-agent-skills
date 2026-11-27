@@ -134,7 +134,7 @@ OPERATION_POLICIES: Dict[str, OperationPolicy] = {
     ),
     "get-sub-agent-stats": OperationPolicy(
         endpoint="partner.query-sub-channel-transactions",
-        time_format="milliseconds",
+        time_format="date",
         time_required=True,
         scope_rule="optional_single_or_confirmed_all",
         product_type="required",
@@ -600,6 +600,8 @@ def _normalize_time_range(
         end_date = _parse_date(str(raw_range["end"]))
         if start_date > end_date:
             raise PartnerQueryError("invalid_time_range", "Start date must not be after end date.")
+        if policy.endpoint == "partner.query-sub-channel-transactions" and start_date == end_date:
+            raise PartnerQueryError("invalid_time_range", "Start date must be before end date.")
         return {
             "source": "user",
             "requested_start": start_date.isoformat(),

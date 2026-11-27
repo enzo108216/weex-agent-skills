@@ -442,10 +442,7 @@ def _validate_official_order_semantics(
         if not _positive_decimal_field(order, "price"):
             return reason("limit price is required")
         time_in_force = str(order.get("timeInForce") or "").upper()
-        allowed = {"GTC", "IOC", "FOK"}
-        if operation["module"] == "FUTURES":
-            allowed.add("POST_ONLY")
-        if time_in_force not in allowed:
+        if time_in_force not in {"GTC", "IOC", "FOK", "POST_ONLY"}:
             return reason("timeInForce is required for LIMIT orders")
     return []
 
@@ -2207,6 +2204,18 @@ def _confirm_v2_manual_intent(
     operation_label: str,
 ) -> int:
     if intent.get("legacy") is not None:
+        if intent.get("state") == "LEGACY_INVALIDATED":
+            _output_json(
+                {
+                    "ok": False,
+                    "status": "LEGACY_INVALIDATED",
+                    "error": "Legacy unclaimed intent was invalidated; create a new preview.",
+                    "review_required": False,
+                    "next_action": "CREATE_NEW_PREVIEW",
+                },
+                args.pretty,
+            )
+            return 1
         _output_json(
             {
                 "ok": False,

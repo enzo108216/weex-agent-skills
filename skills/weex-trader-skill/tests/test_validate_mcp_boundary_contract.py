@@ -135,7 +135,7 @@ class McpBoundaryContractTests(unittest.TestCase):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
 
         self.assertEqual(contract["schema_version"], 2)
-        self.assertEqual(contract["candidate_versions"]["package"], "0.3.3")
+        self.assertEqual(contract["candidate_versions"]["package"], "0.3.4")
         self.assertEqual(contract["candidate_versions"]["grant"], "2")
         self.assertEqual(
             contract["source_baselines"],
@@ -536,7 +536,7 @@ class McpBoundaryContractTests(unittest.TestCase):
         self.assertEqual(schema["intent_version"], 2)
         self.assertEqual(
             schema["properties"]["contract_versions"]["properties"]["package"],
-            {"const": "0.3.3"},
+            {"const": "0.3.4"},
         )
         self.assertEqual(
             schema["properties"]["state"]["enum"],
@@ -1095,7 +1095,7 @@ class McpBoundaryContractTests(unittest.TestCase):
 
             original = compatibility.read_text(encoding="utf-8")
             compatibility.write_text(
-                original.replace("'package': '0.3.3'", "'package': '9.9.9'", 1),
+                original.replace("'package': '0.3.4'", "'package': '9.9.9'", 1),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "runtime candidate versions"):
@@ -1105,14 +1105,14 @@ class McpBoundaryContractTests(unittest.TestCase):
             version_path.write_text("__version__ = '9.9.9'\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "_version.py"):
                 pair_validator.verify_pair(ROOT, mcp_root)
-            version_path.write_text("__version__ = '0.3.3'\n", encoding="utf-8")
+            version_path.write_text("__version__ = '0.3.4'\n", encoding="utf-8")
 
             server = json.loads(server_path.read_text(encoding="utf-8"))
             server["packages"][0]["version"] = "9.9.9"
             server_path.write_text(json.dumps(server), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "server.json package version"):
                 pair_validator.verify_pair(ROOT, mcp_root)
-            server["packages"][0]["version"] = "0.3.3"
+            server["packages"][0]["version"] = "0.3.4"
             server["repository"]["url"] = "https://github.com/example/fork"
             server_path.write_text(json.dumps(server), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "official repository"):

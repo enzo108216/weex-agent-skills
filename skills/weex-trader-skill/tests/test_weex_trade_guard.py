@@ -138,13 +138,13 @@ def v2_manual_intent(
             "credential_fingerprint": "credential-fingerprint",
         },
         contract_versions={
-            "package": "0.3.3",
+            "package": "0.3.4",
             "tool_contract": "2",
             "prepare": "1",
             "intent": "2",
             "grant": "2",
             "boundary_contract_digest": (
-                "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53"
+                "sha256:15a8e64916a3227b32c431afae9b6b9de55ca350cf2291c6722f33694b828e38"
             ),
         },
         intent_id=intent_id,
@@ -1305,7 +1305,7 @@ class TradeGuardTests(unittest.TestCase):
             intent_id="intent-v2"
         )
 
-    def test_legacy_reconcile_is_stable_and_never_uses_network(self) -> None:
+    def test_legacy_confirmation_and_reconcile_distinguish_unclaimed_and_started_intents(self) -> None:
         for started, expected_status in (
             (False, "LEGACY_INVALIDATED"),
             (True, "MANUAL_REVIEW_REQUIRED"),
@@ -1331,6 +1331,10 @@ class TradeGuardTests(unittest.TestCase):
                             pretty=False,
                         )
                         stream = io.StringIO()
+                        confirm_args = trade_guard.build_parser().parse_args([
+                            "confirm-order", "--intent-id", migrated["intent_id"],
+                            "--risk-signature", "legacy", "--confirm-live",
+                        ])
                         with (
                             mock.patch.object(
                                 trade_guard,
@@ -1342,10 +1346,19 @@ class TradeGuardTests(unittest.TestCase):
                             ) as spot_client,
                             mock.patch.object(sys, "stdout", stream),
                         ):
+                            confirm_exit = trade_guard.cmd_confirm_order(confirm_args, now_ms=300)
+                            confirm_payload = json.loads(stream.getvalue())
+                            stream.seek(0)
+                            stream.truncate(0)
                             exit_code = trade_guard.cmd_reconcile_intent(
                                 args,
                                 now_ms=300,
                             )
+                self.assertEqual(confirm_exit, 1)
+                self.assertEqual(confirm_payload["review_required"], started)
+                if not started:
+                    self.assertEqual(confirm_payload["status"], "LEGACY_INVALIDATED")
+                    self.assertEqual(confirm_payload["next_action"], "CREATE_NEW_PREVIEW")
                 self.assertEqual(exit_code, 1)
                 self.assertEqual(
                     json.loads(stream.getvalue())["status"],

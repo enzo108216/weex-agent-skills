@@ -26,3 +26,4 @@ python3 scripts/weex_spot_api.py call --endpoint spot.market.get_ticker_info --q
 Latest trade endpoint:
 - `POST /api/v3/order`
 - https://www.weex.com/api-doc/spot/orderApi/PlaceOrder
+- Spot single and batch limit orders accept `GTC`, `IOC`, `FOK`, or `POST_ONLY`. Omit time in force for market orders.

@@ -177,13 +177,13 @@ def profile_binding() -> dict[str, object]:
 
 def contract_versions() -> dict[str, str]:
     return {
-        "package": "0.3.3",
+        "package": "0.3.4",
         "tool_contract": "2",
         "prepare": "1",
         "intent": "2",
         "grant": "2",
         "boundary_contract_digest": (
-            "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53"
+            "sha256:15a8e64916a3227b32c431afae9b6b9de55ca350cf2291c6722f33694b828e38"
         ),
     }
 
@@ -431,7 +431,7 @@ class ManualIntentStateTests(unittest.TestCase):
         with mock.patch.object(intent_state, "_INTENT_CONTRACT_VERSIONS", historical):
             self.assertEqual(intent_state.load_manual_intent(now_ms=300), old_intents["UNCLAIMED"])
 
-        next_pin = {**historical, "package": "0.3.3", "boundary_contract_digest": "sha256:" + "8" * 64}
+        next_pin = {**historical, "package": "0.3.4", "boundary_contract_digest": "sha256:" + "8" * 64}
         with mock.patch.object(intent_state, "_INTENT_CONTRACT_VERSIONS", next_pin):
             for original, expected in (
                 ("UNCLAIMED", "LEGACY_INVALIDATED"), ("CONFIRMED", "NOT_SENT_TERMINAL"),

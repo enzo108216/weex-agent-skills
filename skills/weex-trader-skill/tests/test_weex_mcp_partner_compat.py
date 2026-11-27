@@ -214,7 +214,7 @@ class McpPartnerCompatTests(unittest.TestCase):
         self.assertEqual(result["data"]["page"], 1)
         self.assertEqual(result["rate_limit"]["remaining"]["1M"], 89)
 
-    def test_numeric_and_test_null_time_mapping_is_single_call(self) -> None:
+    def test_sub_channel_date_and_test_null_time_mapping_does_not_coerce_dates(self) -> None:
         entry = mapping_entry(self.mapping, "partner.query-sub-channel-transactions")
         gateway = FakeGateway(
             {
@@ -258,6 +258,19 @@ class McpPartnerCompatTests(unittest.TestCase):
             },
         )
         self.assertNotIn("expected_environment", gateway.calls[0][1])
+        facade = self.facade(gateway, environment="partner_test")
+        endpoint = endpoint_from_mapping(entry)
+        date_range = {"startTime": "2026-01-01", "endTime": "2026-01-02", "productType": "SPOT"}
+        self.assertTrue(facade.execute(endpoint=endpoint, query={}, body=date_range)["ok"])
+        self.assertEqual(gateway.calls[-1][1], {
+            "start_time": "2026-01-01", "end_time": "2026-01-02", "product_type": "SPOT",
+        })
+        for start in (1767225600000, "1767225600000"):
+            with self.subTest(start=start):
+                rejected = facade.execute(endpoint=endpoint, query={}, body={**date_range, "startTime": start})
+                self.assertFalse(rejected["ok"])
+                self.assertIn("YYYY-MM-DD", rejected["error"]["message"])
+                self.assertEqual(len(gateway.calls), 2)
 
     def test_typed_rate_limit_error_restores_partner_error_contract(self) -> None:
         entry = mapping_entry(self.mapping, "partner.get-affiliate-uids")
