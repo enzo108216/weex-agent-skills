@@ -442,7 +442,10 @@ def _validate_official_order_semantics(
         if not _positive_decimal_field(order, "price"):
             return reason("limit price is required")
         time_in_force = str(order.get("timeInForce") or "").upper()
-        if time_in_force not in {"GTC", "IOC", "FOK", "POST_ONLY"}:
+        allowed = {"GTC", "IOC", "FOK"}
+        if operation["module"] == "FUTURES":
+            allowed.add("POST_ONLY")
+        if time_in_force not in allowed:
             return reason("timeInForce is required for LIMIT orders")
     return []
 
