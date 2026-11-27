@@ -20,6 +20,7 @@ from weex_auto_trade_state import (
     build_verified_usage_evidence,
 )
 from weex_trade_guard import (
+    _manual_mutation_preview_fields,
     _validate_official_order_semantics,
     resolve_official_auto_trade_operation,
     submit_authorized_order,
@@ -123,6 +124,7 @@ class AutoTradeFacade:
         auto_trade_runtime_factory: Callable[[Any], Any] | None = None,
         reconciliation_provider: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
         usage_resolution_provider: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
+        manual_intent_builder: Callable[..., dict[str, Any] | None] | None = None,
         manual_intent_writer: Callable[[dict[str, Any]], Any] | None = None,
         notification_adapter: Callable[[dict[str, Any]], Any] | None = None,
         notification_worker_launcher: Callable[..., Any] | None = None,
@@ -132,6 +134,7 @@ class AutoTradeFacade:
         self.auto_trade_runtime_factory = auto_trade_runtime_factory
         self.reconciliation_provider = reconciliation_provider
         self.usage_resolution_provider = usage_resolution_provider
+        self.manual_intent_builder = manual_intent_builder
         self.manual_intent_writer = manual_intent_writer
         self.notification_adapter = notification_adapter
         self.notification_worker_launcher = notification_worker_launcher
@@ -541,7 +544,8 @@ class AutoTradeFacade:
                 blocking_reasons=list(result.get("blocking_reasons") or []),
                 advisory_alerts=list(result.get("advisory_alerts") or []),
             )
-            intent = _build_manual_fallback_intent(
+            builder = self.manual_intent_builder or _build_manual_fallback_intent
+            fallback = builder(
                 profile_name=profile.name,
                 strategy_id=strategy_id,
                 authorization_id=authorization_id,
@@ -550,7 +554,8 @@ class AutoTradeFacade:
                 orders=orders,
                 guard_result=result,
             )
-            if intent is not None:
+            if fallback is not None:
+                intent = fallback["intent"]
                 writer = self.manual_intent_writer or _save_manual_fallback_intent
                 writer(intent)
                 authorization_hint = (
@@ -568,27 +573,32 @@ class AutoTradeFacade:
                     if is_authorization_miss
                     else "本次订单未进入自动交易执行，尚未下单。"
                 )
+                preview_fields = _manual_mutation_preview_fields(intent, language="zh")
                 confirmation_lines = [
                     notice,
                     "",
-                    "请核对 order_preview 中的完整订单。",
-                    "",
-                    "确认后回复：确认，我直接下单。",
+                    "请核对 order_preview 中的完整订单及 mutation_preview 中的风险事实。",
                 ]
+                scope_notice = preview_fields.get("dynamic_scope_notice")
+                if scope_notice:
+                    confirmation_lines.append(scope_notice)
+                confirmation_lines.extend(["", "确认后回复：确认，我直接下单。"])
                 if is_authorization_miss:
                     confirmation_lines.extend(["", authorization_hint])
                 result = {
                     **result,
-                    "intent_id": intent["intent_id"],
-                    "expires_at": intent["expires_at"],
-                    "risk_signature": intent["risk_signature"],
-                    "order_preview": intent["order_preview"],
+                    **preview_fields,
+                    "order_preview": fallback["order_preview"],
                     "user_confirmation": {
                         "language": "zh",
                         "reply_text": "确认",
                         "reply_instruction": "\n".join(confirmation_lines),
                     },
-                    "next_action": "CONFIRM_ORDER_MANUALLY",
+                    "next_action": (
+                        "CONFIRM_TP_SL_MANUALLY"
+                        if intent.get("tool_name") == "trade_place_tp_sl"
+                        else "CONFIRM_ORDER_MANUALLY"
+                    ),
                 }
                 if is_authorization_miss:
                     result["authorization_hint"] = authorization_hint
@@ -820,7 +830,43 @@ def _build_manual_fallback_intent(
     orders: list[dict[str, Any]],
     guard_result: dict[str, Any],
 ) -> dict[str, Any] | None:
-    from weex_order_intent_state import build_intent
+    from weex_auto_trade_runtime import OfficialApiBoundary, _submission_request
+    from weex_order_intent_state import (
+        IntentStateError,
+        ensure_manual_intent_slot_available,
+        load_manual_intent,
+    )
+
+    def fail_if_preview_may_have_persisted(cause: BaseException | None = None) -> None:
+        try:
+            ensure_manual_intent_slot_available(
+                now_ms=int(time.time() * 1000)
+            )
+            return
+        except IntentStateError as state_error:
+            if state_error.code != "intent_conflict":
+                raise FacadeError(
+                    "STATE_CONFLICT",
+                    "manual fallback state could not be checked after preview failure",
+                    "DISABLE_AUTO_TRADE_AND_INSPECT_STATE",
+                ) from state_error
+        try:
+            current = load_manual_intent(now_ms=int(time.time() * 1000))
+        except Exception as exc:
+            raise FacadeError(
+                "STATE_CONFLICT",
+                "manual fallback state could not be checked after preview failure",
+                "DISABLE_AUTO_TRADE_AND_INSPECT_STATE",
+            ) from exc
+        intent_id = current.get("intent_id") if isinstance(current, dict) else None
+        error = FacadeError(
+            "STATE_CONFLICT",
+            f"manual fallback intent {intent_id!s} may have been prepared before the failure",
+            "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY",
+        )
+        if cause is None:
+            raise error
+        raise error from cause
 
     operation = resolve_official_auto_trade_operation(operation_key)
     if operation is None or not orders or any(not isinstance(item, dict) for item in orders):
@@ -837,10 +883,9 @@ def _build_manual_fallback_intent(
         return None
     if any(_validate_official_order_semantics(operation, order) for order in orders):
         return None
-    market = str(operation["module"]).lower()
-    preview = {
+    display_preview = {
         "operation_key": operation_key,
-        "market": market,
+        "market": str(operation["module"]).lower(),
         "kind": operation["kind"],
         "order_count": len(orders),
         "symbols": sorted(
@@ -852,39 +897,78 @@ def _build_manual_fallback_intent(
         ),
         "orders": [dict(item) for item in orders],
     }
-    analysis_output = {
-        "alerts": list(guard_result.get("advisory_alerts") or []),
-        "blocking_reasons": list(guard_result.get("blocking_reasons") or []),
+    del strategy_id, authorization_id, idempotency_key, guard_result
+    prepared_legs = [{"order": dict(order)} for order in orders]
+    try:
+        module, body = _submission_request(operation_key, prepared_legs)
+        boundary = OfficialApiBoundary(profile_name=profile_name)
+        api_module, client = boundary._client(module, private=True)
+        endpoint = api_module.ENDPOINTS.get(operation_key)
+        if endpoint is None:
+            return None
+    except (Exception, SystemExit):
+        return None
+    try:
+        preview_result = client.preview_trade_endpoint(
+            endpoint=endpoint,
+            query={},
+            body=body,
+        )
+    except (Exception, SystemExit) as exc:
+        fail_if_preview_may_have_persisted(exc)
+        return None
+    preview_reference = preview_result.get("preview")
+    if (
+        preview_result.get("ok") is not True
+        or not isinstance(preview_reference, dict)
+    ):
+        fail_if_preview_may_have_persisted()
+        return None
+    intent_id = preview_reference.get("intent_id")
+    try:
+        intent = load_manual_intent(now_ms=int(time.time() * 1000))
+    except Exception as exc:
+        raise FacadeError(
+            "STATE_CONFLICT",
+            f"manual fallback intent {intent_id!s} was prepared but could not be reloaded",
+            "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY",
+        ) from exc
+    if (
+        not isinstance(intent, dict)
+        or intent.get("intent_id") != intent_id
+        or intent.get("legacy") is not None
+    ):
+        raise FacadeError(
+            "STATE_CONFLICT",
+            f"manual fallback intent {intent_id!s} does not match durable state",
+            "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY",
+        )
+    return {
+        "intent": intent,
+        "order_preview": display_preview,
     }
-    intent = build_intent(
-        profile_name=profile_name,
-        market=market,
-        trading_mode="live",
-        order_preview=preview,
-        raw_order=dict(orders[0]),
-        analysis_output=analysis_output,
-        now_ms=int(time.time() * 1000),
-    )
-    intent.update(
-        {
-            "strategy_id": strategy_id,
-            "authorization_id": authorization_id,
-            "idempotency_key": idempotency_key,
-            "operation_key": operation_key,
-            "auto_fallback_operation_key": operation_key,
-            "auto_fallback_orders": [dict(item) for item in orders],
-        }
-    )
-    return intent
 
 
 def _save_manual_fallback_intent(intent: dict[str, Any]) -> None:
-    from weex_order_intent_state import IntentStateError, save_intent
+    from weex_order_intent_state import IntentStateError, load_manual_intent
 
     try:
-        save_intent(intent)
+        current = load_manual_intent(now_ms=int(time.time() * 1000))
+        if (
+            not isinstance(current, dict)
+            or current.get("intent_version") != 2
+            or current.get("state") != "UNCLAIMED"
+            or current.get("legacy") is not None
+            or current.get("intent_id") != intent.get("intent_id")
+            or current.get("prepared_artifact_digest")
+            != intent.get("prepared_artifact_digest")
+        ):
+            raise IntentStateError(
+                "intent_changed",
+                "Manual fallback intent changed before publication.",
+            )
     except IntentStateError as exc:
-        if exc.code == "confirmation_started":
+        if exc.code in {"confirmation_started", "intent_changed", "intent_conflict"}:
             message = "an existing pending order confirmation must be inspected before creating another"
             next_action = "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY"
         else:

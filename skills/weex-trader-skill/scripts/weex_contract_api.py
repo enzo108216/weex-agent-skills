@@ -26,6 +26,7 @@ from weex_mcp_read_compat import (
 from weex_mcp_trade_compat import (
     McpTradeCompatibilityError,
     McpTradeFacade,
+    dynamic_scope_notice,
     resolve_local_mcp_trade_settings,
 )
 from weex_profile_language import resolve_language
@@ -297,6 +298,57 @@ class WeexContractClient:
                 "trade_status": "NOT_SENT",
                 "review_required": False,
             }
+
+    def confirm_trade_intent(
+        self,
+        *,
+        intent_id: str,
+        prepared_artifact_digest: str,
+    ) -> Dict[str, Any]:
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                raise McpTradeCompatibilityError(
+                    "mcp_trade_unavailable",
+                    "The verified MCP Trade facade is not configured.",
+                )
+            return self.mcp_trade_facade.confirm_intent(
+                intent_id=intent_id,
+                prepared_artifact_digest=prepared_artifact_digest,
+            )
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
+
+    def reconcile_trade_intent(self, *, intent_id: str) -> Dict[str, Any]:
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                raise McpTradeCompatibilityError(
+                    "mcp_trade_unavailable",
+                    "The verified MCP Trade facade is not configured.",
+                )
+            return self.mcp_trade_facade.reconcile_intent(intent_id)
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
+
     def describe_request(
         self,
         endpoint: Endpoint,
@@ -418,18 +470,17 @@ def validate_confirm_flags(
 ) -> None:
     if confirm_live and confirm_demo:
         raise SystemExit("confirm_flag_mode_mismatch: pass only one of --confirm-live or --confirm-demo")
-    if not endpoint.mutating or dry_run:
+    if not endpoint.mutating or dry_run or not (confirm_live or confirm_demo):
         return
-    if trading_mode == "demo":
-        if not confirm_demo or confirm_live:
-            raise SystemExit(
-                f"confirm_flag_mode_mismatch: demo mutating request for {endpoint.key} requires --confirm-demo"
-            )
-        return
-    if not confirm_live or confirm_demo:
+    if confirm_demo != (trading_mode == "demo"):
         raise SystemExit(
-            f"confirm_flag_mode_mismatch: live mutating request for {endpoint.key} requires --confirm-live"
+            f"confirm_flag_mode_mismatch: {trading_mode} mutating request for "
+            f"{endpoint.key} requires --confirm-{trading_mode}"
         )
+    raise SystemExit(
+        "two_phase_confirmation_required: Remove the confirmation flag to prepare. "
+        "Review the risk, then use weex_trade_guard.py confirm-mutation."
+    )
 
 
 def _upper_body_value(body: Dict[str, Any], *keys: str) -> str:
@@ -550,7 +601,7 @@ def execute_endpoint(
         return 0
 
     if endpoint.mutating:
-        response = client.trade_endpoint(
+        response = client.preview_trade_endpoint(
             endpoint=endpoint,
             query=query,
             body=body,
@@ -571,7 +622,26 @@ def execute_endpoint(
     }
     if environment is not None:
         add_environment_context(payload, environment)
-    for field in ("outcome", "trade_status", "review_required"):
+    if endpoint.mutating and response.get("ok") is True:
+        summary = response["summary"]
+        risk = response["risk"]
+        payload["mutation_preview"] = {"summary": summary, "risk": risk}
+        payload["confirmation_required"] = True
+        payload["trading_mode"] = mode
+        notice = dynamic_scope_notice(
+            risk, action=summary.get("action"), language=resolve_language()
+        )
+        if notice is not None:
+            payload["dynamic_scope_notice"] = notice
+    for field in (
+        "outcome",
+        "trade_status",
+        "review_required",
+        "intent_id",
+        "risk_signature",
+        "expires_at",
+        "warning",
+    ):
         if field in response:
             payload[field] = response[field]
     if response.get("review_required") is True and "data" in response:
@@ -823,8 +893,8 @@ def add_trading_mode_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def add_confirm_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--confirm-live", action="store_true", help="Allow live mutating requests")
-    parser.add_argument("--confirm-demo", action="store_true", help="Allow demo mutating requests")
+    parser.add_argument("--confirm-live", action="store_true", help="Legacy flag; confirm a prepared live mutation with weex_trade_guard.py confirm-mutation")
+    parser.add_argument("--confirm-demo", action="store_true", help="Legacy flag; confirm a prepared demo mutation with weex_trade_guard.py confirm-mutation")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -864,7 +934,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_call = sub.add_parser(
         "call",
         help="Call an endpoint by key with JSON query/body",
-        description="Call a specific official contract endpoint through MCP using JSON query and body payloads.",
+        description="Read or prepare an official contract endpoint through MCP using JSON query and body payloads.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p_call.add_argument("--endpoint", required=True, choices=sorted(ENDPOINTS.keys()), help="Exact endpoint key from list-endpoints")
@@ -878,13 +948,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_place = sub.add_parser(
         "place-order",
         help="Convenience wrapper for the live contract PlaceOrder doc",
-        description="Place one contract order using the documented V3 fields exposed by this wrapper.",
+        description="Prepare one contract order for separate confirmation using the documented V3 fields.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p_place.add_argument("--symbol", required=True, help="Trading pair symbol, for example BTCUSDT or ETHUSDT")
     p_place.add_argument("--side", required=True, choices=["BUY", "SELL", "buy", "sell"], help="Order side: BUY opens/adds long exposure, SELL opens/adds short exposure depending on position side")
     p_place.add_argument("--position-side", required=True, choices=["LONG", "SHORT", "long", "short"], help="Position direction for the contract order")
-    p_place.add_argument("--type", dest="order_type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET sends immediately at market price")
+    p_place.add_argument("--type", dest="order_type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET executes at market price after confirmation")
     p_place.add_argument("--quantity", required=True, help="Order quantity as expected by WEEX for this contract")
     p_place.add_argument("--price", default=None, help="Limit price; usually required for LIMIT orders and omitted for MARKET orders")
     p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "POST_ONLY", "gtc", "ioc", "fok", "post_only"], help="Execution policy for LIMIT orders: GTC, IOC, FOK, or POST_ONLY")
@@ -901,13 +971,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel = sub.add_parser(
         "cancel-order",
         help="Convenience wrapper for the live contract CancelOrder doc",
-        description="Cancel one contract order by WEEX order id or client order id.",
+        description="Prepare cancellation of one contract order by WEEX order id or client order id.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p_cancel.add_argument("--order-id", default=None, help="WEEX order id to cancel")
     p_cancel.add_argument("--client-oid", default=None, help="Client order id to cancel when you do not have the WEEX order id")
     p_cancel.add_argument("--dry-run", action="store_true", help="Show the MCP redacted cancel description without signing or sending")
-    p_cancel.add_argument("--confirm-live", action="store_true", help="Allow the live cancel request")
+    p_cancel.add_argument("--confirm-live", action="store_true", help="Legacy flag; confirm a prepared live mutation with weex_trade_guard.py confirm-mutation")
     p_cancel.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
     p_ticker = sub.add_parser(

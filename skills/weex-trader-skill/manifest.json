@@ -113,6 +113,15 @@
           "scripts/weex_risk_review_core.py",
           "scripts/weex_order_intent_state.py",
           "references/trade-data-schema.md"
+        ],
+        "commands": [
+          "preview-order",
+          "confirm-order",
+          "preview-tp-sl",
+          "confirm-tp-sl",
+          "confirm-mutation",
+          "reconcile-intent",
+          "account-scan"
         ]
       },
       "automated_strategy_authorization": {
@@ -237,6 +246,11 @@
         "scripts/weex_contract_api.py",
         "scripts/weex_order_intent_state.py",
         "references/contract-api-definitions.json"
+      ],
+      "reconcile a manual mutation intent": [
+        "scripts/weex_trade_guard.py",
+        "scripts/weex_order_intent_state.py",
+        "scripts/weex_mcp_trade_compat.py"
       ],
       "register or authorize an automated strategy": [
         "scripts/weex_auto_trade.py",

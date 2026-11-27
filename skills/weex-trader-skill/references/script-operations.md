@@ -126,11 +126,17 @@ python3 scripts/weex_contract_api.py list-endpoints --group sim --pretty
 
 ## Trading Commands
 
-Representative futures order:
+Prepare a representative futures order:
 
 ```bash
 # Windows users: replace python3 with py -3
-python3 scripts/weex_contract_api.py --profile main place-order --symbol ETHUSDT --side SELL --position-side SHORT --type LIMIT --quantity 0.001 --price 10000 --time-in-force GTC --confirm-live --pretty
+python3 scripts/weex_contract_api.py --profile main place-order --symbol ETHUSDT --side SELL --position-side SHORT --type LIMIT --quantity 0.001 --price 10000 --time-in-force GTC --pretty
+```
+
+Show the user the environment, `mutation_preview.risk`, and any `dynamic_scope_notice` from the prepare output. After they explicitly confirm, submit the same saved intent and risk signature:
+
+```bash
+python3 scripts/weex_trade_guard.py confirm-mutation --intent-id '<intent_id>' --risk-signature '<risk_signature>' --trading-mode live --confirm-live --pretty
 ```
 
 Current contract constraints from the official endpoint pages:
@@ -149,16 +155,16 @@ Full-position TP/SL preview using the explicit `0` form:
 python3 scripts/weex_trade_guard.py preview-tp-sl --profile main --trading-mode live --tp-sl-json '{"symbol":"BTCUSDT","clientAlgoId":"tp-full-1","planType":"TAKE_PROFIT","triggerPrice":"70500","executePrice":"0","quantity":"0","positionSide":"LONG","triggerPriceType":"MARK_PRICE"}' --language en --pretty
 ```
 
-Only after the user gives the exact confirmation returned by that preview, submit the bound intent with `confirm-tp-sl --trading-mode live --intent-id <intent_id> --risk-signature <risk_signature> --confirm-live`.
+After the user confirms the preview, submit the bound intent with `confirm-mutation` as above. The existing `confirm-tp-sl` and `confirm-order` commands remain available for their matching intents.
 
-Representative simulated futures order:
+Prepare a representative simulated futures order:
 
 ```bash
 # Windows users: replace python3 with py -3
-python3 scripts/weex_contract_api.py --profile main place-order --symbol ETHUSDT --side SELL --position-side SHORT --type LIMIT --quantity 0.001 --price 10000 --time-in-force GTC --trading-mode demo --confirm-demo --pretty
+python3 scripts/weex_contract_api.py --profile main place-order --symbol ETHUSDT --side SELL --position-side SHORT --type LIMIT --quantity 0.001 --price 10000 --time-in-force GTC --trading-mode demo --pretty
 ```
 
-The convenience wrapper accepts normal contract symbols such as `BTCUSDT` or `ETHUSDT` and maps them to the official simulated-order symbol shape before sending `sim.transaction.place_order`. The allowlisted `call --endpoint sim.transaction.place_order` compatibility path expects you to provide the exact official request body yourself.
+The convenience wrapper accepts normal contract symbols such as `BTCUSDT` or `ETHUSDT` and maps them to the official simulated-order symbol shape when preparing `sim.transaction.place_order`. The allowlisted `call --endpoint sim.transaction.place_order` compatibility path expects you to provide the exact official request body yourself. Confirm a demo intent with `--trading-mode demo --confirm-demo`.
 
 Simulated futures balance, position, and order-history reads use the `sim.*` endpoints and do not require a confirmation flag:
 
@@ -169,7 +175,7 @@ python3 scripts/weex_contract_api.py --profile main call --endpoint sim.account.
 python3 scripts/weex_contract_api.py --profile main call --endpoint sim.transaction.get_order_history --trading-mode demo --query '{"limit":50}' --pretty
 ```
 
-For allowlisted contract endpoint-key calls, --profile is a global argument; place it before `call`, then use `--endpoint <key>` for the official endpoint key. The client maps that key to a typed MCP tool, uses the generated `request_transport`, and rejects query fields sent in a documented JSON body or body fields sent in a documented query. `USER_DATA` POST endpoints are read-only queries and do not require a trade confirmation flag; `TRADE` endpoints still require the matching live or demo confirmation flag.
+For allowlisted contract endpoint-key calls, --profile is a global argument; place it before `call`, then use `--endpoint <key>` for the official endpoint key. The client maps that key to a typed MCP tool, uses the generated `request_transport`, and rejects query fields sent in a documented JSON body or body fields sent in a documented query. `USER_DATA` POST endpoints are read-only queries. `TRADE` endpoints prepare a saved intent; pass the matching live or demo confirmation flag to the separate `confirm-mutation` command.
 
 For simulated futures order history, omit `symbol` unless you are using an officially accepted simulated symbol filter for that endpoint. Querying without `symbol` avoids normal-symbol filters such as `BTCUSDT` being rejected by the demo history API.
 
@@ -180,14 +186,14 @@ exchange signature, construct a Local service, or send a request:
 
 ```bash
 # Windows users: replace python3 with py -3
-python3 scripts/weex_contract_api.py --profile main place-order --symbol BTCUSDT --side BUY --position-side LONG --type MARKET --quantity 0.001 --trading-mode demo --confirm-demo --dry-run --pretty
+python3 scripts/weex_contract_api.py --profile main place-order --symbol BTCUSDT --side BUY --position-side LONG --type MARKET --quantity 0.001 --trading-mode demo --dry-run --pretty
 ```
 
-Representative spot order:
+Prepare a representative spot order:
 
 ```bash
 # Windows users: replace python3 with py -3
-python3 scripts/weex_spot_api.py --profile main place-order --symbol ETHUSDT --side BUY --order-type LIMIT --quantity 0.001 --price 999 --time-in-force GTC --confirm-live --pretty
+python3 scripts/weex_spot_api.py --profile main place-order --symbol ETHUSDT --side BUY --order-type LIMIT --quantity 0.001 --price 999 --time-in-force GTC --pretty
 ```
 
 Current convenience wrappers:
@@ -208,25 +214,19 @@ python3 scripts/weex_trade_data_aggregator.py collect-account-risk --profile mai
 python3 scripts/weex_trade_data_aggregator.py collect-order-risk --profile main --market futures --trading-mode demo --order-json '{"symbol":"BTCUSDT","side":"BUY","position_side":"LONG","order_type":"MARKET","quantity":"0.001"}' --pretty
 ```
 
-`weex_trade_guard.py` binds `trading_mode`, `environment`, profile, market, order preview, and alerts into the pending intent risk signature. Preview first, then confirm with the matching environment flag from the latest preview output.
+`weex_trade_guard.py` stores the exact MCP PreparedMutation and uses its `prepared_artifact_digest` as the user-facing `risk_signature` alias. Preview first, then confirm with the matching intent ID, digest, and environment flag from the latest preview output. The Skill issues the grant; MCP dispatch alone claims and finalizes it.
 Private account, order, cancel, TP/SL, and order-query outputs include `user_environment_prefix` whenever the command has environment context. Natural-language summaries must put that prefix on the first line before describing balances, positions, submitted orders, order status, or order history.
 
 ```bash
 # Windows users: replace python3 with py -3
 python3 scripts/weex_trade_guard.py preview-order --profile main --market futures --trading-mode demo --order-json '{"symbol":"BTCUSDT","side":"BUY","position_side":"LONG","order_type":"MARKET","quantity":"0.001"}' --language en --pretty
-python3 scripts/weex_trade_guard.py confirm-order --trading-mode demo --intent-id <intent_id> --risk-signature <risk_signature> --confirm-demo --pretty
+python3 scripts/weex_trade_guard.py confirm-mutation --intent-id '<intent_id>' --risk-signature '<risk_signature>' --trading-mode demo --confirm-demo --pretty
+python3 scripts/weex_trade_guard.py reconcile-intent --intent-id '<intent_id>' --language en --pretty
 ```
 
 For live order confirmation, use `--trading-mode live --confirm-live`. A live intent cannot be confirmed with `--confirm-demo`, and a demo intent cannot be confirmed with `--confirm-live`.
 
-After a confirm transport returns a known accepted, released, or definitively rejected exchange outcome, that outcome and the command exit code remain authoritative even if local pending-intent cleanup fails. The response then adds `intent_cleanup_warning` with this stable shape:
-
-- `code=INTENT_CLEANUP_FAILED`
-- `message=The exchange result is known, but local pending-intent cleanup did not complete.`
-- `state_error_code=<safe local state code>`
-- `next_action=KEEP_EXCHANGE_RESULT_AND_INSPECT_PENDING_INTENT_BEFORE_ANY_NEW_ORDER`
-
-Do not resubmit the exchange action. Keep the returned exchange outcome and inspect the local pending intent before previewing or confirming another order.
+Terminal and resolved outcomes are appended and fsynced to the owner-only audit journal before the single manual slot becomes replaceable. Unknown, partial, claimed-after-restart, unresolved, and manual-review states remain blocked. `reconcile-intent` accepts only the intent ID and consumes the stored MCP template; never pass or invent outcome, order-ID, or evidence parameters. Do not resubmit an exchange action while reconciliation is pending.
 
 ## Automated Strategy Authorization
 

@@ -67,6 +67,9 @@ _UPSTREAM_PERMISSIONS = frozenset({"spotTrading", "futuresTrading", "accountDeta
 _ACCOUNT_BINDING_DOMAIN = b"weex-trader-local-mcp-account-binding-v1\0"
 _CREDENTIAL_BINDING_DOMAIN = b"weex-trader-local-mcp-credential-binding-v1\0"
 _CREDENTIAL_FINGERPRINT_DOMAIN = b"weex-trader-local-mcp-credential-v2\0"
+_PREVIOUS_RECONCILIATION_BOUNDARY_DIGEST = (
+    "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
+)
 
 
 class McpGatewayError(RuntimeError):
@@ -962,6 +965,7 @@ class LocalMcpGateway:
         self._binding_key_status_loader = binding_key_status_loader or _default_binding_key_status_loader
         self._binding_key_fingerprint: str | None = None
         self._secret_provider: Any = _PublicOnlySecretProvider(runtime)
+        self._previous_reconciliation_provider: VaultSecretProvider | None = None
         self._account_binding_id: str | None = None
         self._credential_binding_id: str | None = None
         if profile_id is not None:
@@ -991,17 +995,28 @@ class LocalMcpGateway:
                 credential_loader=active_credential_loader,
                 runtime=runtime,
             )
-        settings = runtime.Settings(
-            trade_enabled=trade_enabled,
-            spot_base_url=effective_spot_base_url,
-            futures_base_url=effective_futures_base_url,
-            market_timeout_seconds=self.timeout_seconds,
-            market_max_attempts=1,
-            market_retry_base_delay_seconds=0.0,
-            account_timeout_seconds=self.timeout_seconds,
-            partner_timeout_seconds=self.timeout_seconds,
-            request_locale=request_locale,
-        )
+            self._previous_reconciliation_provider = VaultSecretProvider(
+                profile_id=profile_id,
+                account_binding_id=self._account_binding_id,
+                binding_id=self._credential_binding_id,
+                fingerprint_key=_safe_hmac(
+                    binding_bytes, _CREDENTIAL_FINGERPRINT_DOMAIN,
+                    _PREVIOUS_RECONCILIATION_BOUNDARY_DIGEST,
+                ),
+                credential_loader=active_credential_loader,
+                runtime=runtime,
+            )
+        self._service_settings = {
+            "spot_base_url": effective_spot_base_url,
+            "futures_base_url": effective_futures_base_url,
+            "market_timeout_seconds": self.timeout_seconds,
+            "market_max_attempts": 1,
+            "market_retry_base_delay_seconds": 0.0,
+            "account_timeout_seconds": self.timeout_seconds,
+            "partner_timeout_seconds": self.timeout_seconds,
+            "request_locale": request_locale,
+        }
+        settings = runtime.Settings(trade_enabled=trade_enabled, **self._service_settings)
         service_arguments: dict[str, Any] = {"settings": settings, "secret_provider": self._secret_provider}
         if grant_consumer is not None:
             service_arguments["grant_consumer"] = grant_consumer
@@ -1148,14 +1163,28 @@ class LocalMcpGateway:
         if not hmac.compare_digest(fingerprint, self._binding_key_fingerprint or ""):
             raise McpGatewayError("binding_key_changed", "The local MCP binding key changed; rebuild the Gateway.")
 
-    def _context(self, *, execution_grant: Any, request_id: str) -> Any:
-        if self.profile_id is None or not isinstance(self._secret_provider, VaultSecretProvider):
+    def _context(
+        self,
+        *,
+        execution_grant: Any,
+        request_id: str,
+        previous_reconciliation: bool = False,
+    ) -> Any:
+        provider = self._previous_reconciliation_provider if previous_reconciliation else self._secret_provider
+        if self.profile_id is None or not isinstance(provider, VaultSecretProvider):
             raise McpGatewayError("profile_required", "A saved profile is required for private MCP tools.")
+        if previous_reconciliation and execution_grant is not None:
+            raise McpGatewayError("invalid_arguments", "Previous mutation reconciliation cannot use an execution grant.")
         self._require_current_binding_key()
-        fingerprint = self._secret_provider._current_credential_fingerprint()
+        fingerprint = provider._current_credential_fingerprint()
         route_fingerprint = _canonical_digest(
             {"spot": self.effective_spot_base_url, "futures": self.effective_futures_base_url}
         )
+        host_capabilities = self._host_capabilities
+        upstream_evidence = dict(self._upstream_evidence)
+        if previous_reconciliation:
+            host_capabilities = frozenset(value for value in host_capabilities if value.startswith("account."))
+            upstream_evidence = {key: value for key, value in upstream_evidence.items() if key == "accountDetails"}
         return self._runtime.AuthenticatedInvocationContext(
             principal=self._runtime.VerifiedPrincipal(
                 principal_id=self.profile_id,
@@ -1173,8 +1202,8 @@ class LocalMcpGateway:
             credential_binding=self._runtime.CredentialBinding(
                 binding_id=self._credential_binding_id,
                 credential_fingerprint=fingerprint,
-                host_policy_capabilities=self._host_capabilities,
-                upstream_permission_evidence=dict(self._upstream_evidence),
+                host_policy_capabilities=host_capabilities,
+                upstream_permission_evidence=upstream_evidence,
                 valid_until=None,
             ),
             execution_grant=execution_grant,
@@ -1364,6 +1393,160 @@ class LocalMcpGateway:
                 "mcp_protocol_error",
                 "WEEX MCP rejected the verified execution grant.",
             ) from exc
+
+    def recover_mutation(
+        self,
+        *,
+        tool_name: str,
+        execution_grant: Any,
+        now_ms: int | None = None,
+    ) -> Any:
+        if (
+            not isinstance(tool_name, str)
+            or not tool_name
+            or not isinstance(execution_grant, self._runtime.ExecutionGrant)
+            or getattr(execution_grant, "state", None) != "CLAIMED"
+            or getattr(execution_grant, "tool_name", None) != tool_name
+            or (
+                now_ms is not None
+                and (
+                    isinstance(now_ms, bool)
+                    or not isinstance(now_ms, int)
+                    or now_ms < 0
+                )
+            )
+        ):
+            raise McpGatewayError(
+                "invalid_arguments",
+                "A matching claimed execution grant is required for recovery.",
+            )
+        active_now = int(time.time() * 1000) if now_ms is None else now_ms
+        route_fingerprint = _canonical_digest(
+            {
+                "spot": self.effective_spot_base_url,
+                "futures": self.effective_futures_base_url,
+            }
+        )
+        context = self._runtime.AuthenticatedInvocationContext(
+            principal=self._runtime.VerifiedPrincipal(
+                principal_id=execution_grant.principal_id,
+                tenant_id="weex-trader-local",
+                authn_method="local_profile_vault",
+                authenticated_at=active_now,
+                trust_level="local_process",
+            ),
+            account_binding=self._runtime.AccountBinding(
+                account_binding_id=execution_grant.account_binding_id,
+                profile_id=self.profile_id,
+                allowed_markets=frozenset({"spot", "futures"}),
+                route_fingerprint=route_fingerprint,
+            ),
+            credential_binding=self._runtime.CredentialBinding(
+                binding_id=self._credential_binding_id,
+                credential_fingerprint=execution_grant.credential_fingerprint,
+                host_policy_capabilities=self._host_capabilities,
+                upstream_permission_evidence=dict(self._upstream_evidence),
+                valid_until=None,
+            ),
+            execution_grant=execution_grant,
+            correlation=self._runtime.CorrelationContext(
+                request_id=self._next_id("recover"),
+                session_id=self._session_id,
+            ),
+        )
+        try:
+            return self._service.recover_mutation(
+                tool_name=tool_name,
+                invocation_context=context,
+                now_ms=now_ms,
+            )
+        except McpGatewayError:
+            raise
+        except Exception as exc:
+            raise McpGatewayError(
+                "mcp_protocol_error",
+                "WEEX MCP mutation recovery failed.",
+            ) from exc
+
+    def reconcile_mutation(
+        self,
+        prepared_mutation: Mapping[str, Any],
+        *,
+        now_ms: int,
+        boundary_contract_digest: str | None = None,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(prepared_mutation, Mapping)
+            or not isinstance(prepared_mutation.get("tool_name"), str)
+            or _safe_digest(prepared_mutation.get("prepared_artifact_digest")) is None
+            or isinstance(now_ms, bool)
+            or not isinstance(now_ms, int)
+            or now_ms < 0
+        ):
+            raise McpGatewayError("invalid_arguments", "A saved prepared mutation and reconciliation time are required.")
+        previous_reconciliation = boundary_contract_digest == _PREVIOUS_RECONCILIATION_BOUNDARY_DIGEST
+        if (
+            boundary_contract_digest is not None
+            and boundary_contract_digest != self._expected_candidate["boundary_contract_digest"]
+            and not previous_reconciliation
+        ):
+            raise McpGatewayError("invalid_arguments", "The saved mutation contract does not support reconciliation.")
+        tool_name = prepared_mutation["tool_name"]
+        tool = self._fresh_preflight().get(tool_name)
+        if tool is None or self._tool_module(tool) != "trade":
+            raise McpGatewayError("unsupported_tool", "The prepared mutation tool is not in the verified Local Trade catalog.")
+        context = self._context(
+            execution_grant=None,
+            request_id=self._next_id("reconcile"),
+            previous_reconciliation=previous_reconciliation,
+        )
+        if previous_reconciliation and (
+            prepared_mutation.get("route_fingerprint") != context.account_binding.route_fingerprint
+            or prepared_mutation.get("credential_fingerprint") != context.credential_binding.credential_fingerprint
+        ):
+            raise McpGatewayError(
+                "reconciliation_binding_mismatch", "The saved mutation no longer matches the current profile binding.",
+            )
+        try:
+            service = self._service
+            if previous_reconciliation:
+                # Bind the historical fingerprint only to a service without any write authority.
+                service = self._runtime.build_local_user_service(
+                    settings=self._runtime.Settings(trade_enabled=False, **self._service_settings),
+                    secret_provider=self._previous_reconciliation_provider,
+                )
+            reconciled = service.reconcile_mutation(
+                prepared_mutation=dict(prepared_mutation),
+                invocation_context=context,
+                now_ms=now_ms,
+            ).to_dict()
+        except Exception as exc:
+            raise McpGatewayError("mcp_protocol_error", "WEEX MCP mutation reconciliation failed.") from exc
+        if (
+            not isinstance(reconciled, dict)
+            or set(reconciled) != {
+                "tool_name", "prepared_artifact_digest", "status", "result",
+                "observed_at", "evidence", "evidence_digest",
+            }
+            or reconciled["tool_name"] != tool_name
+            or reconciled["prepared_artifact_digest"] != prepared_mutation["prepared_artifact_digest"]
+            or type(reconciled["observed_at"]) is not int
+            or reconciled["observed_at"] != now_ms
+            or _safe_digest(reconciled["evidence_digest"]) is None
+            or not isinstance(reconciled["evidence"], dict)
+        ):
+            raise McpGatewayError("mcp_protocol_error", "WEEX MCP returned invalid reconciliation evidence.")
+        status = reconciled["status"]
+        if (
+            status not in ("RESOLVED_ACCEPTED", "UNRESOLVED", "MANUAL_REVIEW_REQUIRED")
+            or reconciled["result"] != ("ACCEPTED" if status == "RESOLVED_ACCEPTED" else None)
+        ):
+            raise McpGatewayError("mcp_protocol_error", "WEEX MCP returned an invalid reconciliation result.")
+        return {
+            "status": status,
+            "observed_at": now_ms,
+            "evidence_digest": reconciled["evidence_digest"],
+        }
 
     def call_typed_tool(
         self,

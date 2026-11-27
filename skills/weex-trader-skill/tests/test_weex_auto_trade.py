@@ -3139,10 +3139,39 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
             runtime = SimpleNamespace(
                 risk_payload_provider=Mock(), risk_evaluator=Mock(), facts_provider=Mock(), submitter=Mock()
             )
+            fallback_intent = {
+                "intent_version": 2,
+                "intent_id": "manual-fallback-intent",
+                "expires_at": 10_000,
+                "prepared_artifact_digest": "sha256:" + "6" * 64,
+                "tool_name": "trade_place_order",
+                "action": "place_order",
+                "market": "spot",
+                "trading_mode": "live",
+                "risk_facts": {
+                    "market": "spot",
+                    "trading_mode": "live",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "order_type": "LIMIT",
+                    "quantity": "1",
+                    "price": "120",
+                },
+            }
+            manual_builder = Mock(
+                return_value={
+                    "intent": fallback_intent,
+                    "order_preview": {
+                        "operation_key": "spot.order.place_order",
+                        "orders": [],
+                    },
+                }
+            )
             facade = cli_module.AutoTradeFacade(
                 state,
                 profile_resolver=lambda name: profile,
                 auto_trade_runtime_factory=lambda resolved: runtime,
+                manual_intent_builder=manual_builder,
                 manual_intent_writer=captured.append,
             )
             order = {
@@ -3182,17 +3211,16 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "MANUAL_CONFIRMATION_REQUIRED")
             self.assertEqual(len(captured), 1)
-            self.assertEqual(captured[0]["intent_type"], "order")
-            self.assertEqual(captured[0]["strategy_id"], strategy["strategy_id"])
-            self.assertEqual(captured[0]["authorization_id"], authorization["authorization_id"])
-            self.assertEqual(captured[0]["idempotency_key"], "facade-submit-fallback")
-            self.assertEqual(captured[0]["auto_fallback_operation_key"], "spot.order.place_order")
-            self.assertEqual(captured[0]["auto_fallback_orders"], [order])
+            self.assertEqual(captured[0]["intent_version"], 2)
+            self.assertEqual(captured[0]["prepared_artifact_digest"], "sha256:" + "6" * 64)
             self.assertEqual(result["intent_id"], captured[0]["intent_id"])
-            self.assertEqual(result["order_preview"]["orders"], [order])
+            self.assertEqual(result["mutation_preview"]["risk"], fallback_intent["risk_facts"])
+            self.assertNotIn("dynamic_scope_notice", result)
+            manual_builder.assert_called_once()
             self.assertEqual(result["user_confirmation"]["reply_text"], "确认")
             self.assertIn("本次订单超过自动交易授权范围，尚未下单", result["user_confirmation"]["reply_instruction"])
             self.assertIn("确认后回复：确认", result["user_confirmation"]["reply_instruction"])
+            self.assertIn("mutation_preview", result["user_confirmation"]["reply_instruction"])
             self.assertIn("申请自动交易授权", result["authorization_hint"])
             fallback_event = next(
                 event
@@ -3202,36 +3230,132 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
             self.assertEqual(fallback_event["severity"], "EXCEPTION")
             self.assertEqual(fallback_event["payload"]["error_code"], "SINGLE_LIMIT_EXCEEDED")
 
-    def test_manual_fallback_writer_maps_claimed_intent_conflict_to_facade_error(self) -> None:
+    def test_manual_fallback_routes_all_six_allowlisted_operations_to_confirm_commands(self) -> None:
+        tool_by_operation = {
+            "spot.order.place_order": "trade_place_order",
+            "spot.order.bulk_order": "trade_place_batch_orders",
+            "transaction.place_order": "trade_place_order",
+            "transaction.place_orders_batch": "trade_place_batch_orders",
+            "transaction.place_pending_order": "trade_place_conditional_order",
+            "transaction.place_tp_sl_order": "trade_place_tp_sl",
+        }
+        for operation_key, tool_name in tool_by_operation.items():
+            with self.subTest(operation_key=operation_key):
+                with tempfile.TemporaryDirectory() as tempdir:
+                    state, cli_module, profile, strategy, authorization = self._authorized_fixture(
+                        Path(tempdir)
+                    )
+                    intent = {
+                        "intent_version": 2,
+                        "intent_id": "manual-fallback-intent",
+                        "tool_name": tool_name,
+                        "action": tool_name.removeprefix("trade_"),
+                        "market": "spot" if operation_key.startswith("spot.") else "futures",
+                        "trading_mode": "live",
+                        "risk_facts": {},
+                        "expires_at": 10_000,
+                        "prepared_artifact_digest": "sha256:" + "6" * 64,
+                    }
+                    builder = Mock(
+                        return_value={
+                            "intent": intent,
+                            "order_preview": {
+                                "operation_key": operation_key,
+                                "orders": [{"symbol": "BTCUSDT"}],
+                            },
+                        }
+                    )
+                    facade = cli_module.AutoTradeFacade(
+                        state,
+                        profile_resolver=lambda _name: profile,
+                        auto_trade_runtime_factory=lambda _profile: SimpleNamespace(
+                            risk_payload_provider=Mock(),
+                            risk_evaluator=Mock(),
+                            facts_provider=Mock(),
+                            submitter=Mock(),
+                        ),
+                        manual_intent_builder=builder,
+                        manual_intent_writer=Mock(),
+                    )
+                    guard_result = {
+                        "ok": False,
+                        "status": "MANUAL_CONFIRMATION_REQUIRED",
+                        "error": {"code": "SCOPE_MISMATCH"},
+                        "advisory_alerts": [],
+                        "blocking_reasons": [],
+                    }
+                    with patch.object(
+                        cli_module,
+                        "submit_authorized_order",
+                        return_value=guard_result,
+                    ):
+                        result = facade.execute(
+                            "submit-auto",
+                            {
+                                "profile": profile.name,
+                                "strategy_id": strategy["strategy_id"],
+                                "authorization_id": authorization["authorization_id"],
+                                "idempotency_key": f"fallback-{operation_key}",
+                                "operation_key": operation_key,
+                                "orders": [{"symbol": "BTCUSDT"}],
+                            },
+                            confirm_live=True,
+                        )
+                self.assertEqual(
+                    result["next_action"],
+                    (
+                        "CONFIRM_TP_SL_MANUALLY"
+                        if tool_name == "trade_place_tp_sl"
+                        else "CONFIRM_ORDER_MANUALLY"
+                    ),
+                )
+
+    def test_manual_fallback_writer_rejects_legacy_review_state(self) -> None:
         import weex_order_intent_state as intent_state
 
         cli_module = load_cli_module()
-        with tempfile.TemporaryDirectory() as tempdir:
-            with patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}, clear=False):
-                pending = intent_state.build_intent(
-                    profile_name="demo",
-                    market="spot",
-                    order_preview={"symbol": "BTCUSDT"},
-                    raw_order={"symbol": "BTCUSDT"},
-                    analysis_output={"alerts": []},
-                )
-                intent_state.save_intent(pending)
-                intent_state.claim_intent_for_confirmation(
-                    expected_intent_id=pending["intent_id"],
-                    expected_risk_signature=pending["risk_signature"],
-                    expected_intent_type="order",
-                    started_at_ms=2000,
-                )
-                replacement = intent_state.build_intent(
-                    profile_name="demo",
-                    market="spot",
-                    order_preview={"symbol": "ETHUSDT"},
-                    raw_order={"symbol": "ETHUSDT"},
-                    analysis_output={"alerts": []},
+        current = {
+            "intent_version": 2,
+            "intent_id": "legacy-review",
+            "state": "REVIEW_REQUIRED",
+            "legacy": {"source_started": True},
+        }
+        with patch.object(intent_state, "load_manual_intent", return_value=current):
+            with self.assertRaises(cli_module.FacadeError) as conflict:
+                cli_module._save_manual_fallback_intent(
+                    {
+                        "intent_version": 2,
+                        "intent_id": "intent-v2",
+                        "state": "UNCLAIMED",
+                        "legacy": None,
+                        "prepared_artifact_digest": "sha256:" + "6" * 64,
+                    }
                 )
 
-                with self.assertRaises(cli_module.FacadeError) as conflict:
-                    cli_module._save_manual_fallback_intent(replacement)
+        self.assertEqual(conflict.exception.code, "STATE_CONFLICT")
+        self.assertEqual(
+            conflict.exception.next_action,
+            "INSPECT_PENDING_CONFIRMATION_THEN_PREVIEW_MANUALLY",
+        )
+
+    def test_manual_fallback_writer_rejects_same_v2_intent_after_state_transition(self) -> None:
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        durable = {
+            "intent_version": 2,
+            "intent_id": "intent-v2",
+            "state": "CLAIMED",
+            "legacy": None,
+            "prepared_artifact_digest": "sha256:" + "6" * 64,
+        }
+        with patch.object(
+            intent_state,
+            "load_manual_intent",
+            return_value=durable,
+        ):
+            with self.assertRaises(cli_module.FacadeError) as conflict:
+                cli_module._save_manual_fallback_intent(dict(durable))
 
         self.assertEqual(conflict.exception.code, "STATE_CONFLICT")
         self.assertEqual(
@@ -3245,7 +3369,7 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
         cli_module = load_cli_module()
         with patch.object(
             intent_state,
-            "save_intent",
+            "load_manual_intent",
             side_effect=intent_state.IntentStateError(
                 "intent_state_unavailable",
                 "injected storage failure",
@@ -3259,6 +3383,320 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
             conflict.exception.next_action,
             "DISABLE_AUTO_TRADE_AND_INSPECT_STATE",
         )
+
+    def test_default_manual_fallback_builder_returns_the_durable_v2_intent(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        client = Mock()
+        client.preview_trade_endpoint.return_value = {
+            "ok": True,
+            "preview": {"intent_id": "intent-v2"},
+        }
+        boundary = Mock()
+        boundary._client.return_value = (
+            SimpleNamespace(
+                ENDPOINTS={
+                    "spot.order.place_order": SimpleNamespace(
+                        key="spot.order.place_order"
+                    )
+                }
+            ),
+            client,
+        )
+        durable = {
+            "intent_version": 2,
+            "intent_id": "intent-v2",
+            "legacy": None,
+            "expires_at": 10_000,
+            "prepared_artifact_digest": "sha256:" + "6" * 64,
+        }
+        with (
+            patch.object(
+                runtime_module,
+                "OfficialApiBoundary",
+                return_value=boundary,
+            ),
+            patch.object(
+                runtime_module,
+                "_submission_request",
+                return_value=("SPOT", {"symbol": "BTCUSDT"}),
+            ),
+            patch.object(
+                intent_state,
+                "load_manual_intent",
+                return_value=durable,
+            ),
+        ):
+            result = cli_module._build_manual_fallback_intent(
+                profile_name="main",
+                strategy_id="strategy",
+                authorization_id="authorization",
+                idempotency_key="idempotency",
+                operation_key="spot.order.place_order",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "MARKET",
+                        "quantity": "1",
+                    }
+                ],
+                guard_result={},
+            )
+        self.assertEqual(result["intent"], durable)
+        self.assertEqual(
+            result["order_preview"]["operation_key"],
+            "spot.order.place_order",
+        )
+        client.preview_trade_endpoint.assert_called_once()
+
+    def test_default_manual_fallback_builder_surfaces_post_preview_state_failure(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        client = Mock()
+        client.preview_trade_endpoint.return_value = {
+            "ok": True,
+            "preview": {"intent_id": "intent-orphan"},
+        }
+        boundary = Mock()
+        boundary._client.return_value = (
+            SimpleNamespace(
+                ENDPOINTS={
+                    "spot.order.place_order": SimpleNamespace(
+                        key="spot.order.place_order"
+                    )
+                }
+            ),
+            client,
+        )
+        with (
+            patch.object(
+                runtime_module,
+                "OfficialApiBoundary",
+                return_value=boundary,
+            ),
+            patch.object(
+                runtime_module,
+                "_submission_request",
+                return_value=("SPOT", {"symbol": "BTCUSDT"}),
+            ),
+            patch.object(
+                intent_state,
+                "load_manual_intent",
+                side_effect=intent_state.IntentStateError(
+                    "intent_state_unavailable",
+                    "unavailable",
+                ),
+            ),
+        ):
+            with self.assertRaises(cli_module.FacadeError) as caught:
+                cli_module._build_manual_fallback_intent(
+                    profile_name="main",
+                    strategy_id="strategy",
+                    authorization_id="authorization",
+                    idempotency_key="idempotency",
+                    operation_key="spot.order.place_order",
+                    orders=[
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "BUY",
+                            "type": "MARKET",
+                            "quantity": "1",
+                        }
+                    ],
+                    guard_result={},
+                )
+        self.assertEqual(caught.exception.code, "STATE_CONFLICT")
+        self.assertIn("intent-orphan", str(caught.exception))
+
+    def test_default_manual_fallback_builder_checks_state_after_non_ok_preview(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        client = Mock()
+        client.preview_trade_endpoint.return_value = {
+            "ok": False,
+            "error": {"code": "compat_response_invalid"},
+        }
+        boundary = Mock()
+        boundary._client.return_value = (
+            SimpleNamespace(
+                ENDPOINTS={
+                    "spot.order.place_order": SimpleNamespace(
+                        key="spot.order.place_order"
+                    )
+                }
+            ),
+            client,
+        )
+        durable = {
+            "intent_version": 2,
+            "intent_id": "intent-hidden",
+            "state": "UNCLAIMED",
+            "legacy": None,
+            "prepared_artifact_digest": "sha256:" + "6" * 64,
+        }
+        with (
+            patch.object(runtime_module, "OfficialApiBoundary", return_value=boundary),
+            patch.object(
+                runtime_module,
+                "_submission_request",
+                return_value=("SPOT", {"symbol": "BTCUSDT"}),
+            ),
+            patch.object(
+                intent_state,
+                "ensure_manual_intent_slot_available",
+                side_effect=intent_state.IntentStateError(
+                    "intent_conflict",
+                    "blocking intent",
+                ),
+            ),
+            patch.object(intent_state, "load_manual_intent", return_value=durable),
+        ):
+            with self.assertRaises(cli_module.FacadeError) as caught:
+                cli_module._build_manual_fallback_intent(
+                    profile_name="main",
+                    strategy_id="strategy",
+                    authorization_id="authorization",
+                    idempotency_key="idempotency",
+                    operation_key="spot.order.place_order",
+                    orders=[
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "BUY",
+                            "type": "MARKET",
+                            "quantity": "1",
+                        }
+                    ],
+                    guard_result={},
+                )
+
+        self.assertEqual(caught.exception.code, "STATE_CONFLICT")
+        self.assertIn("intent-hidden", str(caught.exception))
+
+    def test_default_manual_fallback_builder_allows_replaceable_terminal_slot(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        client = Mock()
+        client.preview_trade_endpoint.return_value = {"ok": False}
+        boundary = Mock()
+        boundary._client.return_value = (
+            SimpleNamespace(
+                ENDPOINTS={
+                    "spot.order.place_order": SimpleNamespace(
+                        key="spot.order.place_order"
+                    )
+                }
+            ),
+            client,
+        )
+        with (
+            patch.object(runtime_module, "OfficialApiBoundary", return_value=boundary),
+            patch.object(
+                runtime_module,
+                "_submission_request",
+                return_value=("SPOT", {"symbol": "BTCUSDT"}),
+            ),
+            patch.object(intent_state, "ensure_manual_intent_slot_available"),
+            patch.object(
+                intent_state,
+                "load_manual_intent",
+                return_value={
+                    "intent_version": 2,
+                    "intent_id": "terminal-intent",
+                    "state": "ACCEPTED",
+                    "legacy": None,
+                },
+            ),
+        ):
+            result = cli_module._build_manual_fallback_intent(
+                profile_name="main",
+                strategy_id="strategy",
+                authorization_id="authorization",
+                idempotency_key="idempotency",
+                operation_key="spot.order.place_order",
+                orders=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "side": "BUY",
+                        "type": "MARKET",
+                        "quantity": "1",
+                    }
+                ],
+                guard_result={},
+            )
+        self.assertIsNone(result)
+
+    def test_default_manual_fallback_builder_surfaces_blocking_legacy_review(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+        import weex_order_intent_state as intent_state
+
+        cli_module = load_cli_module()
+        client = Mock()
+        client.preview_trade_endpoint.return_value = {"ok": False}
+        boundary = Mock()
+        boundary._client.return_value = (
+            SimpleNamespace(
+                ENDPOINTS={
+                    "spot.order.place_order": SimpleNamespace(
+                        key="spot.order.place_order"
+                    )
+                }
+            ),
+            client,
+        )
+        with (
+            patch.object(runtime_module, "OfficialApiBoundary", return_value=boundary),
+            patch.object(
+                runtime_module,
+                "_submission_request",
+                return_value=("SPOT", {"symbol": "BTCUSDT"}),
+            ),
+            patch.object(
+                intent_state,
+                "ensure_manual_intent_slot_available",
+                side_effect=intent_state.IntentStateError(
+                    "intent_conflict",
+                    "blocking legacy review",
+                ),
+            ),
+            patch.object(
+                intent_state,
+                "load_manual_intent",
+                return_value={
+                    "intent_version": 2,
+                    "intent_id": "legacy-review",
+                    "state": "REVIEW_REQUIRED",
+                    "legacy": {"source_started": True},
+                },
+            ),
+        ):
+            with self.assertRaises(cli_module.FacadeError) as caught:
+                cli_module._build_manual_fallback_intent(
+                    profile_name="main",
+                    strategy_id="strategy",
+                    authorization_id="authorization",
+                    idempotency_key="idempotency",
+                    operation_key="spot.order.place_order",
+                    orders=[
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "BUY",
+                            "type": "MARKET",
+                            "quantity": "1",
+                        }
+                    ],
+                    guard_result={},
+                )
+        self.assertEqual(caught.exception.code, "STATE_CONFLICT")
+        self.assertIn("legacy-review", str(caught.exception))
 
     def test_submit_auto_unknown_operation_does_not_create_unusable_confirmation_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -3899,7 +4337,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                 raise result
             return result
 
-    def test_official_boundary_distinguishes_explicit_http_rejection_from_uncertainty(self) -> None:
+    def test_official_boundary_blocks_delegated_mutation_until_t13b(self) -> None:
         import weex_auto_trade_runtime as runtime_module
 
         endpoint = SimpleNamespace(mutating=True, key="transaction.place_order")
@@ -3908,45 +4346,32 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
             validate_endpoint_trading_mode=lambda selected, mode: None,
         )
         client = Mock()
-        client.mcp_trade_settings_factory = lambda: SimpleNamespace(profile_id="profile-id")
-        facade = Mock()
-        facade.preview.return_value = {
-            "ok": True,
-            "preview": {"preview_id": "p"},
-            "summary": {"action": "order"},
-            "risk": {"level": "bounded"},
-        }
-        facade.confirm_delegated.return_value = {
-            "ok": False,
-            "error": {"code": "upstream_error"},
-            "outcome": {
-                "class": "unknown",
-                "write_attempted": True,
-                "action": "order",
-                "client_order_id": "client-1",
-            },
-            "trade_status": "REVIEW_REQUIRED",
-            "review_required": True,
-        }
-        delegation = Mock(delegated_ref="opaque-ref")
+        delegation = Mock()
         boundary = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
         boundary._client = lambda module, private: (api_module, client)
-        with patch.object(runtime_module, "McpTradeFacade", return_value=facade):
-            result = boundary.call(
-                module="FUTURES",
-                endpoint_key="transaction.place_order",
-                body={"symbol": "BTCUSDT", "newClientOrderId": "client-1"},
-                mutating=True,
-                delegation=delegation,
-            )
-        self.assertTrue(result["_mcp_mutation"])
-        self.assertEqual(result["response"]["outcome"]["class"], "unknown")
-        delegation.bind_preview.assert_called_once()
-        facade.confirm_delegated.assert_called_once_with(
-            {"preview_id": "p"},
-            delegated_ref="opaque-ref",
+        result = boundary.call(
+            module="FUTURES",
+            endpoint_key="transaction.place_order",
+            body={"symbol": "BTCUSDT", "newClientOrderId": "client-1"},
+            mutating=True,
+            delegation=delegation,
         )
-        client.describe_request.assert_not_called()
+        self.assertTrue(result["_mcp_mutation"])
+        self.assertEqual(
+            result["response"]["error"]["code"],
+            "auto_grant_migration_required",
+        )
+        self.assertEqual(
+            result["response"]["outcome"],
+            {
+                "class": "invocation_rejected",
+                "write_attempted": False,
+                "grant_disposition": "unchanged",
+                "action": "order",
+            },
+        )
+        delegation.authorize.assert_not_called()
+        delegation.bind_preview.assert_not_called()
 
         with self.assertRaisesRegex(ValueError, "delegated authorization"):
             boundary.call(
@@ -3955,6 +4380,72 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                 body={"symbol": "BTCUSDT"},
                 mutating=True,
             )
+
+    def test_official_boundary_preserves_preissue_invocation_rejected_outcome(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        endpoint = SimpleNamespace(mutating=True, key="transaction.place_order")
+        api_module = SimpleNamespace(
+            ENDPOINTS={"transaction.place_order": endpoint},
+            validate_endpoint_trading_mode=lambda selected, mode: None,
+        )
+        client = Mock()
+        boundary = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
+        boundary._client = lambda module, private: (api_module, client)
+        result = boundary.call(
+            module="FUTURES",
+            endpoint_key="transaction.place_order",
+            body={"symbol": "BTCUSDT"},
+            mutating=True,
+            delegation=Mock(),
+        )
+        self.assertEqual(
+            result["response"]["outcome"],
+            {
+                "class": "invocation_rejected",
+                "write_attempted": False,
+                "grant_disposition": "unchanged",
+                "action": "order",
+            },
+        )
+
+    def test_preissue_invocation_rejected_releases_reserved_legs_without_review(self) -> None:
+        import weex_auto_trade_runtime as runtime_module
+
+        results = runtime_module._normalize_mcp_submission_results(
+            operation_key="spot.order.place_order",
+            response={
+                "ok": False,
+                "error": {"code": "auto_grant_migration_required"},
+                "outcome": {
+                    "class": "invocation_rejected",
+                    "write_attempted": False,
+                    "grant_disposition": "unchanged",
+                    "action": "order",
+                },
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            },
+            prepared_legs=[
+                {
+                    "leg_id": "leg-0",
+                    "client_order_id": "client-0",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            results,
+            [
+                {
+                    "leg_id": "leg-0",
+                    "client_order_id": "client-0",
+                    "status": "RELEASED",
+                    "success": False,
+                    "error_code": "auto_grant_migration_required",
+                }
+            ],
+        )
 
     def test_official_boundary_preserves_read_error_code_for_spot_history_fallback(self) -> None:
         import weex_auto_trade_runtime as runtime_module

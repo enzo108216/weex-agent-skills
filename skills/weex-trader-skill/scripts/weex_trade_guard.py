@@ -17,14 +17,11 @@ from typing import Any
 import weex_trade_risk_review as analysis
 from weex_auto_trade_amount import ValuationUnavailable, estimate_order_amount
 from weex_auto_trade_state import StateConflictError
+from weex_mcp_trade_compat import dynamic_scope_notice as _dynamic_scope_notice
 from weex_order_intent_state import (
     IntentStateError,
-    build_intent,
-    claim_intent_for_confirmation,
-    clear_intent,
-    intent_is_expired,
-    load_intent,
-    save_intent,
+    ensure_manual_intent_slot_available,
+    load_manual_intent,
 )
 from weex_profile_language import resolve_language
 from weex_trade_data_aggregator import AggregationInputError, TradeDataAggregator
@@ -1527,9 +1524,11 @@ def _build_zh_confirmation_instruction(
         "",
         _format_zh_order_summary(preview_context),
         _format_zh_alert_summary(preview_context),
-        "",
-        confirm_line,
     ]
+    scope_notice = (preview_context or {}).get("dynamic_scope_notice")
+    if scope_notice:
+        lines.append(scope_notice)
+    lines.extend(["", confirm_line])
     switch_text = None
     if include_mode_switch:
         switch_text = _switch_reply_text(environment, language="zh")
@@ -1565,9 +1564,11 @@ def _build_en_confirmation_instruction(
         "",
         _format_en_order_summary(preview_context),
         _format_en_alert_summary(preview_context),
-        "",
-        confirm_line,
     ]
+    scope_notice = (preview_context or {}).get("dynamic_scope_notice")
+    if scope_notice:
+        lines.append(scope_notice)
+    lines.extend(["", confirm_line])
     switch_text = None
     if include_mode_switch:
         switch_text = _switch_reply_text(environment, language="en")
@@ -1816,28 +1817,6 @@ def _validate_exact_position_close(
     return numeric_position_id
 
 
-def _submit_order(
-    *,
-    market: str,
-    profile_name: str,
-    trading_mode: str,
-    raw_order: dict[str, Any],
-) -> dict[str, Any]:
-    _api, client, endpoint, body = _prepare_order_trade_request(
-        market=market,
-        profile_name=profile_name,
-        trading_mode=trading_mode,
-        raw_order=raw_order,
-    )
-    preview = client.preview_trade_endpoint(endpoint=endpoint, query={}, body=body)
-    if preview.get("ok") is not True or not isinstance(preview.get("preview"), dict):
-        raise AggregationInputError(
-            f"{trading_mode} order preview failed: {preview.get('error')}"
-        )
-    response = client.confirm_trade_preview(dict(preview["preview"]))
-    return _trade_execution_payload(response, operation_label=f"{trading_mode} order")
-
-
 def _prepare_order_trade_request(
     *,
     market: str,
@@ -1952,21 +1931,6 @@ def _preview_manual_order_trade(
     return dict(preview["preview"])
 
 
-def _confirm_saved_trade_preview(
-    *,
-    profile_name: str,
-    preview: dict[str, Any],
-) -> dict[str, Any]:
-    product = preview.get("product")
-    if product == "contract":
-        _api, client = _build_contract_client(profile_name)
-    elif product == "spot":
-        _api, client = _build_spot_client(profile_name)
-    else:
-        raise AggregationInputError("Saved MCP Trade preview product is invalid")
-    return client.confirm_trade_preview(preview)
-
-
 def _trade_execution_payload(
     response: dict[str, Any],
     *,
@@ -1989,109 +1953,6 @@ def _trade_execution_payload(
     raise AggregationInputError(
         f"{operation_label} submission failed: {response.get('error')}"
     )
-
-
-def _submit_live_order(*, market: str, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
-    return _submit_order(
-        market=market,
-        profile_name=profile_name,
-        trading_mode="live",
-        raw_order=raw_order,
-    )
-
-
-def _submit_live_auto_fallback_order(intent: dict[str, Any]) -> dict[str, Any]:
-    from weex_auto_trade_runtime import OfficialAutoTradeRuntime, OfficialRequestUncertain
-
-    operation_key = str(intent.get("auto_fallback_operation_key") or "").strip()
-    operation = resolve_official_auto_trade_operation(operation_key)
-    orders = intent.get("auto_fallback_orders")
-    if operation is None:
-        raise AggregationInputError("auto fallback operation is not in the official catalog")
-    if not isinstance(orders, list) or not orders or any(not isinstance(item, dict) for item in orders):
-        raise AggregationInputError("auto fallback orders must be a non-empty array")
-    if len(orders) > operation["max_legs"] or (
-        operation["kind"] != "BATCH" and len(orders) != 1
-    ):
-        raise AggregationInputError("auto fallback order count does not match the official operation")
-    if any(set(order) - operation["allowed_order_fields"] for order in orders):
-        raise AggregationInputError("auto fallback order contains unsupported fields")
-    if operation_key == "spot.order.bulk_order" and len(
-        {str(order.get("symbol") or "").upper() for order in orders}
-    ) != 1:
-        raise AggregationInputError("auto fallback Spot batch orders must share one symbol")
-    if any(_validate_official_order_semantics(operation, order) for order in orders):
-        raise AggregationInputError("auto fallback order failed official semantic validation")
-    intent_market = str(intent.get("market") or "").upper()
-    if intent_market != operation["module"]:
-        raise AggregationInputError("auto fallback market does not match the official operation")
-
-    prepared: list[dict[str, Any]] = []
-    for index, raw_order in enumerate(orders):
-        order = dict(raw_order)
-        client_field = (
-            "clientAlgoId"
-            if operation["kind"] in {"CONDITIONAL", "TP_SL"}
-            else "newClientOrderId"
-        )
-        client_order_id = str(order.get(client_field) or "").strip()
-        if not client_order_id:
-            digest = hashlib.sha256(
-                f"{intent.get('intent_id')}:{index}".encode("utf-8")
-            ).hexdigest()[:24]
-            client_order_id = "mnl_" + digest
-            order[client_field] = client_order_id
-        prepared.append(
-            {
-                "leg_id": f"leg-{index}",
-                "leg_index": index,
-                "client_order_id": client_order_id,
-                "order": order,
-            }
-        )
-
-    runtime = OfficialAutoTradeRuntime(profile_name=str(intent["profile_name"]))
-    try:
-        results = runtime.manual_submitter(operation_key, prepared)
-    except OfficialRequestUncertain:
-        return {
-            "ok": False,
-            "status": "REVIEW_REQUIRED",
-            "error": {"code": "SUBMISSION_STATE_UNCERTAIN"},
-            "results": [],
-            "next_action": "INSPECT_AND_RECONCILE_MANUALLY",
-        }
-    if not isinstance(results, list):
-        raise AggregationInputError("auto fallback submission result is not an order array")
-    statuses = {str(item.get("status") or "REVIEW_REQUIRED").upper() for item in results}
-    if statuses == {"ACCEPTED"}:
-        status = "ACCEPTED"
-    elif "REVIEW_REQUIRED" in statuses:
-        status = "REVIEW_REQUIRED"
-    elif statuses == {"RELEASED"}:
-        status = "RELEASED"
-    else:
-        status = "SUBMISSION_GROUP_PARTIAL"
-    return {
-        "ok": status == "ACCEPTED",
-        "status": status,
-        "results": results,
-        "next_action": (
-            "NONE" if status == "ACCEPTED" else "INSPECT_RESULT_BEFORE_ANY_NEW_ORDER"
-        ),
-    }
-
-
-def _submit_live_tp_sl_order(*, profile_name: str, raw_order: dict[str, Any]) -> dict[str, Any]:
-    _api, client, endpoint, normalized = _prepare_tp_sl_trade_request(
-        profile_name=profile_name,
-        raw_order=raw_order,
-    )
-    preview = client.preview_trade_endpoint(endpoint=endpoint, query={}, body=normalized)
-    if preview.get("ok") is not True or not isinstance(preview.get("preview"), dict):
-        raise AggregationInputError(f"Live TP/SL preview failed: {preview.get('error')}")
-    response = client.confirm_trade_preview(dict(preview["preview"]))
-    return _trade_execution_payload(response, operation_label="Live TP/SL")
 
 
 def _prepare_tp_sl_trade_request(
@@ -2121,16 +1982,81 @@ def _preview_manual_tp_sl_trade(
     return dict(preview["preview"])
 
 
-def _ensure_no_unresolved_mcp_trade() -> None:
-    pending = load_intent()
-    if isinstance(pending, dict) and pending.get("mcp_trade_confirmation_started_at") is not None:
+def _ensure_no_unresolved_mcp_trade(*, now_ms: int | None = None) -> None:
+    try:
+        ensure_manual_intent_slot_available(now_ms=now_ms)
+    except IntentStateError as exc:
         raise AggregationInputError(
-            "An unresolved MCP Trade result is still pending inspection; do not create a new preview until it is reconciled or manually cleared."
+            "An unresolved MCP Trade intent still owns the manual slot; reconcile it before creating another preview."
+        ) from exc
+
+
+def _require_persisted_manual_preview(
+    preview: dict[str, Any],
+    *,
+    profile_name: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    try:
+        current = load_manual_intent(now_ms=now_ms)
+    except IntentStateError as exc:
+        raise AggregationInputError(
+            "MCP Trade preview was not durably persisted."
+        ) from exc
+    if (
+        not isinstance(current, dict)
+        or current.get("state") != "UNCLAIMED"
+        or current.get("intent_id") != preview.get("intent_id")
+        or current.get("prepared_artifact_digest")
+        != preview.get("prepared_artifact_digest")
+        or current.get("profile_binding", {}).get("profile_name")
+        != profile_name
+    ):
+        raise AggregationInputError(
+            "MCP Trade preview does not match the durable manual intent."
         )
+    return current
+
+
+def _manual_mutation_preview_fields(
+    intent: dict[str, Any],
+    *,
+    language: str | None,
+) -> dict[str, Any]:
+    risk = intent["risk_facts"]
+    fields = {
+        "intent_id": intent["intent_id"],
+        "expires_at": intent["expires_at"],
+        "risk_signature": intent["prepared_artifact_digest"],
+        "confirmation_required": True,
+        "mutation_preview": {
+            "summary": {
+                field: intent[field]
+                for field in ("tool_name", "action", "market", "trading_mode")
+            },
+            "risk": risk,
+        },
+    }
+    notice = _dynamic_scope_notice(
+        risk, action=intent["action"], language=resolve_language(language),
+    )
+    if notice is not None:
+        fields["dynamic_scope_notice"] = notice
+    return fields
 
 
 def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
-    _ensure_no_unresolved_mcp_trade()
+    if _arg_value(args, "ttl_seconds", 300) != 300:
+        _output_json(
+            {
+                "ok": False,
+                "error": "intent_ttl_unsupported: MCP PreparedMutation currently fixes the manual intent TTL at 300 seconds.",
+            },
+            args.pretty,
+        )
+        return 1
+    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    _ensure_no_unresolved_mcp_trade(now_ms=current_ms)
     raw_order = _parse_order_json(args.order_json)
     trading_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", DEFAULT_TRADING_MODE))
     trade_aggregator = TradeDataAggregator()
@@ -2160,28 +2086,28 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
         raw_order=raw_order,
         risk_payload=risk_payload,
     )
-    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    intent = build_intent(
+    if (
+        mcp_trade_preview.get("version") != 2
+        or not isinstance(mcp_trade_preview.get("intent_id"), str)
+        or not isinstance(
+            mcp_trade_preview.get("prepared_artifact_digest"),
+            str,
+        )
+    ):
+        raise AggregationInputError(
+            "MCP Trade did not persist a valid manual mutation intent."
+        )
+    intent = _require_persisted_manual_preview(
+        mcp_trade_preview,
         profile_name=args.profile,
-        market=args.market,
-        trading_mode=trading_mode,
-        environment=environment,
-        order_preview=analysis_output.get("order_preview") or risk_payload.get("order_preview", {}),
-        raw_order=raw_order,
-        analysis_output=analysis_output,
         now_ms=current_ms,
-        ttl_seconds=args.ttl_seconds,
-        mcp_trade_preview=mcp_trade_preview,
     )
-    save_intent(intent)
-    response = dict(analysis_output)
-    response["intent_id"] = intent["intent_id"]
-    response["expires_at"] = intent["expires_at"]
-    response["risk_signature"] = intent["risk_signature"]
+    language = _arg_value(args, "language", None)
+    response = {**analysis_output, **_manual_mutation_preview_fields(intent, language=language)}
     confirmation_context = dict(response)
     confirmation_context.setdefault("order_preview", risk_payload.get("order_preview", {}))
     response["user_confirmation"] = _build_user_confirmation(
-        _arg_value(args, "language", None),
+        language,
         environment=environment,
         preview_context=confirmation_context,
         include_mode_switch=True,
@@ -2192,7 +2118,17 @@ def cmd_preview_order(args: argparse.Namespace, *, now_ms: int | None = None) ->
 
 
 def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
-    _ensure_no_unresolved_mcp_trade()
+    if _arg_value(args, "ttl_seconds", 300) != 300:
+        _output_json(
+            {
+                "ok": False,
+                "error": "intent_ttl_unsupported: MCP PreparedMutation currently fixes the manual intent TTL at 300 seconds.",
+            },
+            args.pretty,
+        )
+        return 1
+    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    _ensure_no_unresolved_mcp_trade(now_ms=current_ms)
     trading_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", DEFAULT_TRADING_MODE))
     if trading_mode != "live":
         _output_json({"ok": False, "error": "demo_tp_sl_unsupported: demo TP/SL preview is not supported."}, args.pretty)
@@ -2220,31 +2156,34 @@ def cmd_preview_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) ->
         profile_name=args.profile,
         raw_order=tp_sl_order,
     )
-    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    intent = build_intent(
+    if (
+        mcp_trade_preview.get("version") != 2
+        or mcp_trade_preview.get("direct_tool") != "trade_place_tp_sl"
+        or not isinstance(mcp_trade_preview.get("intent_id"), str)
+        or not isinstance(
+            mcp_trade_preview.get("prepared_artifact_digest"),
+            str,
+        )
+    ):
+        raise AggregationInputError(
+            "MCP Trade did not persist a valid TP/SL mutation intent."
+        )
+    intent = _require_persisted_manual_preview(
+        mcp_trade_preview,
         profile_name=args.profile,
-        market="futures",
-        trading_mode=trading_mode,
-        environment=environment,
-        order_preview=tp_sl_order,
-        raw_order=tp_sl_order,
-        analysis_output=analysis_output,
         now_ms=current_ms,
-        ttl_seconds=args.ttl_seconds,
-        intent_type="tp_sl_order",
-        tp_sl_order=tp_sl_order,
-        mcp_trade_preview=mcp_trade_preview,
     )
-    save_intent(intent)
-    response = dict(analysis_output)
-    response["intent_type"] = "tp_sl_order"
-    response["tp_sl_order"] = tp_sl_order
-    response["intent_id"] = intent["intent_id"]
-    response["expires_at"] = intent["expires_at"]
-    response["risk_signature"] = intent["risk_signature"]
+    language = _arg_value(args, "language", None)
+    response = {
+        **analysis_output,
+        **_manual_mutation_preview_fields(intent, language=language),
+        "intent_type": "tp_sl_order",
+        "tp_sl_order": tp_sl_order,
+    }
     response["user_confirmation"] = _build_user_confirmation(
-        _arg_value(args, "language", None),
+        language,
         environment=environment,
+        preview_context={**response, "order_preview": {**tp_sl_order, "market": "futures"}},
     )
     _output_json(response, args.pretty)
     return 0
@@ -2260,361 +2199,196 @@ def _confirm_flags_match_mode(args: argparse.Namespace, trading_mode: str) -> bo
     return confirm_live and not confirm_demo
 
 
-def _clear_claimed_intent_after_transport(
+def _confirm_v2_manual_intent(
+    args: argparse.Namespace,
     intent: dict[str, Any],
     *,
-    expected_intent_type: str,
-) -> dict[str, str] | None:
-    try:
-        cleared = clear_intent(
-            expected_intent_id=str(intent["intent_id"]),
-            expected_risk_signature=str(intent["risk_signature"]),
-            expected_intent_type=expected_intent_type,
-            expected_confirmation_started=True,
-        )
-    except IntentStateError as exc:
-        state_error_code = exc.code
-    else:
-        if cleared:
-            return None
-        state_error_code = "intent_state_changed"
-    return {
-        "code": "INTENT_CLEANUP_FAILED",
-        "message": "The exchange result is known, but local pending-intent cleanup did not complete.",
-        "state_error_code": state_error_code,
-        "next_action": "KEEP_EXCHANGE_RESULT_AND_INSPECT_PENDING_INTENT_BEFORE_ANY_NEW_ORDER",
-    }
-
-
-def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
-    intent = load_intent()
-    if intent is None:
-        _output_json({"ok": False, "error": "No pending order intent was found."}, args.pretty)
-        return 1
-    if intent.get("intent_type", "order") != "order":
-        _output_json({"ok": False, "error": "Pending intent is not a regular order. Use confirm-tp-sl for TP/SL intents."}, args.pretty)
-        return 1
-    if args.intent_id and args.intent_id != intent.get("intent_id"):
-        _output_json({"ok": False, "error": "Intent id does not match the saved pending order."}, args.pretty)
-        return 1
-    if intent.get("mcp_trade_confirmation_started_at") is not None:
+    allowed_tools: set[str] | None,
+    operation_label: str,
+) -> int:
+    if intent.get("legacy") is not None:
         _output_json(
             {
                 "ok": False,
-                "error": "Pending order intent was already submitted or became uncertain. Generate a new preview only after inspecting the prior result.",
+                "status": "REVIEW_REQUIRED",
+                "error": "Legacy intent requires reconciliation and cannot be resent.",
+                "review_required": True,
             },
             args.pretty,
         )
         return 1
-    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    if intent_is_expired(intent, now_ms=current_ms):
-        cleared = clear_intent(
-            expected_intent_id=str(intent.get("intent_id") or ""),
-            expected_risk_signature=str(intent.get("risk_signature") or ""),
-            expected_intent_type="order",
-            expected_confirmation_started=False,
-        )
-        error = (
-            "Pending order intent has expired. Generate a new preview first."
-            if cleared
-            else "Pending order intent was already submitted or became uncertain. Generate a new preview only after inspecting the prior result."
-        )
-        _output_json({"ok": False, "error": error}, args.pretty)
-        return 1
-    intent_mode = _normalize_trading_mode(intent.get("trading_mode", DEFAULT_TRADING_MODE))
-    requested_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", intent_mode))
-    if requested_mode != intent_mode:
+    if allowed_tools is not None and intent.get("tool_name") not in allowed_tools:
         _output_json(
             {
                 "ok": False,
-                "error": "intent_trading_mode_mismatch: requested trading mode does not match the saved pending order.",
-                "requested_trading_mode": requested_mode,
-                "intent_trading_mode": intent_mode,
+                "error": f"Pending intent is not a {operation_label} mutation.",
             },
             args.pretty,
         )
         return 1
-    if not _confirm_flags_match_mode(args, intent_mode):
+    intent_id = _arg_value(args, "intent_id")
+    risk_signature = _arg_value(args, "risk_signature")
+    if (
+        not isinstance(intent_id, str)
+        or not intent_id
+        or intent_id != intent.get("intent_id")
+        or not isinstance(risk_signature, str)
+        or risk_signature != intent.get("prepared_artifact_digest")
+    ):
+        _output_json(
+            {
+                "ok": False,
+                "error": "Intent id or risk signature does not match the saved PreparedMutation.",
+            },
+            args.pretty,
+        )
+        return 1
+    intent_mode = _normalize_trading_mode(
+        intent.get("trading_mode", DEFAULT_TRADING_MODE)
+    )
+    requested_mode = _normalize_trading_mode(
+        _arg_value(args, "trading_mode", intent_mode)
+    )
+    if requested_mode != intent_mode or not _confirm_flags_match_mode(
+        args,
+        intent_mode,
+    ):
         required_flag = "--confirm-demo" if intent_mode == "demo" else "--confirm-live"
         _output_json(
             {
                 "ok": False,
-                "error": f"confirm_flag_mode_mismatch: confirm-order for {intent_mode} requires {required_flag}.",
+                "error": f"confirm_flag_mode_mismatch: {operation_label} for {intent_mode} requires {required_flag}.",
                 "trading_mode": intent_mode,
             },
             args.pretty,
         )
         return 1
-    if not args.intent_id or not args.risk_signature:
+    profile = intent.get("profile_binding")
+    if not isinstance(profile, dict) or not isinstance(
+        profile.get("profile_name"),
+        str,
+    ):
         _output_json(
-            {
-                "ok": False,
-                "error": "confirm-order requires both --intent-id and --risk-signature from preview-order.",
-            },
+            {"ok": False, "error": "Manual mutation profile binding is invalid."},
             args.pretty,
         )
         return 1
-    if args.risk_signature and args.risk_signature != intent.get("risk_signature"):
-        _output_json({"ok": False, "error": "Risk signature does not match the saved pending order."}, args.pretty)
-        return 1
-
-    if intent.get("auto_fallback_operation_key") is None:
-        mcp_trade_preview = intent.get("mcp_trade_preview")
-        if not isinstance(mcp_trade_preview, dict):
-            _output_json(
-                {
-                    "ok": False,
-                    "error": "Pending order intent is missing its MCP Trade preview. Generate a new preview first.",
-                },
-                args.pretty,
-            )
-            return 1
-    try:
-        intent = claim_intent_for_confirmation(
-            expected_intent_id=str(intent["intent_id"]),
-            expected_risk_signature=str(intent["risk_signature"]),
-            expected_intent_type="order",
-            started_at_ms=now_ms,
-        )
-    except IntentStateError as exc:
-        if exc.code == "confirmation_started":
-            error = "Pending order intent was already submitted or became uncertain. Generate a new preview only after inspecting the prior result."
-        elif exc.code == "intent_missing":
-            error = "No pending order intent was found."
-        elif exc.code == "intent_changed":
-            error = "Intent id does not match the saved pending order."
-        elif exc.code == "intent_expired":
-            error = "Pending order intent has expired. Generate a new preview first."
-        else:
-            error = "Pending order intent could not be claimed safely. No request was sent."
-        _output_json({"ok": False, "error": error}, args.pretty)
-        return 1
-
-    cleanup_warning = None
-    if intent.get("auto_fallback_operation_key") is not None:
-        execution_payload = _submit_live_auto_fallback_order(intent)
-        if str(execution_payload.get("status") or "").upper() in {"ACCEPTED", "RELEASED"}:
-            cleanup_warning = _clear_claimed_intent_after_transport(
-                intent,
-                expected_intent_type="order",
-            )
+    market = str(intent.get("market") or "")
+    if market == "spot":
+        _api, client = _build_spot_client(str(profile["profile_name"]))
     else:
-        mcp_trade_preview = intent.get("mcp_trade_preview")
-        if not isinstance(mcp_trade_preview, dict):
-            _output_json(
-                {
-                    "ok": False,
-                    "error": "Pending order intent is missing its MCP Trade preview. Generate a new preview first.",
-                },
-                args.pretty,
-            )
-            return 1
-        trade_response = _confirm_saved_trade_preview(
-            profile_name=str(intent["profile_name"]),
-            preview=dict(mcp_trade_preview),
-        )
-        if trade_response.get("ok") is True:
-            cleanup_warning = _clear_claimed_intent_after_transport(
-                intent,
-                expected_intent_type="order",
-            )
-            execution_payload = _trade_execution_payload(
-                trade_response,
-                operation_label=f"{intent_mode} order",
-            )
-        else:
-            if trade_response.get("review_required") is not True:
-                cleanup_warning = _clear_claimed_intent_after_transport(
-                    intent,
-                    expected_intent_type="order",
-                )
-            environment = intent.get("environment")
-            if not isinstance(environment, dict):
-                environment = _environment_for_mode(intent_mode, str(intent["market"]))
-            response = {
-                "ok": False,
-                "status": trade_response.get("trade_status") or "NOT_SENT",
-                "error": trade_response.get("error"),
-                "outcome": trade_response.get("outcome"),
-                "review_required": bool(trade_response.get("review_required")),
-                "environment": environment,
-                "trading_mode": intent_mode,
-            }
-            if "data" in trade_response:
-                response["result"] = trade_response["data"]
-            if cleanup_warning is not None:
-                response["intent_cleanup_warning"] = cleanup_warning
-            response["user_environment_prefix"] = _query_environment_prefix(
-                environment,
-                language=_arg_value(args, "language", None),
-            )
-            _output_json(response, args.pretty)
-            return 1
-    environment = intent.get("environment")
-    if not isinstance(environment, dict):
-        environment = _environment_for_mode(intent_mode, str(intent["market"]))
-    response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
-    if cleanup_warning is not None:
-        response["intent_cleanup_warning"] = cleanup_warning
-    response["user_environment_prefix"] = _query_environment_prefix(
-        environment,
-        language=_arg_value(args, "language", None),
+        _api, client = _build_contract_client(str(profile["profile_name"]))
+    response = client.confirm_trade_intent(
+        intent_id=intent_id,
+        prepared_artifact_digest=risk_signature,
     )
-    _output_json(response, args.pretty)
-    return 0
-
-
-def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
-    intent = load_intent()
-    if intent is None:
-        _output_json({"ok": False, "error": "No pending TP/SL intent was found."}, args.pretty)
-        return 1
-    if intent.get("intent_type") != "tp_sl_order":
-        _output_json({"ok": False, "error": "Pending intent is not a TP/SL order."}, args.pretty)
-        return 1
-    if args.intent_id and args.intent_id != intent.get("intent_id"):
-        _output_json({"ok": False, "error": "Intent id does not match the saved pending TP/SL order."}, args.pretty)
-        return 1
-    if intent.get("mcp_trade_confirmation_started_at") is not None:
-        _output_json(
-            {
-                "ok": False,
-                "error": "Pending TP/SL intent was already submitted or became uncertain. Inspect the prior result before creating another preview.",
-            },
-            args.pretty,
+    environment = _environment_for_mode(intent_mode, market)
+    if response.get("ok") is True:
+        execution_payload = _trade_execution_payload(
+            response,
+            operation_label=operation_label,
         )
-        return 1
-    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    if intent_is_expired(intent, now_ms=current_ms):
-        cleared = clear_intent(
-            expected_intent_id=str(intent.get("intent_id") or ""),
-            expected_risk_signature=str(intent.get("risk_signature") or ""),
-            expected_intent_type="tp_sl_order",
-            expected_confirmation_started=False,
-        )
-        error = (
-            "Pending TP/SL intent has expired. Generate a new preview first."
-            if cleared
-            else "Pending TP/SL intent was already submitted or became uncertain. Inspect the prior result before creating another preview."
-        )
-        _output_json({"ok": False, "error": error}, args.pretty)
-        return 1
-    intent_mode = _normalize_trading_mode(intent.get("trading_mode", DEFAULT_TRADING_MODE))
-    requested_mode = _normalize_trading_mode(_arg_value(args, "trading_mode", intent_mode))
-    if intent_mode != "live" or requested_mode != intent_mode:
-        _output_json({"ok": False, "error": "demo_tp_sl_unsupported: TP/SL confirmation is only supported for live futures."}, args.pretty)
-        return 1
-    if not _confirm_flags_match_mode(args, intent_mode):
-        _output_json({"ok": False, "error": "confirm-tp-sl still requires --confirm-live before sending a real TP/SL order."}, args.pretty)
-        return 1
-    if not args.intent_id or not args.risk_signature:
-        _output_json(
-            {
-                "ok": False,
-                "error": "confirm-tp-sl requires both --intent-id and --risk-signature from preview-tp-sl.",
-            },
-            args.pretty,
-        )
-        return 1
-    if args.risk_signature and args.risk_signature != intent.get("risk_signature"):
-        _output_json({"ok": False, "error": "Risk signature does not match the saved pending TP/SL order."}, args.pretty)
-        return 1
-
-    tp_sl_order = intent.get("tp_sl_order")
-    if not isinstance(tp_sl_order, dict):
-        _output_json({"ok": False, "error": "Pending TP/SL intent is missing tp_sl_order."}, args.pretty)
-        return 1
-
-    mcp_trade_preview = intent.get("mcp_trade_preview")
-    if not isinstance(mcp_trade_preview, dict):
-        _output_json(
-            {
-                "ok": False,
-                "error": "Pending TP/SL intent is missing its MCP Trade preview. Generate a new preview first.",
-            },
-            args.pretty,
-        )
-        return 1
-    try:
-        intent = claim_intent_for_confirmation(
-            expected_intent_id=str(intent["intent_id"]),
-            expected_risk_signature=str(intent["risk_signature"]),
-            expected_intent_type="tp_sl_order",
-            started_at_ms=now_ms,
-        )
-    except IntentStateError as exc:
-        if exc.code == "confirmation_started":
-            error = "Pending TP/SL intent was already submitted or became uncertain. Inspect the prior result before creating another preview."
-        elif exc.code == "intent_missing":
-            error = "No pending TP/SL intent was found."
-        elif exc.code == "intent_changed":
-            error = "Intent id does not match the saved pending TP/SL order."
-        elif exc.code == "intent_expired":
-            error = "Pending TP/SL intent has expired. Generate a new preview first."
-        else:
-            error = "Pending TP/SL intent could not be claimed safely. No request was sent."
-        _output_json({"ok": False, "error": error}, args.pretty)
-        return 1
-    mcp_trade_preview = intent.get("mcp_trade_preview")
-    if not isinstance(mcp_trade_preview, dict):
-        _output_json(
-            {
-                "ok": False,
-                "error": "Pending TP/SL intent is missing its MCP Trade preview. Generate a new preview first.",
-            },
-            args.pretty,
-        )
-        return 1
-    trade_response = _confirm_saved_trade_preview(
-        profile_name=str(intent["profile_name"]),
-        preview=dict(mcp_trade_preview),
-    )
-    environment = intent.get("environment")
-    if not isinstance(environment, dict):
-        environment = _environment_for_mode(intent_mode, "futures")
-    if trade_response.get("ok") is not True:
-        cleanup_warning = None
-        if trade_response.get("review_required") is not True:
-            cleanup_warning = _clear_claimed_intent_after_transport(
-                intent,
-                expected_intent_type="tp_sl_order",
-            )
-        response = {
-            "ok": False,
-            "status": trade_response.get("trade_status") or "NOT_SENT",
-            "error": trade_response.get("error"),
-            "outcome": trade_response.get("outcome"),
-            "review_required": bool(trade_response.get("review_required")),
+        payload = {
+            "ok": True,
+            **execution_payload,
             "environment": environment,
             "trading_mode": intent_mode,
         }
-        if "data" in trade_response:
-            response["result"] = trade_response["data"]
-        if cleanup_warning is not None:
-            response["intent_cleanup_warning"] = cleanup_warning
-        response["user_environment_prefix"] = _query_environment_prefix(
+        if isinstance(response.get("outcome"), dict):
+            payload["outcome"] = response["outcome"]
+        if isinstance(response.get("warning"), dict):
+            payload["warning"] = response["warning"]
+        payload["user_environment_prefix"] = _query_environment_prefix(
             environment,
             language=_arg_value(args, "language", None),
         )
-        _output_json(response, args.pretty)
-        return 1
-    cleanup_warning = _clear_claimed_intent_after_transport(
-        intent,
-        expected_intent_type="tp_sl_order",
-    )
-    execution_payload = _trade_execution_payload(
-        trade_response,
-        operation_label="Live TP/SL",
-    )
-    response = {"ok": True, **execution_payload, "environment": environment, "trading_mode": intent_mode}
-    if cleanup_warning is not None:
-        response["intent_cleanup_warning"] = cleanup_warning
-    response["user_environment_prefix"] = _query_environment_prefix(
+        _output_json(payload, args.pretty)
+        return 0
+    payload = {
+        "ok": False,
+        "status": response.get("trade_status") or "NOT_SENT",
+        "error": response.get("error"),
+        "outcome": response.get("outcome"),
+        "review_required": bool(response.get("review_required")),
+        "environment": environment,
+        "trading_mode": intent_mode,
+    }
+    if "data" in response:
+        payload["result"] = response["data"]
+    payload["user_environment_prefix"] = _query_environment_prefix(
         environment,
         language=_arg_value(args, "language", None),
     )
-    _output_json(response, args.pretty)
-    return 0
+    _output_json(payload, args.pretty)
+    return 1
+
+
+def cmd_confirm_order(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
+    active_now = now_ms if now_ms is not None else int(time.time() * 1000)
+    try:
+        manual_intent = load_manual_intent(now_ms=active_now)
+    except IntentStateError as exc:
+        _output_json({"ok": False, "error": str(exc)}, args.pretty)
+        return 1
+    if manual_intent is None:
+        _output_json(
+            {"ok": False, "error": "No pending manual mutation intent was found."},
+            args.pretty,
+        )
+        return 1
+    return _confirm_v2_manual_intent(
+        args,
+        manual_intent,
+        allowed_tools={
+            "trade_place_order",
+            "trade_place_batch_orders",
+            "trade_place_conditional_order",
+            "trade_close_positions",
+        },
+        operation_label="order",
+    )
+
+
+def cmd_confirm_tp_sl(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
+    active_now = now_ms if now_ms is not None else int(time.time() * 1000)
+    try:
+        manual_intent = load_manual_intent(now_ms=active_now)
+    except IntentStateError as exc:
+        _output_json({"ok": False, "error": str(exc)}, args.pretty)
+        return 1
+    if manual_intent is None:
+        _output_json(
+            {"ok": False, "error": "No pending TP/SL mutation intent was found."},
+            args.pretty,
+        )
+        return 1
+    return _confirm_v2_manual_intent(
+        args,
+        manual_intent,
+        allowed_tools={"trade_place_tp_sl"},
+        operation_label="TP/SL",
+    )
+
+
+def cmd_confirm_mutation(args: argparse.Namespace, *, now_ms: int | None = None) -> int:
+    active_now = now_ms if now_ms is not None else int(time.time() * 1000)
+    try:
+        manual_intent = load_manual_intent(now_ms=active_now)
+    except IntentStateError as exc:
+        _output_json({"ok": False, "error": str(exc)}, args.pretty)
+        return 1
+    if manual_intent is None:
+        _output_json(
+            {"ok": False, "error": "No pending manual mutation intent was found."},
+            args.pretty,
+        )
+        return 1
+    return _confirm_v2_manual_intent(
+        args,
+        manual_intent,
+        allowed_tools=None,
+        operation_label="manual mutation",
+    )
 
 
 def cmd_account_scan(args: argparse.Namespace) -> int:
@@ -2641,6 +2415,74 @@ def cmd_account_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reconcile_intent(
+    args: argparse.Namespace,
+    *,
+    now_ms: int | None = None,
+) -> int:
+    active_now = now_ms if now_ms is not None else int(time.time() * 1000)
+    intent = load_manual_intent(now_ms=active_now)
+    if (
+        not isinstance(intent, dict)
+        or intent.get("intent_id") != args.intent_id
+    ):
+        _output_json(
+            {"ok": False, "error": "Manual mutation intent was not found."},
+            args.pretty,
+        )
+        return 1
+    if intent.get("legacy") is not None:
+        if intent.get("state") == "LEGACY_INVALIDATED":
+            payload = {
+                "ok": False,
+                "status": "LEGACY_INVALIDATED",
+                "error": "Legacy unclaimed intent was invalidated; create a new preview.",
+                "review_required": False,
+                "next_action": "CREATE_NEW_PREVIEW",
+            }
+        else:
+            payload = {
+                "ok": False,
+                "status": "MANUAL_REVIEW_REQUIRED",
+                "error": "Legacy started intent has no safe MCP reconciliation template.",
+                "review_required": True,
+                "next_action": "INSPECT_EXCHANGE_AND_LOCAL_AUDIT_MANUALLY",
+            }
+        _output_json(payload, args.pretty)
+        return 1
+    profile = intent.get("profile_binding")
+    if not isinstance(profile, dict) or not isinstance(
+        profile.get("profile_name"),
+        str,
+    ):
+        _output_json(
+            {"ok": False, "error": "Manual mutation profile binding is invalid."},
+            args.pretty,
+        )
+        return 1
+    market = str(intent.get("market") or "")
+    if market == "spot":
+        _api, client = _build_spot_client(str(profile["profile_name"]))
+    else:
+        _api, client = _build_contract_client(str(profile["profile_name"]))
+    response = client.reconcile_trade_intent(intent_id=args.intent_id)
+    environment = _environment_for_mode(
+        str(intent.get("trading_mode") or DEFAULT_TRADING_MODE),
+        market,
+    )
+    payload = {
+        **response,
+        "environment": environment,
+        "trading_mode": environment["trading_mode"],
+    }
+    payload["user_environment_prefix"] = _query_environment_prefix(
+        environment,
+        language=_arg_value(args, "language", None),
+    )
+    _output_json(payload, args.pretty)
+    return 0 if response.get("ok") is True else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Preview order risk and confirm WEEX orders.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2650,7 +2492,12 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--market", required=True, choices=("futures", "spot"))
     preview.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE)
     preview.add_argument("--order-json", required=True, help="JSON order payload.")
-    preview.add_argument("--ttl-seconds", type=int, default=300, help="Intent TTL in seconds.")
+    preview.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=300,
+        help="Compatibility parameter fixed at 300 seconds by MCP PreparedMutation.",
+    )
     preview.add_argument("--language", choices=("zh", "en"), default=None, help="Language for human confirmation prompt.")
     preview.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
@@ -2662,7 +2509,12 @@ def build_parser() -> argparse.ArgumentParser:
     preview_tp_sl.add_argument("--profile", required=True, help="Saved profile name.")
     preview_tp_sl.add_argument("--trading-mode", choices=TRADING_MODES, default=DEFAULT_TRADING_MODE, help="TP/SL trading mode; real trading only because demo TP/SL is not supported.")
     preview_tp_sl.add_argument("--tp-sl-json", required=True, help="JSON TP/SL conditional order payload.")
-    preview_tp_sl.add_argument("--ttl-seconds", type=int, default=300, help="Intent TTL in seconds.")
+    preview_tp_sl.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=300,
+        help="Compatibility parameter fixed at 300 seconds by MCP PreparedMutation.",
+    )
     preview_tp_sl.add_argument("--language", choices=("zh", "en"), default=None, help="Language for human confirmation prompt.")
     preview_tp_sl.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
@@ -2687,6 +2539,26 @@ def build_parser() -> argparse.ArgumentParser:
     confirm_tp_sl.add_argument("--confirm-demo", action="store_true", help="Rejected because demo TP/SL is not supported.")
     confirm_tp_sl.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
+    confirm_mutation = subparsers.add_parser(
+        "confirm-mutation", help="Submit a saved mutation after reviewing its preview.",
+    )
+    confirm_mutation.add_argument("--intent-id", required=True, help="Intent ID from the preview.")
+    confirm_mutation.add_argument("--risk-signature", required=True, help="Risk signature from the preview.")
+    confirm_mutation.add_argument("--trading-mode", choices=TRADING_MODES, required=True)
+    confirmation_flag = confirm_mutation.add_mutually_exclusive_group(required=True)
+    confirmation_flag.add_argument("--confirm-live", action="store_true", help="Confirm real trading.")
+    confirmation_flag.add_argument("--confirm-demo", action="store_true", help="Confirm demo futures trading.")
+    confirm_mutation.add_argument("--language", choices=("zh", "en"), default=None)
+    confirm_mutation.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+
+    reconcile = subparsers.add_parser(
+        "reconcile-intent",
+        help="Reconcile one durable manual mutation intent by its stored MCP template.",
+    )
+    reconcile.add_argument("--intent-id", required=True)
+    reconcile.add_argument("--language", choices=("zh", "en"), default=None)
+    reconcile.add_argument("--pretty", action="store_true")
+
     account_scan = subparsers.add_parser("account-scan", help="Review current account-level risk without an order preview.")
     account_scan.add_argument("--profile", required=True, help="Saved profile name.")
     account_scan.add_argument("--market", required=True, choices=("futures", "spot"))
@@ -2709,6 +2581,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_confirm_order(args)
         if args.command == "confirm-tp-sl":
             return cmd_confirm_tp_sl(args)
+        if args.command == "confirm-mutation":
+            return cmd_confirm_mutation(args)
+        if args.command == "reconcile-intent":
+            return cmd_reconcile_intent(args)
         if args.command == "account-scan":
             return cmd_account_scan(args)
         raise SystemExit(f"Unsupported command: {args.command}")

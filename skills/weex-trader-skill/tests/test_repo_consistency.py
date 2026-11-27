@@ -319,7 +319,7 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("references/manual-mutation-intent-v2.json", skill_text)
         self.assertIn("references/mcp-boundary-contract-v1.json", skill_text)
         self.assertIn("immutable historical and superseded evidence", skill_text)
-        self.assertIn("current non-active candidate implementation contract", skill_text)
+        self.assertIn("current unpublished Local candidate contract", skill_text)
         self.assertIn("validate_mcp_boundary_contract.py", skill_text)
         self.assertIn("verify_mcp_boundary_pair.py", skill_text)
 
@@ -331,6 +331,7 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertTrue(MCP_AUTO_TRADE_AUTHORIZER.exists())
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
+        skill_text = SKILL.read_text(encoding="utf-8")
         gateway_path = "scripts/weex_mcp_gateway.py"
         read_facade_path = "scripts/weex_mcp_read_compat.py"
         trade_facade_path = "scripts/weex_mcp_trade_compat.py"
@@ -373,6 +374,7 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("probe_local_mcp_runtime", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn("prepare_mutation", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn("build_execution_grant", file_index["file_guide"][gateway_path]["surface"])
+        self.assertIn("recover_mutation", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn(
             "references/mcp-boundary-contract-v2.json",
             file_index["file_guide"][gateway_path]["depends_on"],
@@ -396,6 +398,22 @@ class RepoConsistencyTests(unittest.TestCase):
             file_index["file_guide"]["scripts/weex_agent_state.py"]["surface"],
         )
         self.assertIn("mcp", file_index["file_guide"]["scripts/weex_doctor.py"]["surface"])
+        for command in ("confirm-mutation", "reconcile-intent"):
+            self.assertIn(command, manifest["routing"]["domains"]["trade_guard"]["commands"])
+            self.assertIn(command, file_index["file_guide"]["scripts/weex_trade_guard.py"]["surface"])
+            self.assertIn(command, skill_text)
+        self.assertIn(
+            "FileManualIntentStore",
+            file_index["file_guide"][
+                "scripts/weex_order_intent_state.py"
+            ]["surface"],
+        )
+        self.assertIn(
+            "McpTradeFacade.preview/describe/confirm/confirm_intent/reconcile_intent",
+            file_index["file_guide"][
+                "scripts/weex_mcp_trade_compat.py"
+            ]["surface"],
+        )
 
         dependency_text = REQUIREMENTS.read_text(encoding="utf-8") + REQUIREMENTS_LOCK.read_text(encoding="utf-8")
         self.assertNotIn("weex-mcp", dependency_text.lower())

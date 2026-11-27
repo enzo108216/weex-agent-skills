@@ -9,17 +9,17 @@
   },
   "verified_mcp_candidate": {
     "official_repository": "https://github.com/weex-labs/weex-mcp",
-    "package_version": "0.3.1",
+    "package_version": "0.3.2",
     "tool_contract_version": "2",
     "manifest_version": 2,
-    "source_commit": "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
+    "source_commit": "45c7bf5ae63db360cf6ec0e18d92806d3f416391",
     "publication_status": "unpublished",
     "distribution_sha256": {
-      "wheel": "da9a8cdff6fd813389279b5cad397760a1c8e6d65cd41b00cce1d6fe151f81ea",
-      "sdist": "7fb3503346e6e0812f0ebb2d30c674785bdd1015120207d8587f9464908f0585"
+      "wheel": "abe49bd9773a8df7d819c5f97a17924a3e0e7f89159f996f76c0c7aa640ef142",
+      "sdist": "a32625def682b06c1faf01dffa7e381b8d246f88e823cd3e16143921167f3565"
     },
     "versions": {
-      "package": "0.3.1",
+      "package": "0.3.2",
       "tool_contract": "2",
       "manifest": "2",
       "output": "1",
@@ -28,7 +28,7 @@
       "transport_meta": "1",
       "grant": "2"
     },
-    "boundary_contract_digest": "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9",
+    "boundary_contract_digest": "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10",
     "direct_tools_digest": "sha256:7a25945e4f879fa21d5442fd8741c1d0331d510b1f2b7a38a204cb36eee2831f",
     "legacy_mapping_digest": "sha256:1ad4fede4ae9211dcd9e1e6d87ccffbe09b77eb183d71cadeb8cf0c63f9c1821",
     "inventory_digest": "sha256:95737d9647cdecd8eae2d67a9fbb823cc9b56753522459fa55603cfea73fddc1",
@@ -45,8 +45,8 @@
         "tool_count": 31,
         "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
         "schema_digest": "sha256:1e7f69c100341709a06ef6a8e2e3636c5b1082404b6b30248d5cc9b0c872026a",
-        "manifest_digest": "sha256:249412f525c5c4b2e434be1991f44f8ed95c352f6aa4b0db1e6e40c36ba23c7e",
-        "boundary_static_manifest_digest": "sha256:b24986351f7612d33d67d4d1f1daa7242e7f8fd9a53dd84abb7199ca88f72633"
+        "manifest_digest": "sha256:f8c366ec993c8fa767fb48b939ed5b574b1dcc6b3a12d2bbe27aa3717e566e0b",
+        "boundary_static_manifest_digest": "sha256:276312d308fa4a7e850bb89580199026803b40f7446f29f4868659773e0e6c62"
       },
       {
         "runtime_profile": "local_user",
@@ -54,8 +54,8 @@
         "tool_count": 45,
         "tool_set_digest": "sha256:246242baa02e371244c55fa3bb94747f2df3222d189796b29a1ec0280c4f2b59",
         "schema_digest": "sha256:648d1b903432905e77e90e63ffb2271a05284bdbb6568d4b8edeeeca0fe61ecd",
-        "manifest_digest": "sha256:671517ba773e41200de96b4c0cb7dc840b488473bcf68abc5555d58c6bbde7aa",
-        "boundary_static_manifest_digest": "sha256:914cbd5cc6a7c9dae4c30201c14eea300c6e8aa08b0bd6f7a378fd95730b1cd8"
+        "manifest_digest": "sha256:bafaeffbd34e134534b94e49527fefd5bd5ca8b71afda212f47970f6328cd76e",
+        "boundary_static_manifest_digest": "sha256:676cc884fe7255d84b7420950e39fdbde20fdf63657abc25f82608e826c19c49"
       }
     ]
   },

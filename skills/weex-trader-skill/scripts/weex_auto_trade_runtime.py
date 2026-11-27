@@ -11,7 +11,6 @@ from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 import weex_trade_risk_review as risk_review
-from weex_mcp_trade_compat import McpTradeFacade
 from weex_trade_data_aggregator import TradeDataAggregator
 
 
@@ -163,45 +162,27 @@ class OfficialApiBoundary:
         if mutating:
             if delegation is None:
                 raise ValueError("delegated authorization is required for automated writes")
-            settings_factory = getattr(client, "mcp_trade_settings_factory", None)
-            if not callable(settings_factory):
-                raise ValueError("MCP Trade settings are unavailable")
-            settings = settings_factory()
-            facade = McpTradeFacade(
-                settings=settings,
-                delegated_authorizer=delegation.authorize,
-            )
-            preview = facade.preview(
-                product="spot" if module == "SPOT" else "contract",
-                endpoint=endpoint,
-                query=query or {},
-                body=body or {},
-            )
-            if preview.get("ok") is not True:
-                return {
-                    "_mcp_mutation": True,
-                    "response": {
-                        **preview,
-                        "outcome": {
-                            "class": "not_sent",
-                            "write_attempted": False,
-                            "action": _operation_action(endpoint_key),
-                        },
-                        "trade_status": "NOT_SENT",
-                        "review_required": False,
+            return {
+                "_mcp_mutation": True,
+                "response": {
+                    "ok": False,
+                    "status": None,
+                    "error": {
+                        "code": "auto_grant_migration_required",
+                        "message": (
+                            "Automated Trade grants require the approved SQLite migration."
+                        ),
                     },
-                }
-            delegation.bind_preview(
-                profile_id=settings.profile_id,
-                preview=preview["preview"],
-                summary=preview["summary"],
-                risk=preview["risk"],
-            )
-            response = facade.confirm_delegated(
-                preview["preview"],
-                delegated_ref=delegation.delegated_ref,
-            )
-            return {"_mcp_mutation": True, "response": response}
+                    "outcome": {
+                        "class": "invocation_rejected",
+                        "write_attempted": False,
+                        "grant_disposition": "unchanged",
+                        "action": _operation_action(endpoint_key),
+                    },
+                    "trade_status": "NOT_SENT",
+                    "review_required": False,
+                },
+            }
 
         response = client.read_endpoint(
             endpoint=endpoint,
@@ -462,28 +443,6 @@ class OfficialAutoTradeRuntime:
             response=response,
             prepared_legs=prepared_legs,
         )
-
-    def manual_submitter(
-        self,
-        operation_key: str,
-        prepared_legs: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Use the T6 interactive confirmation boundary for a user-confirmed fallback."""
-
-        module, body = _submission_request(operation_key, prepared_legs)
-        api_module, client = self.api._client(module, private=True)
-        endpoint = api_module.ENDPOINTS.get(operation_key)
-        if endpoint is None:
-            raise ValueError("endpoint is not in the bundled official catalog")
-        response = client.trade_endpoint(endpoint=endpoint, query={}, body=body)
-        if not isinstance(response, dict):
-            raise OfficialRequestUncertain("manual MCP mutation response is invalid")
-        return _normalize_mcp_submission_results(
-            operation_key=operation_key,
-            response=response,
-            prepared_legs=prepared_legs,
-        )
-
 
 def query_official_order_facts(
     *,
@@ -1061,6 +1020,35 @@ def _normalize_mcp_submission_results(
 ) -> list[dict[str, Any]]:
     expected_action = _operation_action(operation_key)
     outcome = response.get("outcome")
+    if (
+        isinstance(outcome, dict)
+        and outcome.get("class") == "invocation_rejected"
+        and outcome.get("action") == expected_action
+        and outcome.get("write_attempted") is False
+        and outcome.get("grant_disposition") == "unchanged"
+        and response.get("ok") is False
+        and response.get("review_required") is False
+        and "data" not in response
+    ):
+        error = response.get("error")
+        error_code = (
+            _optional_text(error.get("code"))
+            if isinstance(error, dict)
+            else None
+        ) or "invocation_rejected"
+        return [
+            {
+                "leg_id": leg["leg_id"],
+                "client_order_id": leg["client_order_id"],
+                "status": "RELEASED",
+                "success": False,
+                "error_code": _sanitized_official_error_text(
+                    error_code,
+                    max_length=128,
+                ),
+            }
+            for leg in prepared_legs
+        ]
     if (
         not isinstance(outcome, dict)
         or outcome.get("action") != expected_action

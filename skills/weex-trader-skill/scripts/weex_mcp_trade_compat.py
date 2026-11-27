@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import secrets
 import time
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from weex_mcp_gateway import (
@@ -26,12 +29,51 @@ from weex_mcp_read_compat import (
     _unwrap_request_description,
     resolve_local_mcp_read_settings,
 )
+from weex_order_intent_state import (
+    FileManualIntentStore,
+    IntentStateError,
+    build_unclaimed_intent,
+    claimed_execution_grant_for_recovery,
+    confirm_and_issue_intent,
+    execution_grant_for_dispatch,
+    load_manual_intent,
+    manual_intent_dispatch_lock,
+    save_unclaimed_intent,
+)
 
 
 _PRODUCTS = frozenset({"contract", "spot"})
 _OUTCOME_CLASSES = frozenset(
-    {"not_sent", "definitive_rejection", "accepted", "unknown", "partial"}
+    {
+        "invocation_rejected",
+        "not_sent",
+        "definitive_rejection",
+        "accepted",
+        "unknown",
+        "partial",
+    }
 )
+_BOUNDARY_CONTRACT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "references"
+    / "mcp-boundary-contract-v2.json"
+)
+
+
+def dynamic_scope_notice(
+    risk: Mapping[str, Any], *, action: str | None, language: str
+) -> str | None:
+    if risk.get("dynamic_scope") is not True:
+        return None
+    count = risk.get("observed_count")
+    positions = action in {"close_positions", "trade_close_positions"}
+    if language.lower().startswith("zh"):
+        subject = "仓位" if positions else "订单"
+        return f"预览时观察到 {count} 个{subject}。确认作用于执行时匹配的范围，当前数量不是快照。"
+    subject = "positions" if positions else "orders"
+    return f"Observed {count} {subject} during preparation. Confirmation applies to the matching set at execution time; the observed count is not a snapshot."
+
+
 class McpTradeCompatibilityError(RuntimeError):
     """Stable failure raised before an MCP Trade mutation can be attempted."""
 
@@ -48,6 +90,7 @@ class LocalMcpTradeSettings:
     futures_base_url: str
     timeout_seconds: float
     locale: str
+    profile_name: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.profile_id, str) or not self.profile_id:
@@ -71,6 +114,13 @@ class LocalMcpTradeSettings:
         object.__setattr__(self, "spot_base_url", validated.spot_base_url)
         object.__setattr__(self, "futures_base_url", validated.futures_base_url)
         object.__setattr__(self, "timeout_seconds", validated.timeout_seconds)
+        if self.profile_name is None:
+            object.__setattr__(self, "profile_name", self.profile_id)
+        elif not isinstance(self.profile_name, str) or not self.profile_name:
+            raise McpTradeCompatibilityError(
+                "profile_required",
+                "A saved profile name is required for MCP Trade tools.",
+            )
 
 
 def resolve_local_mcp_trade_settings(
@@ -101,7 +151,26 @@ def resolve_local_mcp_trade_settings(
         futures_base_url=resolved.futures_base_url,
         timeout_seconds=resolved.timeout_seconds,
         locale=resolved.locale,
+        profile_name=(
+            str(getattr(profile, "name", "") or resolved.profile_id)
+        ),
     )
+
+
+def _load_default_boundary_contract() -> dict[str, Any]:
+    try:
+        value = json.loads(_BOUNDARY_CONTRACT_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise McpTradeCompatibilityError(
+            "mapping_invalid",
+            "The Trader MCP boundary contract is unavailable or invalid.",
+        ) from exc
+    if not isinstance(value, dict):
+        raise McpTradeCompatibilityError(
+            "mapping_invalid",
+            "The Trader MCP boundary contract is unavailable or invalid.",
+        )
+    return value
 
 
 def _default_client_id() -> str:
@@ -118,23 +187,36 @@ class McpTradeFacade:
         gateway_factory: Callable[..., Any] = LocalMcpGateway,
         request_describer: Callable[..., dict[str, Any]] = describe_local_mcp_request,
         mapping_loader: Callable[[], dict[str, Any]] = _load_default_mapping,
+        boundary_contract_loader: Callable[
+            [], dict[str, Any]
+        ] = _load_default_boundary_contract,
         client_id_factory: Callable[[], str] = _default_client_id,
-        delegated_authorizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        intent_id_factory: Callable[[], str] | None = None,
+        intent_store_factory: Callable[[], Any] = FileManualIntentStore,
+        intent_saver: Callable[..., None] = save_unclaimed_intent,
+        clock: Callable[[], int] | None = None,
     ) -> None:
         self.settings = settings
         self._gateway_factory = gateway_factory
         self._request_describer = request_describer
         self._gateway: Any | None = None
         self._client_id_factory = client_id_factory
-        self._delegated_authorizer = delegated_authorizer
+        self._intent_id_factory = intent_id_factory or (
+            lambda: "intent_" + secrets.token_hex(16)
+        )
+        self._intent_store = intent_store_factory()
+        self._intent_saver = intent_saver
+        self._clock = clock or (lambda: int(time.time() * 1000))
         try:
             mapping = mapping_loader()
+            boundary = boundary_contract_loader()
         except Exception as exc:
             raise McpTradeCompatibilityError(
                 "mapping_invalid",
                 "The Trader MCP capability mapping is unavailable or invalid.",
             ) from exc
-        self._operations = _build_trade_operations(mapping)
+        self._operations = _build_trade_operations(mapping, boundary)
+        self._contract_versions = _candidate_contract_versions(mapping)
 
     def _get_gateway(self) -> Any:
         if self._gateway is None:
@@ -145,6 +227,7 @@ class McpTradeFacade:
                 trade_enabled=True,
                 timeout_seconds=self.settings.timeout_seconds,
                 request_locale=self.settings.locale,
+                grant_consumer=self._intent_store,
             )
         return self._gateway
 
@@ -163,52 +246,88 @@ class McpTradeFacade:
             body=dict(body),
             client_id_factory=self._client_id_factory,
         )
-        preview_tool = str(operation["target"]["tool"])
+        direct_tool = str(operation["direct_tool"])
+        intent_id = self._intent_id_factory()
+        if not isinstance(intent_id, str) or not intent_id:
+            raise McpTradeCompatibilityError(
+                "intent_invalid",
+                "The manual mutation intent ID is invalid.",
+            )
         try:
-            wrapped = self._get_gateway().call_typed_tool(preview_tool, arguments)
+            gateway = self._get_gateway()
+            prepared = gateway.prepare_mutation(direct_tool, arguments)
+            binding_probe = gateway.build_execution_grant(
+                prepared,
+                grant_id="probe_" + hashlib.sha256(
+                    intent_id.encode("utf-8")
+                ).hexdigest()[:32],
+                issued_at=0,
+            )
         except McpGatewayError as exc:
             return _gateway_error(exc)
-        unwrapped = _unwrap_gateway_result(wrapped)
-        if unwrapped is None:
-            return _compat_error("The WEEX MCP Trade preview wrapper is invalid.")
-        payload, transport_meta = unwrapped
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return _project_prewrite_error(
-                payload,
-                transport_meta=transport_meta,
-            )
-        preview_id = payload.get("preview_id")
-        expires_at = payload.get("expires_at")
         if (
-            not isinstance(preview_id, str)
-            or not preview_id
-            or isinstance(expires_at, bool)
-            or not isinstance(expires_at, int)
-            or expires_at <= 0
-            or not isinstance(payload.get("summary"), dict)
-            or not isinstance(payload.get("risk"), dict)
+            not isinstance(prepared, dict)
+            or prepared.get("tool_name") != direct_tool
+            or not isinstance(prepared.get("risk_facts"), dict)
+            or not isinstance(prepared.get("canonical_arguments"), dict)
         ):
-            return _compat_error("The WEEX MCP Trade preview result is invalid.")
+            return _compat_error(
+                "The WEEX MCP PreparedMutation is invalid."
+            )
+        active_now = self._clock()
+        profile_binding = {
+            "profile_id": self.settings.profile_id,
+            "profile_name": str(self.settings.profile_name),
+            "principal_id": binding_probe.principal_id,
+            "account_binding_id": binding_probe.account_binding_id,
+            "spot_base_url": self.settings.spot_base_url,
+            "futures_base_url": self.settings.futures_base_url,
+            "route_fingerprint": prepared["route_fingerprint"],
+            "credential_fingerprint": binding_probe.credential_fingerprint,
+        }
+        try:
+            intent = build_unclaimed_intent(
+                prepared_mutation=prepared,
+                profile_binding=profile_binding,
+                contract_versions=self._contract_versions,
+                intent_id=intent_id,
+                created_at=active_now,
+            )
+            self._intent_saver(intent, now_ms=active_now)
+        except IntentStateError as exc:
+            return _intent_error(exc)
         record = {
-            "version": 1,
+            "version": 2,
+            "intent_id": intent_id,
             "product": product,
             "legacy_key": operation["legacy_key"],
-            "preview_tool": preview_tool,
-            "confirm_tool": operation["target"]["confirm_tool"],
-            "arguments": arguments,
-            "preview_id": preview_id,
-            "expires_at": expires_at,
+            "direct_tool": direct_tool,
+            "prepared_mutation": deepcopy(prepared),
+            "prepared_artifact_digest": prepared[
+                "prepared_artifact_digest"
+            ],
+            "execution_binding_digest": prepared[
+                "execution_binding_digest"
+            ],
+            "expires_at": prepared["expires_at"],
             "profile_id": self.settings.profile_id,
             "spot_base_url": self.settings.spot_base_url,
             "futures_base_url": self.settings.futures_base_url,
         }
         return {
             "ok": True,
-            "status": _http_status(transport_meta),
+            "status": None,
             "preview": record,
-            "summary": dict(payload["summary"]),
-            "risk": dict(payload["risk"]),
-            "expires_at": expires_at,
+            "summary": {
+                "tool_name": direct_tool,
+                "action": prepared.get("action"),
+                "market": prepared.get("market"),
+                "trading_mode": prepared.get("trading_mode"),
+            },
+            "risk": deepcopy(prepared["risk_facts"]),
+            "expires_at": prepared["expires_at"],
+            "intent_id": intent_id,
+            "risk_signature": prepared["prepared_artifact_digest"],
         }
 
     def describe(
@@ -228,7 +347,7 @@ class McpTradeFacade:
         )
         try:
             wrapped = self._request_describer(
-                name=str(operation["target"]["tool"]),
+                name=str(operation["direct_tool"]),
                 arguments=arguments,
                 effective_spot_base_url=self.settings.spot_base_url,
                 effective_futures_base_url=self.settings.futures_base_url,
@@ -252,65 +371,318 @@ class McpTradeFacade:
         return description
 
     def confirm(self, preview: Mapping[str, Any]) -> dict[str, Any]:
-        return self._confirm(preview, delegated_ref=None)
+        return _two_phase_confirmation_required()
 
-    def confirm_delegated(
+    def confirm_intent(
         self,
-        preview: Mapping[str, Any],
         *,
-        delegated_ref: str,
+        intent_id: str,
+        prepared_artifact_digest: str,
     ) -> dict[str, Any]:
-        if not isinstance(delegated_ref, str) or not delegated_ref:
-            raise McpTradeCompatibilityError(
-                "execution_authorization_invalid",
-                "Delegated authorization ref must be a non-empty string.",
-            )
-        if self._delegated_authorizer is None:
-            raise McpTradeCompatibilityError(
-                "execution_authorizer_unconfigured",
-                "Delegated execution authorizer is not configured.",
-            )
-        return self._confirm(preview, delegated_ref=delegated_ref)
-
-    def _confirm(
-        self,
-        preview: Mapping[str, Any],
-        *,
-        delegated_ref: str | None,
-    ) -> dict[str, Any]:
-        operation, arguments = self._validate_preview_record(preview)
-        confirm_arguments = {
-            **arguments,
-            "preview_id": preview["preview_id"],
-        }
-        if delegated_ref is None:
-            confirm_arguments["confirmation"] = {"accepted": True}
-        else:
-            confirm_arguments["delegated_authorization"] = {"ref": delegated_ref}
+        active_now = self._clock()
         try:
-            wrapped = self._get_gateway().call_typed_tool(
-                str(operation["target"]["confirm_tool"]),
-                confirm_arguments,
+            current = load_manual_intent(now_ms=active_now)
+        except IntentStateError as exc:
+            return _intent_error(exc)
+        if (
+            not isinstance(current, dict)
+            or current.get("intent_id") != intent_id
+            or current.get("prepared_artifact_digest")
+            != prepared_artifact_digest
+            or current.get("profile_binding", {}).get("profile_id")
+            != self.settings.profile_id
+            or current.get("profile_binding", {}).get("spot_base_url")
+            != self.settings.spot_base_url
+            or current.get("profile_binding", {}).get("futures_base_url")
+            != self.settings.futures_base_url
+        ):
+            raise McpTradeCompatibilityError(
+                "preview_binding_mismatch",
+                "The manual mutation intent does not match this profile or digest.",
             )
-        except McpGatewayError as exc:
-            return _confirm_uncertain(
+        operation = self._operation_for_intent(current)
+        return self._dispatch_current_intent(
+            operation,
+            current,
+            active_now=active_now,
+        )
+
+    def reconcile_intent(self, intent_id: str) -> dict[str, Any]:
+        active_now = self._clock()
+        try:
+            current = load_manual_intent(now_ms=active_now)
+        except IntentStateError as exc:
+            return _intent_error(exc)
+        if (
+            not isinstance(intent_id, str)
+            or not intent_id
+            or not isinstance(current, dict)
+            or current.get("intent_id") != intent_id
+            or current.get("profile_binding", {}).get("profile_id")
+            != self.settings.profile_id
+            or current.get("profile_binding", {}).get("spot_base_url")
+            != self.settings.spot_base_url
+            or current.get("profile_binding", {}).get("futures_base_url")
+            != self.settings.futures_base_url
+        ):
+            return _intent_error(
+                IntentStateError(
+                    "intent_missing",
+                    "Manual mutation intent was not found for this profile.",
+                )
+            )
+        operation = self._operation_for_intent(current)
+        if current["state"] in {"CLAIMED", "REVIEW_REQUIRED"}:
+            try:
+                with manual_intent_dispatch_lock():
+                    locked_intent = _safe_load_intent(current, active_now)
+                    if locked_intent.get("intent_id") != intent_id:
+                        raise IntentStateError("intent_missing", "The stored intent is unavailable.")
+                    return self._reconcile_current_intent(operation, locked_intent, active_now=active_now)
+            except IntentStateError as exc:
+                return _project_persisted_intent_state(
+                    operation, _safe_load_intent(current, active_now), code=exc.code, message=str(exc),
+                )
+        return self._reconcile_current_intent(operation, current, active_now=active_now)
+
+    def _reconcile_current_intent(
+        self,
+        operation: dict[str, Any],
+        current: dict[str, Any],
+        *,
+        active_now: int,
+    ) -> dict[str, Any]:
+        intent_id = current["intent_id"]
+        if current["state"] == "CLAIMED":
+            try:
+                gateway = self._get_gateway()
+                claimed = claimed_execution_grant_for_recovery(
+                    intent_id,
+                    now_ms=active_now,
+                )
+                gateway.recover_mutation(
+                    tool_name=current["tool_name"],
+                    execution_grant=claimed,
+                    now_ms=active_now,
+                )
+            except (IntentStateError, McpGatewayError) as exc:
+                code = getattr(exc, "code", "recovery_failed")
+                return _project_persisted_intent_state(
+                    operation,
+                    _safe_load_intent(current, active_now),
+                    code=code,
+                    message=str(exc),
+                )
+            recovered = _safe_load_intent(current, active_now)
+            if recovered.get("intent_id") != intent_id:
+                return _project_persisted_intent_state(
+                    operation,
+                    recovered,
+                    code="intent_missing",
+                    message="The recovered intent is unavailable.",
+                )
+            current = recovered
+        reconciliation = current.get("reconciliation")
+        reconciliation_status = (
+            reconciliation.get("status")
+            if isinstance(reconciliation, dict)
+            else None
+        )
+        if reconciliation_status in {
+            "RESOLVED_ACCEPTED",
+            "RESOLVED_REJECTED",
+            "RESOLVED_NOT_SENT",
+        }:
+            return _project_persisted_intent_state(
                 operation,
+                current,
+                code="reconciliation_already_resolved",
+                message="The durable reconciliation result is already terminal.",
+            )
+        if current["state"] != "REVIEW_REQUIRED":
+            return _project_persisted_intent_state(
+                operation,
+                current,
+                code="reconciliation_not_required",
+                message="The manual mutation intent does not require reconciliation.",
+            )
+        prepared = current.get("prepared_mutation")
+        if not isinstance(prepared, dict):
+            return _project_persisted_intent_state(
+                operation,
+                current,
+                code="manual_review_required",
+                message="This historical intent has no complete PreparedMutation for reconciliation.",
+            )
+        saved_boundary = current["contract_versions"]["boundary_contract_digest"]
+        try:
+            reconciliation_options = (
+                {"boundary_contract_digest": saved_boundary}
+                if saved_boundary != self._contract_versions["boundary_contract_digest"]
+                else {}
+            )
+            result = self._get_gateway().reconcile_mutation(
+                prepared, now_ms=active_now, **reconciliation_options
+            )
+            updated = self._intent_store.record_reconciliation_result(
+                intent_id,
+                status=result["status"],
+                evidence_digest=result["evidence_digest"],
+                observed_at=result["observed_at"],
+            )
+        except (McpGatewayError, IntentStateError) as exc:
+            return _project_persisted_intent_state(
+                operation,
+                _safe_load_intent(current, active_now),
                 code=exc.code,
-                message=exc.message,
+                message=str(exc),
+            )
+        code, message = {
+            "RESOLVED_ACCEPTED": (
+                "reconciliation_resolved",
+                "WEEX MCP verified an accepted outcome.",
+            ),
+            "UNRESOLVED": (
+                "reconciliation_unresolved",
+                "WEEX MCP did not prove a terminal outcome.",
+            ),
+            "MANUAL_REVIEW_REQUIRED": (
+                "manual_review_required",
+                "WEEX MCP requires manual review for this outcome.",
+            ),
+        }[result["status"]]
+        return _project_persisted_intent_state(operation, updated, code=code, message=message)
+
+    def _dispatch_current_intent(
+        self,
+        operation: dict[str, Any],
+        current: dict[str, Any],
+        *,
+        active_now: int,
+    ) -> dict[str, Any]:
+        try:
+            gateway = self._get_gateway()
+            if current["state"] == "UNCLAIMED":
+                grant = gateway.build_execution_grant(
+                    current["prepared_mutation"],
+                    grant_id=_grant_id_for_intent(current["intent_id"]),
+                    issued_at=active_now,
+                )
+                confirm_and_issue_intent(
+                    expected_intent_id=current["intent_id"],
+                    expected_prepared_artifact_digest=current[
+                        "prepared_artifact_digest"
+                    ],
+                    execution_grant=grant,
+                    confirmed_at=active_now,
+                )
+                execution_grant = execution_grant_for_dispatch(
+                    current["intent_id"]
+                )
+            elif current["state"] == "CONFIRMED":
+                execution_grant = execution_grant_for_dispatch(
+                    current["intent_id"]
+                )
+            else:
+                return _with_intent_reference(
+                    _project_persisted_intent_state(
+                        operation,
+                        current,
+                        code="intent_not_dispatchable",
+                        message="The manual mutation intent is not dispatchable.",
+                    ),
+                    current,
+                )
+            with manual_intent_dispatch_lock():
+                wrapped = gateway.call_typed_tool(
+                    str(operation["direct_tool"]),
+                    dict(current["direct_arguments"]),
+                    execution_grant=execution_grant,
+                )
+        except IntentStateError as exc:
+            if exc.code in {"intent_dispatch_in_flight", "grant_unavailable", "confirmation_started"}:
+                persisted = _safe_load_intent(current, active_now)
+                if exc.code == "intent_dispatch_in_flight" or persisted["state"] in {
+                    "CLAIMED", "REVIEW_REQUIRED", "ACCEPTED", "DEFINITIVE_REJECTION", "NOT_SENT_TERMINAL",
+                }:
+                    return _with_intent_reference(
+                        _project_persisted_intent_state(operation, persisted, code=exc.code, message=str(exc)),
+                        persisted,
+                    )
+            return _intent_error(exc)
+        except McpGatewayError as exc:
+            persisted = _safe_load_intent(current, active_now)
+            return _with_intent_reference(
+                _project_persisted_intent_state(
+                    operation,
+                    code=exc.code,
+                    message=exc.message,
+                    current=persisted,
+                ),
+                persisted,
             )
         unwrapped = _unwrap_gateway_result(wrapped)
         if unwrapped is None:
-            return _confirm_uncertain(
-                operation,
-                code="compat_response_invalid",
-                message="The WEEX MCP Trade confirmation wrapper is invalid.",
+            persisted = _safe_load_intent(current, active_now)
+            return _with_intent_reference(
+                _project_persisted_intent_state(
+                    operation,
+                    current=persisted,
+                    code="compat_response_invalid",
+                    message="The WEEX MCP Direct mutation wrapper is invalid.",
+                ),
+                persisted,
             )
         payload, transport_meta = unwrapped
-        return _project_confirm_result(
+        projected = _project_confirm_result(
             operation,
             payload,
             transport_meta=transport_meta,
         )
+        persisted = _safe_load_intent(current, active_now)
+        return _with_intent_reference(
+            _project_against_durable_state(
+                operation,
+                projected,
+                persisted,
+            ),
+            persisted,
+        )
+
+    def _operation_for_intent(
+        self,
+        current: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        market = current.get("market")
+        tool_name = current.get("tool_name")
+        product = "spot" if market == "spot" else "contract"
+        candidates = sorted(
+            (
+                operation
+                for (operation_product, _legacy_key), operation in self._operations.items()
+                if operation_product == product
+                and operation.get("direct_tool") == tool_name
+            ),
+            key=lambda item: str(item["legacy_key"]),
+        )
+        if not candidates:
+            raise McpTradeCompatibilityError(
+                "mapping_contract_mismatch",
+                "The manual mutation intent has no verified legacy mapping.",
+            )
+        if (
+            tool_name == "trade_place_order"
+            and product == "contract"
+            and current.get("trading_mode") == "demo"
+        ):
+            demo = [
+                item
+                for item in candidates
+                if item["legacy_key"] == "sim.transaction.place_order"
+            ]
+            if demo:
+                return demo[0]
+        return candidates[0]
 
     def preview_and_confirm(
         self,
@@ -328,7 +700,11 @@ class McpTradeFacade:
         )
         if preview.get("ok") is not True:
             return preview
-        return self.confirm(preview["preview"])
+        return {
+            **_two_phase_confirmation_required(),
+            "confirmation_required": True,
+            **{field: preview[field] for field in ("intent_id", "risk_signature", "expires_at", "summary", "risk")},
+        }
 
     def _operation(self, *, product: str, endpoint: Any) -> dict[str, Any]:
         legacy_key = getattr(endpoint, "key", None)
@@ -357,43 +733,43 @@ class McpTradeFacade:
             )
         return operation
 
-    def _validate_preview_record(
-        self,
-        preview: Mapping[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if not isinstance(preview, Mapping) or preview.get("version") != 1:
-            raise McpTradeCompatibilityError(
-                "preview_invalid",
-                "The saved MCP Trade preview is invalid.",
-            )
-        bindings = {
-            "profile_id": self.settings.profile_id,
-            "spot_base_url": self.settings.spot_base_url,
-            "futures_base_url": self.settings.futures_base_url,
-        }
-        if any(preview.get(key) != value for key, value in bindings.items()):
-            raise McpTradeCompatibilityError(
-                "preview_binding_mismatch",
-                "The saved MCP Trade preview does not match the current profile or origins.",
-            )
-        key = (preview.get("product"), preview.get("legacy_key"))
-        operation = self._operations.get(key)
-        if (
-            operation is None
-            or preview.get("preview_tool") != operation["target"]["tool"]
-            or preview.get("confirm_tool") != operation["target"]["confirm_tool"]
-            or not isinstance(preview.get("preview_id"), str)
-            or not preview["preview_id"]
-            or not isinstance(preview.get("arguments"), dict)
-        ):
-            raise McpTradeCompatibilityError(
-                "preview_invalid",
-                "The saved MCP Trade preview is invalid.",
-            )
-        return operation, dict(preview["arguments"])
+
+def _candidate_contract_versions(mapping: Mapping[str, Any]) -> dict[str, str]:
+    candidate = mapping.get("verified_mcp_candidate")
+    versions = candidate.get("versions") if isinstance(candidate, dict) else None
+    result = {
+        "package": (versions or {}).get("package"),
+        "tool_contract": (versions or {}).get("tool_contract"),
+        "prepare": (versions or {}).get("prepare"),
+        "intent": "2",
+        "grant": (versions or {}).get("grant"),
+        "boundary_contract_digest": (
+            candidate.get("boundary_contract_digest")
+            if isinstance(candidate, dict)
+            else None
+        ),
+    }
+    if result != {
+        "package": "0.3.2",
+        "tool_contract": "2",
+        "prepare": "1",
+        "intent": "2",
+        "grant": "2",
+        "boundary_contract_digest": (
+            "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+        ),
+    }:
+        raise McpTradeCompatibilityError(
+            "mapping_invalid",
+            "The verified MCP manual intent versions are invalid.",
+        )
+    return result
 
 
-def _build_trade_operations(mapping: Any) -> dict[tuple[str, str], dict[str, Any]]:
+def _build_trade_operations(
+    mapping: Any,
+    boundary: Any,
+) -> dict[tuple[str, str], dict[str, Any]]:
     if (
         not isinstance(mapping, dict)
         or mapping.get("mapping_version") != EXPECTED_MAPPING_VERSION
@@ -403,6 +779,28 @@ def _build_trade_operations(mapping: Any) -> dict[tuple[str, str], dict[str, Any
             "mapping_invalid",
             "The Trader MCP capability mapping version is not supported.",
         )
+    candidate = mapping.get("verified_mcp_candidate")
+    if (
+        not isinstance(boundary, dict)
+        or boundary.get("boundary_contract_digest")
+        != (
+            candidate.get("boundary_contract_digest")
+            if isinstance(candidate, dict)
+            else None
+        )
+        or not isinstance(boundary.get("legacy_write_mapping"), dict)
+        or not isinstance(boundary.get("direct_tools"), list)
+    ):
+        raise McpTradeCompatibilityError(
+            "mapping_invalid",
+            "The Trader MCP boundary contract does not match the capability mapping.",
+        )
+    direct_contracts = {
+        item.get("name"): item
+        for item in boundary["direct_tools"]
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    legacy_direct = boundary["legacy_write_mapping"]
     operations: dict[tuple[str, str], dict[str, Any]] = {}
     for item in mapping["capabilities"]:
         if not isinstance(item, dict) or item.get("product") not in _PRODUCTS:
@@ -425,13 +823,37 @@ def _build_trade_operations(mapping: Any) -> dict[tuple[str, str], dict[str, Any
                 "mapping_invalid",
                 "The Trader MCP Trade mapping is incomplete or duplicated.",
             )
-        operations[key] = item
+        legacy_key = str(item["legacy_key"])
+        direct_tool = legacy_direct.get(legacy_key)
+        direct_contract = direct_contracts.get(direct_tool)
+        if (
+            not isinstance(direct_tool, str)
+            or not isinstance(direct_contract, dict)
+            or not isinstance(direct_contract.get("input_schema"), dict)
+        ):
+            raise McpTradeCompatibilityError(
+                "mapping_invalid",
+                "The 21-to-14 Direct mutation mapping is incomplete.",
+            )
+        operation = deepcopy(item)
+        operation["direct_tool"] = direct_tool
+        operation["direct_input_schema"] = deepcopy(
+            direct_contract["input_schema"]
+        )
+        operations[key] = operation
     if sum(product == "contract" for product, _ in operations) != 16 or sum(
         product == "spot" for product, _ in operations
     ) != 5:
         raise McpTradeCompatibilityError(
             "mapping_invalid",
             "The Trader MCP Trade mapping does not cover the 21 legacy writes.",
+        )
+    if set(legacy_direct) != {
+        operation["legacy_key"] for operation in operations.values()
+    } or len(set(legacy_direct.values())) != 14:
+        raise McpTradeCompatibilityError(
+            "mapping_invalid",
+            "The 21-to-14 Direct mutation mapping is invalid.",
         )
     return operations
 
@@ -499,20 +921,18 @@ def _map_trade_arguments(
             continue
         arguments[target] = _transform_value(value, transform)
 
-    preview_tool = operation["target"]["tool"]
-    if preview_tool == "trade_preview_order" and not arguments.get("client_order_id"):
+    direct_tool = operation["direct_tool"]
+    if direct_tool == "trade_place_order" and not arguments.get("client_order_id"):
         arguments["client_order_id"] = _new_client_id(client_id_factory)
     if (
-        preview_tool == "trade_preview_cancel_scope"
+        direct_tool == "trade_cancel_open_orders"
         and arguments.get("market") == "futures"
     ):
         if arguments.get("symbol") not in (None, ""):
             arguments["scope"] = "symbol"
-            arguments.pop("acknowledge_all_symbols", None)
         else:
             arguments["scope"] = "all"
-            arguments["acknowledge_all_symbols"] = True
-    if preview_tool == "trade_preview_close_positions":
+    if direct_tool == "trade_close_positions":
         has_position = arguments.get("position_id") not in (None, "")
         has_symbol = arguments.get("symbol") not in (None, "")
         if has_position:
@@ -521,12 +941,38 @@ def _map_trade_arguments(
             arguments["scope"] = "symbol"
         else:
             arguments["scope"] = "all"
-            arguments["acknowledge_all_positions"] = True
-    if preview_tool == "trade_preview_tp_sl" and arguments.get("operation") == "place":
+    if direct_tool == "trade_place_tp_sl":
+        arguments.pop("operation", None)
         quantity = arguments.get("quantity")
         if quantity in (None, "", "0"):
-            arguments["quantity"] = "0"
-            arguments["acknowledge_full_position"] = True
+            arguments.pop("quantity", None)
+            arguments["quantity_mode"] = "full_position"
+        else:
+            arguments["quantity_mode"] = "exact"
+    if direct_tool == "trade_modify_tp_sl":
+        for field in (
+            "operation",
+            "symbol",
+            "client_algo_id",
+            "plan_type",
+            "quantity",
+            "position_side",
+            "quantity_mode",
+        ):
+            arguments.pop(field, None)
+    for field in (
+        "acknowledge_all_symbols",
+        "acknowledge_all_positions",
+        "acknowledge_full_position",
+    ):
+        arguments.pop(field, None)
+    direct_schema = operation["direct_input_schema"]
+    properties = direct_schema.get("properties")
+    if not isinstance(properties, dict) or set(arguments) - set(properties):
+        raise McpTradeCompatibilityError(
+            "mapping_invalid",
+            "The legacy Trade mapping produced unsupported Direct arguments.",
+        )
     return arguments
 
 
@@ -609,7 +1055,11 @@ def _transform_value(value: Any, transform: Any) -> Any:
         return aliases[normalized]
     if transform == "margin_mode_v1":
         normalized = str(value).strip().upper()
-        aliases = {"CROSS": "cross", "CROSSED": "cross", "ISOLATED": "isolated"}
+        aliases = {
+            "CROSS": "CROSS",
+            "CROSSED": "CROSS",
+            "ISOLATED": "ISOLATED",
+        }
         if normalized not in aliases:
             raise McpTradeCompatibilityError(
                 "invalid_arguments",
@@ -672,20 +1122,6 @@ def _new_client_id(factory: Callable[[], str]) -> str:
     return value
 
 
-def _project_prewrite_error(
-    payload: Any,
-    *,
-    transport_meta: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
-        return {
-            "ok": False,
-            "status": _http_status(transport_meta),
-            "error": dict(payload["error"]),
-        }
-    return _compat_error("The WEEX MCP Trade preview error envelope is invalid.")
-
-
 def _project_confirm_result(
     operation: dict[str, Any],
     payload: Any,
@@ -709,23 +1145,25 @@ def _project_confirm_result(
             status=status,
         )
     outcome_class = str(outcome["class"])
-    raw: Any = None
     result = payload.get("result")
-    if isinstance(result, dict) and "raw" in result:
-        raw = result["raw"]
     if payload["ok"] and outcome_class == "accepted":
-        if not _matches_container(raw, operation["response"]["legacy_container"]):
+        if not isinstance(result, dict):
             return _confirm_uncertain(
                 operation,
                 code="compat_response_invalid",
-                message="The WEEX MCP Trade result did not preserve the legacy payload.",
+                message="The WEEX MCP Direct result is invalid.",
                 status=status,
             )
         return {
             "ok": True,
             "status": status,
-            "data": raw,
+            "data": deepcopy(result),
             "outcome": outcome,
+            **(
+                {"warning": deepcopy(payload["warning"])}
+                if isinstance(payload.get("warning"), dict)
+                else {}
+            ),
             "review_required": False,
             "trade_status": "ACCEPTED",
         }
@@ -745,27 +1183,238 @@ def _project_confirm_result(
         "trade_status": (
             "REVIEW_REQUIRED"
             if review_required
-            else ("REJECTED" if outcome_class == "definitive_rejection" else "NOT_SENT")
+            else (
+                "REJECTED"
+                if outcome_class == "definitive_rejection"
+                else "NOT_SENT"
+            )
         ),
-        **({"data": raw} if raw is not None else {}),
+        **({"data": deepcopy(result)} if isinstance(result, dict) else {}),
     }
-
-
-def _matches_container(value: Any, container: str) -> bool:
-    if container == "array":
-        return isinstance(value, list)
-    if container == "object":
-        return isinstance(value, dict)
-    return isinstance(value, (dict, list))
-
 
 def _gateway_error(exc: McpGatewayError) -> dict[str, Any]:
     return {
         "ok": False,
         "status": None,
         "error": {"code": exc.code, "message": exc.message},
+        "outcome": {
+            "class": "invocation_rejected",
+            "write_attempted": False,
+            "grant_disposition": "unchanged",
+        },
         "review_required": False,
         "trade_status": "NOT_SENT",
+    }
+
+
+def _intent_error(exc: IntentStateError) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": None,
+        "error": {"code": exc.code, "message": str(exc)},
+        "outcome": {
+            "class": "invocation_rejected",
+            "write_attempted": False,
+            "grant_disposition": "unchanged",
+        },
+        "review_required": False,
+        "trade_status": "NOT_SENT",
+    }
+
+
+def _two_phase_confirmation_required() -> dict[str, Any]:
+    return _intent_error(
+        IntentStateError(
+            "two_phase_confirmation_required",
+            "Review the prepared risk, then confirm the saved intent ID and risk signature.",
+        )
+    )
+
+
+def _grant_id_for_intent(intent_id: str) -> str:
+    return "grant_" + hashlib.sha256(intent_id.encode("utf-8")).hexdigest()[:32]
+
+
+def _safe_load_intent(intent: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+    try:
+        current = load_manual_intent(
+            now_ms=now_ms,
+            expected_intent_id=intent["intent_id"],
+            expected_prepared_artifact_digest=intent["prepared_artifact_digest"],
+        )
+    except IntentStateError:
+        return {"state": "REVIEW_REQUIRED"}
+    return current if isinstance(current, dict) else {"state": "REVIEW_REQUIRED"}
+
+
+def _project_against_durable_state(
+    operation: dict[str, Any],
+    projected: dict[str, Any],
+    current: dict[str, Any] | None,
+) -> dict[str, Any]:
+    state = current.get("state") if isinstance(current, dict) else None
+    projected_status = projected.get("trade_status")
+    outcome = projected.get("outcome")
+    outcome_class = outcome.get("class") if isinstance(outcome, dict) else None
+    disposition = (
+        outcome.get("grant_disposition") if isinstance(outcome, dict) else None
+    )
+    matches = (
+        (
+            state == "ACCEPTED"
+            and projected.get("ok") is True
+            and projected_status == "ACCEPTED"
+            and outcome_class == "accepted"
+            and disposition == "accepted"
+        )
+        or (
+            state == "DEFINITIVE_REJECTION"
+            and projected.get("ok") is False
+            and projected_status == "REJECTED"
+            and outcome_class == "definitive_rejection"
+            and disposition == "definitive_rejection"
+        )
+        or (
+            state == "NOT_SENT_TERMINAL"
+            and projected.get("ok") is False
+            and projected_status == "NOT_SENT"
+            and outcome_class == "not_sent"
+            and disposition == "not_sent_terminal"
+        )
+        or (
+            state in {"CLAIMED", "REVIEW_REQUIRED"}
+            and projected.get("ok") is False
+            and projected_status == "REVIEW_REQUIRED"
+            and outcome_class in {"unknown", "partial"}
+            and disposition == "review_required"
+        )
+        or (
+            state in {"UNCLAIMED", "CONFIRMED"}
+            and projected.get("ok") is False
+            and outcome_class == "invocation_rejected"
+            and disposition == "unchanged"
+        )
+    )
+    if matches:
+        return projected
+    return _project_persisted_intent_state(
+        operation,
+        current,
+        code="durable_outcome_projection_mismatch",
+        message="The MCP envelope did not match the durable grant outcome.",
+    )
+
+
+def _with_intent_reference(
+    payload: dict[str, Any],
+    current: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    outcome = payload.get("outcome")
+    outcome_class = outcome.get("class") if isinstance(outcome, dict) else None
+    if (
+        not isinstance(current, Mapping)
+        or (
+            payload.get("review_required") is not True
+            and outcome_class != "invocation_rejected"
+        )
+    ):
+        return payload
+    intent_id = current.get("intent_id")
+    digest = current.get("prepared_artifact_digest")
+    expires_at = current.get("expires_at")
+    if (
+        isinstance(intent_id, str)
+        and intent_id
+        and isinstance(digest, str)
+        and isinstance(expires_at, int)
+        and not isinstance(expires_at, bool)
+    ):
+        return {
+            **payload,
+            "intent_id": intent_id,
+            "risk_signature": digest,
+            "expires_at": expires_at,
+        }
+    return payload
+
+
+def _project_persisted_intent_state(
+    operation: dict[str, Any],
+    current: dict[str, Any] | None,
+    *,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    state = current.get("state") if isinstance(current, dict) else None
+    reconciliation_status = (
+        current.get("reconciliation", {}).get("status")
+        if isinstance(current, dict)
+        and isinstance(current.get("reconciliation"), dict)
+        else None
+    )
+    if state == "REVIEW_REQUIRED":
+        state = {
+            "RESOLVED_ACCEPTED": "ACCEPTED",
+            "RESOLVED_REJECTED": "DEFINITIVE_REJECTION",
+            "RESOLVED_NOT_SENT": "NOT_SENT_TERMINAL",
+        }.get(reconciliation_status, state)
+    action = _outcome_action(operation)
+    if state == "ACCEPTED":
+        return {
+            "ok": True,
+            "status": None,
+            "data": {},
+            "outcome": {
+                "class": "accepted",
+                "write_attempted": True,
+                "grant_disposition": "accepted",
+                "action": action,
+            },
+            "warning": {
+                "code": "internal_projection_error",
+                "message": (
+                    "Accepted, but the full result projection was unavailable."
+                ),
+            },
+            "review_required": False,
+            "trade_status": "ACCEPTED",
+        }
+    if state == "DEFINITIVE_REJECTION":
+        outcome_class = "definitive_rejection"
+        trade_status = "REJECTED"
+        attempted = True
+        disposition = "definitive_rejection"
+        review_required = False
+    elif state == "NOT_SENT_TERMINAL":
+        outcome_class = "not_sent"
+        trade_status = "NOT_SENT"
+        attempted = False
+        disposition = "not_sent_terminal"
+        review_required = False
+    elif state in {"CLAIMED", "REVIEW_REQUIRED"}:
+        outcome_class = "unknown"
+        trade_status = "REVIEW_REQUIRED"
+        attempted = True
+        disposition = "review_required"
+        review_required = True
+    else:
+        outcome_class = "invocation_rejected"
+        trade_status = "NOT_SENT"
+        attempted = False
+        disposition = "unchanged"
+        review_required = False
+    return {
+        "ok": False,
+        "status": None,
+        "error": {"code": code, "message": message},
+        "outcome": {
+            "class": outcome_class,
+            "write_attempted": attempted,
+            "grant_disposition": disposition,
+            "action": action,
+        },
+        "review_required": review_required,
+        "trade_status": trade_status,
     }
 
 
@@ -783,6 +1432,7 @@ def _confirm_uncertain(
         "outcome": {
             "class": "unknown",
             "write_attempted": True,
+            "grant_disposition": "review_required",
             "action": _outcome_action(operation),
         },
         "review_required": True,
@@ -791,12 +1441,7 @@ def _confirm_uncertain(
 
 
 def _outcome_action(operation: dict[str, Any]) -> str:
-    confirm_tool = str(operation["target"]["confirm_tool"])
-    if confirm_tool == "trade_confirm_leverage":
-        return "update_leverage"
-    if confirm_tool == "trade_confirm_margin_mode":
-        return "change_margin_mode"
-    return confirm_tool.removeprefix("trade_confirm_")
+    return str(operation["direct_tool"]).removeprefix("trade_")
 
 
 def _compat_error(message: str) -> dict[str, Any]:

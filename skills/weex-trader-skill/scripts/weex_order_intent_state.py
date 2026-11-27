@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib
 import json
@@ -35,12 +36,31 @@ INTENT_FILENAME = "order-intent.json"
 INTENT_LOCK_FILENAME = ".order-intent.lock"
 INTENT_AUDIT_FILENAME = "manual-mutation-intent-audit.jsonl"
 _INTENT_PROCESS_LOCK = threading.RLock()
+_DISPATCH_LOCK_FILENAME = ".order-intent-dispatch.lock"
+_DISPATCH_PROCESS_LOCK = threading.Lock()
 NOT_SENT_TERMINAL_OUTCOME_DIGEST = (
     "sha256:8f587cdbad0e314e82c20fefe6edf4379243e56eb154cb8ca47b198db2198027"
 )
 _REVIEW_REQUIRED_OUTCOME_DIGEST = (
     "sha256:4bde4a17c691eb4462fbc26b6d4e2fa0af1d897055b356df4a287b2c822d7f2c"
 )
+_INTENT_CONTRACT_VERSIONS = {
+    "package": "0.3.2",
+    "tool_contract": "2",
+    "prepare": "1",
+    "intent": "2",
+    "grant": "2",
+    "boundary_contract_digest": (
+        "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+    ),
+}
+_PREVIOUS_INTENT_CONTRACT_VERSIONS = {
+    **_INTENT_CONTRACT_VERSIONS,
+    "package": "0.3.1",
+    "boundary_contract_digest": (
+        "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
+    ),
+}
 _DIRECT_TOOLS = frozenset(
     {
         "trade_place_order",
@@ -207,6 +227,50 @@ def _intent_lock():
                     os.close(descriptor)
 
 
+@contextmanager
+def manual_intent_dispatch_lock():
+    """Exclude explicit recovery while a Direct mutation is in flight."""
+    if not _DISPATCH_PROCESS_LOCK.acquire(blocking=False):
+        raise IntentStateError("intent_dispatch_in_flight", "A manual mutation is still in progress.")
+    descriptor: int | None = None
+    try:
+        try:
+            path = intent_path().parent / _DISPATCH_LOCK_FILENAME
+            flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags, 0o600)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or (
+                os.name != "nt" and (metadata.st_mode & 0o077 or metadata.st_uid != os.getuid())
+            ):
+                raise IntentStateError("intent_dispatch_lock_unavailable", "Manual mutation dispatch lock is not owner-only.")
+            if fcntl is None and msvcrt is None:
+                raise IntentStateError(
+                    "intent_dispatch_lock_unavailable", "Manual mutation dispatch locking is unavailable on this platform."
+                )
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    raise IntentStateError(
+                        "intent_dispatch_in_flight", "A manual mutation is still in progress."
+                    ) from exc
+                raise
+        except OSError as exc:
+            raise IntentStateError(
+                "intent_dispatch_lock_unavailable", "Manual mutation dispatch locking is unavailable."
+            ) from exc
+        yield
+    finally:
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            _DISPATCH_PROCESS_LOCK.release()
+
+
 def _fsync_directory(path: Path) -> None:
     if os.name == "nt":
         return
@@ -247,242 +311,6 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         if descriptor is not None:
             os.close(descriptor)
         _unlink_if_exists(temp_path)
-
-
-def _load_intent_path(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except json.JSONDecodeError:
-        return None
-    except (OSError, UnicodeError) as exc:
-        raise IntentStateError(
-            "intent_state_unavailable",
-            "Pending order intent could not be loaded safely.",
-        ) from exc
-    return raw if isinstance(raw, dict) else None
-
-
-def build_risk_signature(
-    *,
-    profile_name: str,
-    market: str,
-    trading_mode: str,
-    order_preview: dict[str, Any],
-    analysis_output: dict[str, Any],
-) -> str:
-    serialized = json.dumps(
-        {
-            "profile_name": profile_name,
-            "market": market,
-            "trading_mode": trading_mode,
-            "order_preview": order_preview,
-            "alerts": analysis_output.get("alerts", []),
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def build_intent(
-    *,
-    profile_name: str,
-    market: str,
-    trading_mode: str = "live",
-    environment: dict[str, Any] | None = None,
-    order_preview: dict[str, Any],
-    raw_order: dict[str, Any],
-    analysis_output: dict[str, Any],
-    now_ms: int | None = None,
-    ttl_seconds: int = 300,
-    intent_type: str = "order",
-    tp_sl_order: dict[str, Any] | None = None,
-    mcp_trade_preview: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    expires_at = current_ms + (ttl_seconds * 1000)
-    payload = {
-        "intent_id": uuid.uuid4().hex,
-        "intent_type": intent_type,
-        "profile_name": profile_name,
-        "market": market,
-        "trading_mode": trading_mode,
-        "created_at": current_ms,
-        "expires_at": expires_at,
-        "ttl_seconds": ttl_seconds,
-        "order_preview": order_preview,
-        "raw_order": raw_order,
-        "analysis_output": analysis_output,
-        "risk_signature": build_risk_signature(
-            profile_name=profile_name,
-            market=market,
-            trading_mode=trading_mode,
-            order_preview=order_preview,
-            analysis_output=analysis_output,
-        ),
-    }
-    if environment is not None:
-        payload["environment"] = environment
-    if tp_sl_order is not None:
-        payload["tp_sl_order"] = tp_sl_order
-    if mcp_trade_preview is not None:
-        if not isinstance(mcp_trade_preview, dict):
-            raise ValueError("mcp_trade_preview must be an object")
-        mcp_expires_at = mcp_trade_preview.get("expires_at")
-        if (
-            isinstance(mcp_expires_at, bool)
-            or not isinstance(mcp_expires_at, int)
-            or mcp_expires_at <= 0
-        ):
-            raise ValueError("mcp_trade_preview expires_at must be a positive integer")
-        serialized_preview = json.dumps(
-            mcp_trade_preview,
-            ensure_ascii=False,
-            sort_keys=True,
-        ).lower()
-        if any(
-            forbidden in serialized_preview
-            for forbidden in ('"credential"', '"api_secret"', '"api_passphrase"')
-        ):
-            raise ValueError("mcp_trade_preview must not contain credentials")
-        payload["mcp_trade_preview"] = mcp_trade_preview
-        payload["expires_at"] = min(payload["expires_at"], mcp_expires_at * 1000)
-    return payload
-
-
-def save_intent(payload: dict[str, Any]) -> None:
-    path = intent_path()
-    try:
-        with _intent_lock():
-            current = _load_intent_path(path)
-            if isinstance(current, dict):
-                started_at = current.get("mcp_trade_confirmation_started_at")
-                if started_at is not None:
-                    same_claimed_intent = (
-                        payload.get("intent_id") == current.get("intent_id")
-                        and payload.get("risk_signature") == current.get("risk_signature")
-                        and payload.get("intent_type", "order")
-                        == current.get("intent_type", "order")
-                        and payload.get("mcp_trade_confirmation_started_at") == started_at
-                    )
-                    if not same_claimed_intent:
-                        raise IntentStateError(
-                            "confirmation_started",
-                            "Pending order confirmation already started and cannot be replaced.",
-                        )
-            _atomic_write_json(path, payload)
-    except IntentStateError:
-        raise
-    except (OSError, TypeError, ValueError) as exc:
-        raise IntentStateError(
-            "intent_state_unavailable",
-            "Pending order intent could not be saved safely.",
-        ) from exc
-
-
-def load_intent() -> dict[str, Any] | None:
-    return _load_intent_path(intent_path())
-
-
-def claim_intent_for_confirmation(
-    *,
-    expected_intent_id: str,
-    expected_risk_signature: str,
-    expected_intent_type: str,
-    started_at_ms: int | None = None,
-) -> dict[str, Any]:
-    path = intent_path()
-    try:
-        with _intent_lock():
-            current = _load_intent_path(path)
-            if current is None:
-                raise IntentStateError("intent_missing", "No pending order intent was found.")
-            if (
-                current.get("intent_id") != expected_intent_id
-                or current.get("risk_signature") != expected_risk_signature
-                or current.get("intent_type", "order") != expected_intent_type
-            ):
-                raise IntentStateError(
-                    "intent_changed",
-                    "Pending order intent changed before confirmation.",
-                )
-            if current.get("mcp_trade_confirmation_started_at") is not None:
-                raise IntentStateError(
-                    "confirmation_started",
-                    "Pending order confirmation already started.",
-                )
-            claim_time_ms = (
-                started_at_ms if started_at_ms is not None else int(time.time() * 1000)
-            )
-            if int(current.get("expires_at") or 0) <= claim_time_ms:
-                raise IntentStateError(
-                    "intent_expired",
-                    "Pending order intent expired before confirmation could be claimed.",
-                )
-            claimed = dict(current)
-            claimed["mcp_trade_confirmation_started_at"] = claim_time_ms
-            _atomic_write_json(path, claimed)
-            return claimed
-    except IntentStateError:
-        raise
-    except (OSError, TypeError, ValueError) as exc:
-        raise IntentStateError(
-            "intent_state_unavailable",
-            "Pending order intent could not be claimed safely.",
-        ) from exc
-
-
-def clear_intent(
-    *,
-    expected_intent_id: str | None = None,
-    expected_risk_signature: str | None = None,
-    expected_intent_type: str | None = None,
-    expected_confirmation_started: bool | None = None,
-) -> bool:
-    path = intent_path()
-    try:
-        with _intent_lock():
-            current = _load_intent_path(path)
-            if current is None:
-                return False
-            if expected_intent_id is not None and current.get("intent_id") != expected_intent_id:
-                return False
-            if (
-                expected_risk_signature is not None
-                and current.get("risk_signature") != expected_risk_signature
-            ):
-                return False
-            if (
-                expected_intent_type is not None
-                and current.get("intent_type", "order") != expected_intent_type
-            ):
-                return False
-            confirmation_started = current.get("mcp_trade_confirmation_started_at") is not None
-            if (
-                expected_confirmation_started is not None
-                and confirmation_started is not expected_confirmation_started
-            ):
-                return False
-            _unlink_if_exists(path)
-            _fsync_directory(path.parent)
-            return True
-    except IntentStateError:
-        raise
-    except OSError as exc:
-        raise IntentStateError(
-            "intent_state_unavailable",
-            "Pending order intent could not be cleared safely.",
-        ) from exc
-
-
-def intent_is_expired(payload: dict[str, Any], *, now_ms: int | None = None) -> bool:
-    current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    expires_at = int(payload.get("expires_at") or 0)
-    return expires_at <= current_ms
 
 
 def _canonical_digest(value: Any) -> str:
@@ -709,7 +537,11 @@ def _validate_legacy_envelope(value: Any) -> dict[str, Any]:
     return value
 
 
-def _validate_manual_intent(value: Any) -> dict[str, Any]:
+def _validate_manual_intent(
+    value: Any,
+    *,
+    allow_previous_candidate: bool = False,
+) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("intent_version") != 2:
         raise IntentStateError(
             "intent_state_corrupt",
@@ -899,16 +731,9 @@ def _validate_manual_intent(value: Any) -> dict[str, Any]:
             "intent_state_corrupt",
             "Manual mutation profile binding is invalid.",
         )
-    if versions != {
-        "package": "0.3.1",
-        "tool_contract": "2",
-        "prepare": "1",
-        "intent": "2",
-        "grant": "2",
-        "boundary_contract_digest": (
-            "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
-        ),
-    }:
+    if versions != _INTENT_CONTRACT_VERSIONS and not (
+        allow_previous_candidate and versions == _PREVIOUS_INTENT_CONTRACT_VERSIONS
+    ):
         raise IntentStateError(
             "intent_state_corrupt",
             "Manual mutation contract versions are invalid.",
@@ -994,6 +819,15 @@ def _validate_manual_intent(value: Any) -> dict[str, Any]:
             raise IntentStateError(
                 "intent_state_corrupt",
                 "Terminal manual mutation grant fields are invalid.",
+            )
+        if (
+            state == "NOT_SENT_TERMINAL"
+            and grant.get("outcome_digest")
+            != NOT_SENT_TERMINAL_OUTCOME_DIGEST
+        ):
+            raise IntentStateError(
+                "intent_state_corrupt",
+                "Not-sent terminal outcome digest is invalid.",
             )
         if (
             grant.get("principal_id") != profile["principal_id"]
@@ -1155,21 +989,29 @@ def _migrate_legacy_locked(
     *,
     now_ms: int,
 ) -> dict[str, Any]:
-    started = raw.get("mcp_trade_confirmation_started_at") is not None
-    state_text = str(raw.get("state") or "").upper()
-    if started or state_text in {
-        "CLAIMED",
-        "UNKNOWN",
-        "PARTIAL",
-        "REVIEW_REQUIRED",
-        "ACCEPTED",
-        "REJECTED",
-        "RELEASED",
+    marker_started = raw.get("mcp_trade_confirmation_started_at") is not None
+    source_state = _legacy_source_state(raw)
+    state_text = str(source_state or "").strip().upper()
+    if state_text == "ACCEPTED":
+        migration = "ACCEPTED"
+        started = True
+    elif state_text in {"REJECTED", "DEFINITIVE_REJECTION"}:
+        migration = "DEFINITIVE_REJECTION"
+        started = True
+    elif state_text in {"NOT_SENT", "NOT_SENT_TERMINAL"}:
+        migration = "NOT_SENT_TERMINAL"
+        started = True
+    elif marker_started or state_text not in {
+        "",
+        "PENDING",
+        "PREVIEWED",
+        "UNCLAIMED",
     }:
         migration = "REVIEW_REQUIRED"
         started = True
     else:
         migration = "LEGACY_INVALIDATED"
+        started = False
     migrated = _sparse_migration(
         raw,
         migration=migration,
@@ -1200,7 +1042,9 @@ def _validate_audit_record(value: Any) -> dict[str, Any]:
         )
     body = dict(value)
     stored_digest = body.pop("record_digest")
-    intent = _validate_manual_intent(value.get("intent"))
+    intent = _validate_manual_intent(
+        value.get("intent"), allow_previous_candidate=True,
+    )
     reconciliation_status = intent["reconciliation"]["status"]
     if (
         value.get("audit_version") != 1
@@ -1265,7 +1109,9 @@ def _append_terminal_audit_locked(
     *,
     archived_at: int,
 ) -> dict[str, Any]:
-    validated = deepcopy(_validate_manual_intent(dict(intent)))
+    validated = deepcopy(
+        _validate_manual_intent(dict(intent), allow_previous_candidate=True)
+    )
     if _contains_forbidden_secret(validated):
         raise IntentStateError(
             "intent_audit_unavailable",
@@ -1354,17 +1200,57 @@ def _effective_manual_intent_locked(
                 return deepcopy(record["intent"])
         current = _migrate_legacy_locked(raw, now_ms=now_ms)
     else:
-        current = deepcopy(_validate_manual_intent(raw))
+        current = deepcopy(_validate_manual_intent(raw, allow_previous_candidate=True))
     overlay = _latest_audit_intent_locked(str(current["intent_id"]))
-    return overlay if overlay is not None else current
+    if overlay is not None:
+        return overlay
+    if current.get("contract_versions") == _PREVIOUS_INTENT_CONTRACT_VERSIONS:
+        if current["state"] == "UNCLAIMED":
+            return _invalidate_unclaimed_locked(current, now_ms=now_ms)
+        if current["state"] == "CONFIRMED":
+            # The previous grant was never claimed, so its write cannot have started.
+            terminal = _terminalized_intent(
+                current,
+                terminal_state="NOT_SENT_TERMINAL",
+                outcome_digest=NOT_SENT_TERMINAL_OUTCOME_DIGEST,
+            )
+            _append_terminal_audit_locked(terminal, archived_at=now_ms)
+            try:
+                _atomic_write_json(intent_path(), terminal)
+            except OSError:
+                pass
+            return terminal
+    return current
 
 
-def load_manual_intent(*, now_ms: int | None = None) -> dict[str, Any] | None:
+def load_manual_intent(
+    *,
+    now_ms: int | None = None,
+    expected_intent_id: str | None = None,
+    expected_prepared_artifact_digest: str | None = None,
+) -> dict[str, Any] | None:
     active_now = int(time.time() * 1000) if now_ms is None else now_ms
     if not _nonnegative_integer(active_now):
         raise IntentStateError("invalid_arguments", "now_ms is invalid.")
+    if expected_intent_id is not None or expected_prepared_artifact_digest is not None:
+        if (
+            not isinstance(expected_intent_id, str)
+            or not expected_intent_id
+            or not _is_sha256(expected_prepared_artifact_digest)
+        ):
+            raise IntentStateError("invalid_arguments", "Manual mutation lookup binding is invalid.")
     with _intent_lock():
-        return _effective_manual_intent_locked(now_ms=active_now)
+        current = _effective_manual_intent_locked(now_ms=active_now)
+        if expected_intent_id is None:
+            return current
+        if current is None or current["intent_id"] != expected_intent_id:
+            current = _latest_audit_intent_locked(expected_intent_id)
+        if (
+            current is not None
+            and current.get("prepared_artifact_digest") == expected_prepared_artifact_digest
+        ):
+            return current
+        return None
 
 
 def _audit_contains_intent_locked(intent: Mapping[str, Any]) -> bool:
@@ -1375,7 +1261,7 @@ def _audit_contains_intent_locked(intent: Mapping[str, Any]) -> bool:
     )
 
 
-def _archive_expired_unclaimed_locked(
+def _invalidate_unclaimed_locked(
     intent: Mapping[str, Any],
     *,
     now_ms: int,
@@ -1428,7 +1314,7 @@ def save_unclaimed_intent(
                 and current["state"] == "UNCLAIMED"
                 and current["expires_at"] <= active_now
             ):
-                current = _archive_expired_unclaimed_locked(
+                current = _invalidate_unclaimed_locked(
                     current,
                     now_ms=active_now,
                 )
@@ -1451,6 +1337,34 @@ def save_unclaimed_intent(
             "intent_state_unavailable",
             "Manual mutation intent could not be saved safely.",
         ) from exc
+
+
+def ensure_manual_intent_slot_available(*, now_ms: int | None = None) -> None:
+    active_now = int(time.time() * 1000) if now_ms is None else now_ms
+    if not _nonnegative_integer(active_now):
+        raise IntentStateError("invalid_arguments", "now_ms is invalid.")
+    with _intent_lock():
+        current = _effective_manual_intent_locked(now_ms=active_now)
+        if (
+            current is not None
+            and current["state"] == "UNCLAIMED"
+            and current["expires_at"] <= active_now
+        ):
+            current = _invalidate_unclaimed_locked(
+                current,
+                now_ms=active_now,
+            )
+        if current is None:
+            return
+        replaceable = current["state"] in _TERMINAL_STATES or (
+            current["state"] == "REVIEW_REQUIRED"
+            and current["reconciliation"]["status"] in _RESOLVED_RECONCILIATION
+        )
+        if not replaceable or not _audit_contains_intent_locked(current):
+            raise IntentStateError(
+                "intent_conflict",
+                "Another manual mutation intent still owns the global slot.",
+            )
 
 
 def _execution_grant_dict(value: Any) -> dict[str, Any]:
@@ -1707,7 +1621,7 @@ def _terminalized_intent(
     result["reconciliation"]["result"] = None
     result["reconciliation"]["observed_at"] = None
     result["reconciliation"]["evidence_digest"] = None
-    return deepcopy(_validate_manual_intent(result))
+    return deepcopy(_validate_manual_intent(result, allow_previous_candidate=True))
 
 
 class FileManualIntentStore:
@@ -1900,12 +1814,16 @@ class FileManualIntentStore:
         archived_at = self._clock()
         with _intent_lock():
             current = _effective_manual_intent_locked(now_ms=archived_at)
-            if current is None or not _grant_binding_matches(
-                current,
-                grant_id=grant_id,
-                principal_id=principal_id,
-                account_binding_id=account_binding_id,
-                tool_name=tool_name,
+            if (
+                current is None
+                or current.get("contract_versions") != _INTENT_CONTRACT_VERSIONS
+                or not _grant_binding_matches(
+                    current,
+                    grant_id=grant_id,
+                    principal_id=principal_id,
+                    account_binding_id=account_binding_id,
+                    tool_name=tool_name,
+                )
             ):
                 raise IntentStateError(
                     "grant_unavailable",
@@ -2002,6 +1920,21 @@ class FileManualIntentStore:
             _atomic_write_json(intent_path(), review)
             return recovery
 
+    def record_reconciliation_result(
+        self,
+        intent_id: str,
+        *,
+        status: str,
+        evidence_digest: str,
+        observed_at: int,
+    ) -> dict[str, Any]:
+        return _record_reconciliation_result(
+            intent_id,
+            status=status,
+            evidence_digest=evidence_digest,
+            observed_at=observed_at,
+        )
+
 
 def execution_grant_for_dispatch(
     intent_id: str,
@@ -2051,32 +1984,20 @@ def _record_reconciliation_result(
     intent_id: str,
     *,
     status: str,
-    evidence: Mapping[str, Any],
+    evidence_digest: str,
     observed_at: int,
 ) -> dict[str, Any]:
-    result_by_status = {
-        "RESOLVED_ACCEPTED": "ACCEPTED",
-        "RESOLVED_REJECTED": "DEFINITIVE_REJECTION",
-        "RESOLVED_NOT_SENT": "NOT_SENT",
-    }
-    allowed = set(result_by_status) | {
-        "UNRESOLVED",
-        "MANUAL_REVIEW_REQUIRED",
-    }
     if (
         not isinstance(intent_id, str)
         or not intent_id
-        or status not in allowed
-        or not isinstance(evidence, Mapping)
+        or status not in ("RESOLVED_ACCEPTED", "UNRESOLVED", "MANUAL_REVIEW_REQUIRED")
+        or not _is_sha256(evidence_digest)
         or not _nonnegative_integer(observed_at)
-        or _contains_forbidden_secret(evidence)
     ):
         raise IntentStateError(
             "invalid_arguments",
             "Manual mutation reconciliation result is invalid.",
         )
-    evidence_copy = deepcopy(dict(evidence))
-    evidence_digest = _canonical_digest(evidence_copy)
     with _intent_lock():
         current = _effective_manual_intent_locked(now_ms=observed_at)
         if (
@@ -2105,12 +2026,12 @@ def _record_reconciliation_result(
         updated["reconciliation"].update(
             {
                 "status": status,
-                "result": result_by_status.get(status),
+                "result": "ACCEPTED" if status == "RESOLVED_ACCEPTED" else None,
                 "observed_at": observed_at,
                 "evidence_digest": evidence_digest,
             }
         )
-        _validate_manual_intent(updated)
+        _validate_manual_intent(updated, allow_previous_candidate=True)
         if status in _RESOLVED_RECONCILIATION:
             _append_terminal_audit_locked(updated, archived_at=observed_at)
             try:

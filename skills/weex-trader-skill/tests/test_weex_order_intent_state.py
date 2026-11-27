@@ -177,11 +177,21 @@ def profile_binding() -> dict[str, object]:
 
 def contract_versions() -> dict[str, str]:
     return {
-        "package": "0.3.1",
+        "package": "0.3.2",
         "tool_contract": "2",
         "prepare": "1",
         "intent": "2",
         "grant": "2",
+        "boundary_contract_digest": (
+            "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+        ),
+    }
+
+
+def previous_contract_versions() -> dict[str, str]:
+    return {
+        **contract_versions(),
+        "package": "0.3.1",
         "boundary_contract_digest": (
             "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
         ),
@@ -239,6 +249,167 @@ class ManualIntentStateTests(unittest.TestCase):
         text = json.dumps(value) if encoded else str(value)
         intent_state.intent_path().write_text(text, encoding="utf-8")
         os.chmod(intent_state.intent_path(), 0o600)
+
+    def previous_intent(self, state: str, *, intent_id: str = "intent-1") -> dict:
+        intent = self.build_intent(intent_id=intent_id)
+        intent["contract_versions"] = previous_contract_versions()
+        intent["state"] = state
+        if state != "UNCLAIMED":
+            intent["confirmed_at"] = 200
+            intent["grant"] = {
+                field: value
+                for field, value in dataclasses.asdict(execution_grant()).items()
+                if value is not None
+            }
+        if state in {"CLAIMED", "REVIEW_REQUIRED", "ACCEPTED"}:
+            intent["grant"].update(state=state, claim_id="claim-1")
+        if state in {"REVIEW_REQUIRED", "ACCEPTED"}:
+            intent["grant"].update(
+                terminal_state=state, outcome_digest="sha256:" + "9" * 64,
+            )
+        if state == "REVIEW_REQUIRED":
+            intent["reconciliation"]["status"] = "PENDING"
+        return intent
+
+    def test_new_intents_reject_previous_candidate_contract_versions(self) -> None:
+        with self.assertRaises(intent_state.IntentStateError) as old_contract:
+            intent_state.build_unclaimed_intent(
+                prepared_mutation=prepared_mutation(),
+                profile_binding=profile_binding(),
+                contract_versions=previous_contract_versions(),
+                intent_id="intent-1",
+                created_at=100,
+            )
+        self.assertEqual(old_contract.exception.code, "intent_invalid")
+        with self.assertRaises(intent_state.IntentStateError) as old_save:
+            intent_state.save_unclaimed_intent(
+                self.previous_intent("UNCLAIMED"), now_ms=100,
+            )
+        self.assertEqual(old_save.exception.code, "intent_invalid")
+        self.assertIsNone(intent_state.load_manual_intent(now_ms=100))
+
+    def test_previous_unclaimed_intent_is_invalidated_before_expiry(self) -> None:
+        previous = self.previous_intent("UNCLAIMED")
+        self.write_raw_state(previous)
+
+        migrated = intent_state.load_manual_intent(now_ms=300)
+
+        self.assertEqual(migrated["state"], "LEGACY_INVALIDATED")
+        self.assertEqual(migrated["legacy"]["source_state"], "UNCLAIMED")
+        self.assertFalse(migrated["legacy"]["source_started"])
+        self.assertEqual(intent_state.load_terminal_audit_records()[0]["intent"], migrated)
+        intent_state.save_unclaimed_intent(
+            self.build_intent(intent_id="replacement"), now_ms=400,
+        )
+        self.assertEqual(intent_state.load_manual_intent(now_ms=400)["intent_id"], "replacement")
+
+    def test_previous_confirmed_intent_is_audited_as_known_not_sent(self) -> None:
+        self.write_raw_state(self.previous_intent("CONFIRMED"))
+        grant_identity = {
+            "grant_id": "grant-1",
+            "principal_id": "principal-id",
+            "account_binding_id": "account-id",
+            "tool_name": "trade_place_order",
+        }
+        with self.assertRaises(intent_state.IntentStateError) as old_dispatch:
+            intent_state.execution_grant_for_dispatch(
+                "intent-1", runtime_loader=fake_runtime_models, now_ms=300,
+            )
+        self.assertEqual(old_dispatch.exception.code, "grant_unavailable")
+        with self.assertRaises(intent_state.IntentStateError):
+            self.store().load(**grant_identity)
+        with self.assertRaises(intent_state.IntentStateError):
+            self.store().claim(
+                **grant_identity,
+                prepared_artifact_digest="sha256:" + "f" * 64,
+                execution_binding_digest="sha256:" + "e" * 64,
+                now=300,
+            )
+
+        terminal = intent_state.load_manual_intent(now_ms=300)
+        self.assertEqual(terminal["state"], "NOT_SENT_TERMINAL")
+        self.assertEqual(terminal["grant"]["grant_id"], grant_identity["grant_id"])
+        self.assertEqual(
+            terminal["grant"]["outcome_digest"],
+            intent_state.NOT_SENT_TERMINAL_OUTCOME_DIGEST,
+        )
+        self.assertEqual(
+            [record["intent"] for record in intent_state.load_terminal_audit_records()],
+            [terminal],
+        )
+        intent_state.ensure_manual_intent_slot_available(now_ms=400)
+
+    def test_previous_confirmed_intent_keeps_original_state_if_audit_fails(self) -> None:
+        self.write_raw_state(self.previous_intent("CONFIRMED"))
+        original_bytes = intent_state.intent_path().read_bytes()
+
+        with mock.patch.object(
+            intent_state,
+            "_append_terminal_audit_locked",
+            side_effect=intent_state.IntentStateError(
+                "intent_audit_unavailable", "audit unavailable",
+            ),
+        ):
+            with self.assertRaises(intent_state.IntentStateError) as failed:
+                intent_state.ensure_manual_intent_slot_available(now_ms=300)
+        self.assertEqual(failed.exception.code, "intent_audit_unavailable")
+        self.assertEqual(intent_state.intent_path().read_bytes(), original_bytes)
+
+    def test_previous_claimed_intent_can_recover_but_cannot_finalize_as_a_write(self) -> None:
+        previous = self.previous_intent("CLAIMED")
+        self.write_raw_state(previous)
+        grant_identity = {
+            "grant_id": "grant-1",
+            "principal_id": "principal-id",
+            "account_binding_id": "account-id",
+            "tool_name": "trade_place_order",
+        }
+
+        with self.assertRaises(intent_state.IntentStateError):
+            self.store().finalize(
+                **grant_identity, claim_id="claim-1", terminal_state="ACCEPTED",
+                outcome_digest="sha256:" + "9" * 64,
+            )
+        recovered_grant = intent_state.claimed_execution_grant_for_recovery(
+            "intent-1", runtime_loader=fake_runtime_models, now_ms=300,
+        )
+        self.assertEqual(recovered_grant.claim_id, "claim-1")
+        self.store().recover(**grant_identity, now=400)
+        review = intent_state.load_manual_intent(now_ms=500)
+        self.assertEqual(review["state"], "REVIEW_REQUIRED")
+        self.assertEqual(review["prepared_mutation"], previous["prepared_mutation"])
+        with self.assertRaises(intent_state.IntentStateError):
+            intent_state.ensure_manual_intent_slot_available(now_ms=500)
+
+    def test_previous_review_intent_keeps_template_and_blocks_replacement_and_dispatch(self) -> None:
+        previous = self.previous_intent("REVIEW_REQUIRED")
+        self.write_raw_state(previous)
+        self.assertEqual(intent_state.load_manual_intent(now_ms=300), previous)
+        self.assertEqual(
+            intent_state.reconciliation_template_for_intent("intent-1"),
+            previous["prepared_mutation"]["reconciliation_template"],
+        )
+        with self.assertRaises(intent_state.IntentStateError):
+            intent_state.execution_grant_for_dispatch(
+                "intent-1", runtime_loader=fake_runtime_models, now_ms=300,
+            )
+        with self.assertRaises(intent_state.IntentStateError) as conflict:
+            intent_state.save_unclaimed_intent(
+                self.build_intent(intent_id="replacement"), now_ms=300,
+            )
+        self.assertEqual(conflict.exception.code, "intent_conflict")
+
+    def test_previous_terminal_audit_is_read_without_rewriting_record_bytes(self) -> None:
+        previous = self.previous_intent("ACCEPTED", intent_id="previous-terminal")
+        body = {"audit_version": 1, "archived_at": 250, "intent": previous}
+        record = {**body, "record_digest": intent_state._canonical_digest(body)}
+        audit_path = intent_state.audit_path()
+        audit_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        os.chmod(audit_path, 0o600)
+        original_bytes = audit_path.read_bytes()
+
+        self.assertEqual(intent_state.load_terminal_audit_records(), [record])
+        self.assertEqual(audit_path.read_bytes(), original_bytes)
 
     def test_build_unclaimed_intent_uses_prepared_values_without_scaling_expiry(self) -> None:
         prepared = prepared_mutation(expires_at=12_345)
@@ -303,11 +474,43 @@ class ManualIntentStateTests(unittest.TestCase):
         self.assertNotIn("prepared_mutation", started)
         self.assertNotIn("grant", started)
 
+        legacy_states = (
+            ("trade_status", "UNKNOWN", "REVIEW_REQUIRED"),
+            ("status", "PARTIAL", "REVIEW_REQUIRED"),
+            ("trade_status", "ACCEPTED", "ACCEPTED"),
+            ("status", "REJECTED", "DEFINITIVE_REJECTION"),
+            ("trade_status", "NOT_SENT", "NOT_SENT_TERMINAL"),
+            ("status", "unrecognized", "REVIEW_REQUIRED"),
+        )
+        for index, (field, source_state, expected_state) in enumerate(
+            legacy_states
+        ):
+            with self.subTest(field=field, source_state=source_state):
+                self.write_raw_state(
+                    {
+                        "intent_id": f"legacy-state-{index}",
+                        "risk_signature": "legacy-risk",
+                        field: source_state,
+                    }
+                )
+                migrated_state = intent_state.load_manual_intent(now_ms=300 + index)
+                self.assertEqual(migrated_state["state"], expected_state)
+                self.assertEqual(
+                    migrated_state["legacy"]["source_state"],
+                    source_state,
+                )
+                self.assertEqual(
+                    migrated_state["legacy"]["source_started"],
+                    expected_state != "LEGACY_INVALIDATED",
+                )
+
     def test_single_slot_blocks_active_and_archives_expired_unclaimed_before_replace(self) -> None:
         first = self.build_intent(intent_id="intent-first", expires_at=500)
         second = self.build_intent(intent_id="intent-second", expires_at=1_000)
         intent_state.save_unclaimed_intent(first, now_ms=100)
 
+        with self.assertRaises(intent_state.IntentStateError):
+            intent_state.ensure_manual_intent_slot_available(now_ms=200)
         with self.assertRaises(intent_state.IntentStateError) as active:
             intent_state.save_unclaimed_intent(second, now_ms=200)
         self.assertEqual(active.exception.code, "intent_conflict")
@@ -318,6 +521,35 @@ class ManualIntentStateTests(unittest.TestCase):
         records = intent_state.load_terminal_audit_records()
         self.assertEqual(records[-1]["intent"]["intent_id"], "intent-first")
         self.assertEqual(records[-1]["intent"]["state"], "LEGACY_INVALIDATED")
+
+    @unittest.skipIf(os.name == "nt", "POSIX owner-only mode and file-lock check")
+    def test_dispatch_lock_excludes_another_process_and_releases_on_exit(self) -> None:
+        worker = "\n".join((
+            "import os, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "from weex_order_intent_state import IntentStateError, manual_intent_dispatch_lock",
+            "try:",
+            "    with manual_intent_dispatch_lock():",
+            "        print('acquired', flush=True)",
+            "        os._exit(0)",
+            "except IntentStateError as exc:",
+            "    print(exc.code)",
+        ))
+        command = [sys.executable, "-B", "-c", worker, str(SCRIPTS)]
+        with intent_state.manual_intent_dispatch_lock():
+            lock_files = list(Path(self.tempdir.name).glob(".*dispatch.lock"))
+            self.assertEqual(len(lock_files), 1)
+            self.assertEqual(lock_files[0].stat().st_mode & 0o777, 0o600)
+            blocked = subprocess.run(command, capture_output=True, text=True, check=True, timeout=5)
+            self.assertEqual(blocked.stdout.strip(), "intent_dispatch_in_flight")
+
+        crashed = subprocess.run(command, capture_output=True, text=True, check=True, timeout=5)
+        self.assertEqual(crashed.stdout.strip(), "acquired")
+        with self.assertRaisesRegex(RuntimeError, "dispatch failed"):
+            with intent_state.manual_intent_dispatch_lock():
+                raise RuntimeError("dispatch failed")
+        with intent_state.manual_intent_dispatch_lock():
+            self.assertTrue(lock_files[0].is_file())
 
     def test_confirm_and_issue_is_atomic_and_mcp_claims_once(self) -> None:
         intent_state.save_unclaimed_intent(self.build_intent(), now_ms=100)
@@ -806,6 +1038,17 @@ class ManualIntentStateTests(unittest.TestCase):
             intent_state.load_manual_intent(now_ms=400)["intent_id"],
             "intent-2",
         )
+        archived = intent_state.load_manual_intent(
+            now_ms=400,
+            expected_intent_id="intent-1",
+            expected_prepared_artifact_digest="sha256:" + "f" * 64,
+        )
+        self.assertEqual((archived["intent_id"], archived["state"]), ("intent-1", "ACCEPTED"))
+        self.assertIsNone(intent_state.load_manual_intent(
+            now_ms=400,
+            expected_intent_id="intent-1",
+            expected_prepared_artifact_digest="sha256:" + "b" * 64,
+        ))
 
     def test_finalize_is_idempotent_and_recover_keeps_review_slot_blocked(self) -> None:
         store = self.store()
@@ -950,6 +1193,12 @@ class ManualIntentStateTests(unittest.TestCase):
                 outcome_digest=intent_state.NOT_SENT_TERMINAL_OUTCOME_DIGEST,
             )
         )
+        tampered = json.loads(intent_state.intent_path().read_text(encoding="utf-8"))
+        tampered["grant"]["outcome_digest"] = "sha256:" + "9" * 64
+        self.write_raw_state(tampered)
+        with self.assertRaises(intent_state.IntentStateError) as corrupt:
+            intent_state.load_manual_intent(now_ms=400)
+        self.assertEqual(corrupt.exception.code, "intent_state_corrupt")
 
     def test_claimed_grant_can_be_rehydrated_after_restart_for_host_recovery(self) -> None:
         intent_state.save_unclaimed_intent(self.build_intent(), now_ms=100)
@@ -1069,39 +1318,36 @@ class ManualIntentStateTests(unittest.TestCase):
             tool_name="trade_place_order",
             now=400,
         )
-        resolved = intent_state._record_reconciliation_result(
-            "intent-1",
-            status="RESOLVED_NOT_SENT",
-            evidence={"order_found": False},
+        evidence_digest = "sha256:" + "1" * 64
+        with self.assertRaises(intent_state.IntentStateError):
+            store.record_reconciliation_result(
+                "intent-1", status="RESOLVED_NOT_SENT", evidence_digest=evidence_digest,
+                observed_at=500,
+            )
+        self.assertEqual(intent_state.load_terminal_audit_records(), [])
+        resolved = store.record_reconciliation_result(
+            "intent-1", status="RESOLVED_ACCEPTED", evidence_digest=evidence_digest,
             observed_at=500,
         )
-        self.assertEqual(
-            resolved["reconciliation"]["result"],
-            "NOT_SENT",
-        )
+        self.assertEqual(resolved["reconciliation"]["result"], "ACCEPTED")
+        self.assertEqual(resolved["reconciliation"]["evidence_digest"], evidence_digest)
         self.assertEqual(len(intent_state.load_terminal_audit_records()), 1)
         self.assertEqual(
-            intent_state._record_reconciliation_result(
-                "intent-1",
-                status="RESOLVED_NOT_SENT",
-                evidence={"order_found": False},
+            store.record_reconciliation_result(
+                "intent-1", status="RESOLVED_ACCEPTED", evidence_digest=evidence_digest,
                 observed_at=500,
             ),
             resolved,
         )
         self.assertEqual(len(intent_state.load_terminal_audit_records()), 1)
         with self.assertRaises(intent_state.IntentStateError):
-            intent_state._record_reconciliation_result(
-                "intent-1",
-                status="RESOLVED_ACCEPTED",
-                evidence={"order_found": True},
+            store.record_reconciliation_result(
+                "intent-1", status="RESOLVED_ACCEPTED", evidence_digest="sha256:" + "2" * 64,
                 observed_at=600,
             )
         self.assertEqual(
-            intent_state.load_manual_intent(now_ms=600)["reconciliation"][
-                "result"
-            ],
-            "NOT_SENT",
+            intent_state.load_manual_intent(now_ms=600)["reconciliation"]["evidence_digest"],
+            evidence_digest,
         )
         self.assertEqual(len(intent_state.load_terminal_audit_records()), 1)
         intent_state.save_unclaimed_intent(
@@ -1137,6 +1383,19 @@ class ManualIntentStateTests(unittest.TestCase):
         self.assertEqual(tuple(signature.parameters), ("intent_id",))
         template = intent_state.reconciliation_template_for_intent("intent-1")
         self.assertEqual(template["identity"], {"client_order_id": "client-1"})
+
+    def test_legacy_intent_write_claim_and_clear_apis_are_removed(self) -> None:
+        for name in (
+            "build_risk_signature",
+            "build_intent",
+            "save_intent",
+            "load_intent",
+            "claim_intent_for_confirmation",
+            "clear_intent",
+            "intent_is_expired",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(intent_state, name))
 
 
 if __name__ == "__main__":

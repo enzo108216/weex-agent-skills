@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import importlib.util
 import json
 import sys
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -29,7 +30,7 @@ SOURCE_CATALOG_DIGESTS = {
     "partner": "sha256:" + "8" * 64,
 }
 VERSIONS = {
-    "package": "0.3.1",
+    "package": "0.3.2",
     "tool_contract": "2",
     "manifest": "2",
     "output": "1",
@@ -137,7 +138,7 @@ def build_manifest(tools: list[dict[str, object]], *, trade_enabled: bool) -> di
     )
     manifest: dict[str, object] = {
         "manifest_version": 2,
-        "package_version": "0.3.1",
+        "package_version": "0.3.2",
         "tool_contract_version": "2",
         "runtime_profile": "local_user",
         "trade_enabled": trade_enabled,
@@ -157,7 +158,7 @@ def build_static_manifest(tools: list[dict[str, object]]) -> dict[str, object]:
     manifest: dict[str, object] = {
         "status": "CANDIDATE_NEEDS_RELEASE_OWNER",
         "versions": dict(VERSIONS),
-        "package_version": "0.3.1",
+        "package_version": "0.3.2",
         "composition_kind": "local_user",
         "tools": [item["name"] for item in projections],
         "input_schema_digest": canonical_digest(
@@ -218,10 +219,10 @@ def mapping_for(
         "mapping_version": "trader-mcp-capability-v2",
         "verified_mcp_candidate": {
             "official_repository": "https://github.com/weex-labs/weex-mcp",
-            "package_version": "0.3.1",
+            "package_version": "0.3.2",
             "tool_contract_version": "2",
             "manifest_version": 2,
-            "source_commit": "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
+            "source_commit": "45c7bf5ae63db360cf6ec0e18d92806d3f416391",
             "publication_status": "unpublished",
             "distribution_sha256": {"wheel": "a" * 64, "sdist": "b" * 64},
             "versions": dict(VERSIONS),
@@ -322,6 +323,9 @@ class FakeExecutionGrant:
     execution_binding_digest: str = "sha256:" + "e" * 64
     issued_at: int = 100
     expires_at: int = 1_000
+    claim_id: str | None = None
+    terminal_state: str | None = None
+    outcome_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -388,6 +392,7 @@ class FakeService:
         self.runtime_availability = copy.deepcopy(runtime_availability)
         self.calls: list[tuple[str, dict[str, object], object]] = []
         self.prepares: list[tuple[str, dict[str, object], object]] = []
+        self.recoveries: list[tuple[str, object, int | None]] = []
         self.tool_handler = None
 
     def prepare_mutation(self, *, tool_name, arguments, invocation_context):
@@ -396,6 +401,21 @@ class FakeService:
             tool_name=tool_name,
             route_fingerprint=invocation_context.account_binding.route_fingerprint,
             credential_fingerprint=invocation_context.credential_binding.credential_fingerprint,
+        )
+
+    def recover_mutation(
+        self,
+        *,
+        tool_name,
+        invocation_context,
+        now_ms=None,
+    ):
+        self.recoveries.append((tool_name, invocation_context, now_ms))
+        return SimpleNamespace(
+            grant_id=invocation_context.execution_grant.grant_id,
+            state="REVIEW_REQUIRED",
+            recovered_at=now_ms,
+            reason="unfinalized_claim",
         )
 
     def handle_jsonrpc(self, request, *, context=None):
@@ -455,7 +475,7 @@ class GrantConsumerSpy:
         raise AttributeError(name)
 
 
-def fake_runtime(service: FakeService, *, package_version: str = "0.3.1"):
+def fake_runtime(service: FakeService, *, package_version: str = "0.3.2"):
     def build_local_user_service(**kwargs):
         service.settings = kwargs["settings"]
         service.secret_provider = kwargs["secret_provider"]
@@ -730,7 +750,7 @@ class LocalMcpGatewayTests(GatewayFixture):
             timeout_seconds=7.5,
             request_locale="zh-CN",
         )
-        self.assertEqual(gateway.runtime_status()["version"], "0.3.1")
+        self.assertEqual(gateway.runtime_status()["version"], "0.3.2")
         self.assertEqual(
             service.settings.spot_base_url,
             "https://stg-spotpro-openapi.weex.tech",
@@ -911,6 +931,166 @@ class LocalMcpGatewayTests(GatewayFixture):
         self.assertEqual(len(service.calls), before_calls)
         self.assertEqual(len(service.prepares), before_prepares)
         self.assertEqual(consumer.calls, [])
+
+    def test_recover_mutation_uses_host_private_service_with_claimed_context(self) -> None:
+        gateway, service = self.make_gateway(
+            trade_enabled=True,
+            grant_consumer=object(),
+        )
+        prepared = gateway.prepare_mutation(
+            "trade_place_order",
+            {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"},
+        )
+        issued = gateway.build_execution_grant(
+            prepared,
+            grant_id="grant-1",
+            issued_at=100,
+        )
+        claimed = replace(
+            issued,
+            state="CLAIMED",
+            claim_id="claim-1",
+        )
+        before_credential_loads = len(self.credential_loads)
+        self.binding_status["fp_sha256"] = "0" * 16
+        self.credentials = SimpleNamespace(
+            api_key="AK_ROTATED",
+            api_secret="SK_ROTATED",
+            api_passphrase="PP_ROTATED",
+        )
+
+        recovery = gateway.recover_mutation(
+            tool_name="trade_place_order",
+            execution_grant=claimed,
+            now_ms=300,
+        )
+
+        self.assertEqual(recovery.state, "REVIEW_REQUIRED")
+        self.assertEqual(len(service.recoveries), 1)
+        tool_name, context, now_ms = service.recoveries[0]
+        self.assertEqual(tool_name, "trade_place_order")
+        self.assertIs(context.execution_grant, claimed)
+        self.assertEqual(now_ms, 300)
+        self.assertEqual(len(self.credential_loads), before_credential_loads)
+        self.assertEqual(
+            context.credential_binding.credential_fingerprint,
+            claimed.credential_fingerprint,
+        )
+        listed = service.handle_jsonrpc(
+            {"jsonrpc": "2.0", "id": "list", "method": "tools/list", "params": {}}
+        )
+        self.assertNotIn(
+            "recover_mutation",
+            {tool["name"] for tool in listed["result"]["tools"]},
+        )
+
+    def test_reconcile_uses_private_service_and_returns_only_bound_digest(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=True, grant_consumer=object())
+        prepared = gateway.prepare_mutation(
+            "trade_place_order",
+            {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"},
+        )
+        digest = "sha256:" + "9" * 64
+        payload = {
+            "tool_name": "trade_place_order",
+            "prepared_artifact_digest": prepared["prepared_artifact_digest"],
+            "status": "RESOLVED_ACCEPTED",
+            "result": "ACCEPTED",
+            "observed_at": 300,
+            "evidence": {"kind": "query"},
+            "evidence_digest": digest,
+        }
+        private = mock.Mock(return_value=SimpleNamespace(to_dict=lambda: payload))
+        service.reconcile_mutation = private
+        result = gateway.reconcile_mutation(prepared, now_ms=300)
+
+        arguments = private.call_args.kwargs
+        self.assertEqual(arguments["prepared_mutation"], prepared)
+        self.assertIsNone(arguments["invocation_context"].execution_grant)
+        self.assertEqual(arguments["now_ms"], 300)
+        self.assertEqual(result, {
+            "status": "RESOLVED_ACCEPTED",
+            "observed_at": 300,
+            "evidence_digest": digest,
+        })
+        self.assertFalse(any(method == "tools/call" for method, *_ in service.calls))
+
+        payload["prepared_artifact_digest"] = "sha256:" + "7" * 64
+        with self.assertRaises(self.gateway_module.McpGatewayError):
+            gateway.reconcile_mutation(prepared, now_ms=300)
+
+    def test_previous_candidate_reconciliation_uses_isolated_read_binding(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=True, grant_consumer=object())
+        arguments = {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"}
+        active = gateway.prepare_mutation("trade_place_order", arguments)
+        previous_contract = "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
+        fingerprint_domain = b"weex-trader-local-mcp-credential-v2\0"
+        previous_key = hmac.digest(
+            self.binding_key.encode(), fingerprint_domain + previous_contract.encode(), "sha256",
+        )
+        credential_values = json.dumps(
+            {"profile_id": "profile-a", **vars(self.credentials)},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        previous_fingerprint = "fp_" + hmac.digest(
+            previous_key, fingerprint_domain + credential_values, "sha256",
+        ).hex()
+        self.assertNotEqual(previous_fingerprint, active["credential_fingerprint"])
+        prepared = {**active, "credential_fingerprint": previous_fingerprint}
+        payload = {
+            "tool_name": prepared["tool_name"],
+            "prepared_artifact_digest": prepared["prepared_artifact_digest"],
+            "status": "RESOLVED_ACCEPTED",
+            "result": "ACCEPTED",
+            "observed_at": 300,
+            "evidence": {"kind": "query"},
+            "evidence_digest": "sha256:" + "9" * 64,
+        }
+        private_read = mock.Mock(return_value=SimpleNamespace(to_dict=lambda: payload))
+        old_read_service = SimpleNamespace(reconcile_mutation=private_read)
+        with mock.patch.object(
+            gateway._runtime, "build_local_user_service", return_value=old_read_service,
+        ) as build_read_service:
+            self.assertEqual(
+                gateway.reconcile_mutation(
+                    prepared, now_ms=300, boundary_contract_digest=previous_contract,
+                )["status"],
+                "RESOLVED_ACCEPTED",
+            )
+            build_read_service.assert_called_once()
+            service_options = build_read_service.call_args.kwargs
+            self.assertFalse(service_options["settings"].trade_enabled)
+            self.assertNotIn("grant_consumer", service_options)
+            self.assertTrue(service.settings.trade_enabled)
+            self.assertIsNot(service_options["secret_provider"], service.secret_provider)
+            context = private_read.call_args.kwargs["invocation_context"]
+            self.assertIsNone(context.execution_grant)
+            self.assertEqual(
+                context.credential_binding.host_policy_capabilities,
+                frozenset({"account.spot.get_balance"}),
+            )
+            resolved = service_options["secret_provider"].resolve(
+                invocation_context=context,
+                required_capabilities=frozenset({"account.spot.get_balance", "accountDetails"}),
+            )
+            self.assertEqual(resolved.fingerprint, previous_fingerprint)
+            with mock.patch.object(self.credentials, "api_secret", "SK_ROTATED"):
+                with self.assertRaises(self.gateway_module.McpGatewayError):
+                    gateway.reconcile_mutation(
+                        prepared, now_ms=300, boundary_contract_digest=previous_contract,
+                    )
+            with self.assertRaises(self.gateway_module.McpGatewayError):
+                gateway.reconcile_mutation(
+                    {**prepared, "route_fingerprint": "sha256:" + "8" * 64},
+                    now_ms=300, boundary_contract_digest=previous_contract,
+                )
+            with self.assertRaises(self.gateway_module.McpGatewayError):
+                gateway.reconcile_mutation(
+                    prepared, now_ms=300, boundary_contract_digest="sha256:" + "0" * 64,
+                )
+            private_read.assert_called_once()
+
+        self.assertEqual(gateway.prepare_mutation("trade_place_order", arguments), active)
 
     def test_direct_call_requires_execution_grant_only_in_context(self) -> None:
         gateway, service = self.make_gateway(
@@ -1222,16 +1402,16 @@ class LocalMcpGatewayTests(GatewayFixture):
             side_effect=module.metadata.PackageNotFoundError,
         ):
             with self.assertRaises(module.McpGatewayError) as missing:
-                module._load_default_runtime("0.3.1")
+                module._load_default_runtime("0.3.2")
         self.assertEqual(missing.exception.code, "mcp_package_missing")
 
         with mock.patch.object(module.metadata, "version", return_value="0.2.0"):
             with self.assertRaises(module.McpGatewayError) as mismatch:
-                module._load_default_runtime("0.3.1")
+                module._load_default_runtime("0.3.2")
         self.assertEqual(mismatch.exception.code, "mcp_version_mismatch")
 
         with (
-            mock.patch.object(module.metadata, "version", return_value="0.3.1"),
+            mock.patch.object(module.metadata, "version", return_value="0.3.2"),
             mock.patch.object(
                 module.importlib,
                 "import_module",
@@ -1254,7 +1434,7 @@ class LocalMcpGatewayTests(GatewayFixture):
                 "weex_mcp.execution_authorization": SimpleNamespace(ExecutionGrant=object()),
             }
             importer.side_effect = lambda name: modules[name]
-            runtime = module._load_default_runtime("0.3.1")
+            runtime = module._load_default_runtime("0.3.2")
         self.assertIs(
             runtime.AuthenticatedInvocationContext,
             modules["weex_mcp.invocation_context"].AuthenticatedInvocationContext,

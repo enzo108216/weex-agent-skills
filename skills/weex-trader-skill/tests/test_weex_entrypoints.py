@@ -678,14 +678,35 @@ runpy.run_path(script_path, run_name="__main__")
             },
         )
 
-    def test_contract_write_uses_mcp_preview_confirm_without_legacy_send(self) -> None:
+    def test_contract_write_prepares_then_confirms_the_saved_intent(self) -> None:
         import weex_contract_api as contract
+        import weex_trade_guard as guard
 
-        client = mock.Mock()
-        client.trade_endpoint.return_value = {
+        facade = mock.Mock()
+        client = contract.WeexContractClient(
+            base_url=contract.DEFAULT_BASE_URL,
+            timeout=contract.DEFAULT_TIMEOUT,
+            locale=contract.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name="main",
+            mcp_trade_facade=facade,
+        )
+        risk_signature = "sha256:" + "1" * 64
+        risk = {"symbol": "BTCUSDT", "quantity": "1"}
+        facade.preview.return_value = {
+            "ok": True,
+            "summary": {"action": "place_order"},
+            "risk": risk,
+            "intent_id": "intent-f-1",
+            "risk_signature": risk_signature,
+            "expires_at": 10_000,
+        }
+        facade.confirm_intent.return_value = {
             "ok": True,
             "status": None,
-            "data": {"orderId": "f-1"},
+            "data": {"orderId": "f-1", "status": "accepted"},
             "outcome": {
                 "class": "accepted",
                 "write_attempted": True,
@@ -710,23 +731,54 @@ runpy.run_path(script_path, run_name="__main__")
                 query={},
                 body=body,
                 dry_run=False,
-                confirm_live=True,
+                confirm_live=False,
                 confirm_demo=False,
                 trading_mode="live",
                 pretty=False,
             )
 
         self.assertEqual(exit_code, 0)
-        client.trade_endpoint.assert_called_once_with(
+        facade.preview.assert_called_once_with(
+            product="contract",
             endpoint=contract.ENDPOINTS["transaction.place_order"],
             query={},
             body=body,
         )
-        client.describe_request.assert_not_called()
+        facade.confirm.assert_not_called()
+        facade.confirm_intent.assert_not_called()
+        facade.describe.assert_not_called()
+        preview = json.loads(stdout.getvalue())
+        self.assertTrue(preview["confirmation_required"])
+        self.assertEqual(preview["mutation_preview"]["risk"], risk)
+
+        args = guard.build_parser().parse_args([
+            "confirm-mutation", "--intent-id", preview["intent_id"],
+            "--risk-signature", preview["risk_signature"],
+            "--trading-mode", preview["trading_mode"], "--confirm-live",
+        ])
+        saved_intent = {
+            "intent_id": "intent-f-1",
+            "prepared_artifact_digest": risk_signature,
+            "trading_mode": "live",
+            "market": "futures",
+            "profile_binding": {"profile_name": "main"},
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(guard, "load_manual_intent", return_value=saved_intent),
+            mock.patch.object(guard, "_build_contract_client", return_value=(contract, client)),
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = guard.cmd_confirm_mutation(args, now_ms=200)
+
+        self.assertEqual(exit_code, 0)
+        facade.confirm_intent.assert_called_once_with(
+            intent_id="intent-f-1", prepared_artifact_digest=risk_signature,
+        )
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["result"], {"orderId": "f-1"})
+        self.assertEqual(payload["orderId"], "f-1")
         self.assertEqual(payload["outcome"]["class"], "accepted")
-        self.assertEqual(payload["trade_status"], "ACCEPTED")
+        self.assertTrue(payload["outcome"]["write_attempted"])
 
     def test_contract_lazy_mcp_mapping_failure_returns_stable_legacy_error(self) -> None:
         import weex_contract_api as contract
@@ -1163,21 +1215,18 @@ runpy.run_path(script_path, run_name="__main__")
         )
         client.mcp_trade_facade.describe.assert_called_once()
 
-    def test_spot_private_order_result_includes_live_environment_prefix(self) -> None:
+    def test_spot_private_order_preview_includes_live_environment_prefix(self) -> None:
         import weex_spot_api as spot
 
         client = mock.Mock()
-        client.trade_endpoint.return_value = {
+        client.preview_trade_endpoint.return_value = {
             "ok": True,
             "status": None,
-            "data": {"orderId": "spot-1"},
-            "outcome": {
-                "class": "accepted",
-                "write_attempted": True,
-                "action": "order",
-            },
-            "trade_status": "ACCEPTED",
-            "review_required": False,
+            "summary": {"action": "place_order"},
+            "risk": {"symbol": "BTCUSDT", "quantity": "1"},
+            "intent_id": "intent-spot-1",
+            "risk_signature": "sha256:" + "1" * 64,
+            "expires_at": 10_000,
         }
 
         stdout = io.StringIO()
@@ -1189,14 +1238,17 @@ runpy.run_path(script_path, run_name="__main__")
                     query={},
                     body={"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "1"},
                     dry_run=False,
-                    confirm_live=True,
+                    confirm_live=False,
                     pretty=False,
                 )
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
+        client.preview_trade_endpoint.assert_called_once()
+        client.trade_endpoint.assert_not_called()
         client.read_endpoint.assert_not_called()
         client.describe_request.assert_not_called()
+        self.assertTrue(payload["confirmation_required"])
         self.assertEqual(payload["environment"]["trading_mode"], "live")
         self.assertEqual(payload["environment"]["market"], "spot")
         self.assertEqual(payload["user_environment_prefix"], "当前交易环境：真实盘")
@@ -1241,12 +1293,23 @@ runpy.run_path(script_path, run_name="__main__")
             },
         )
 
-    def test_spot_write_unknown_is_review_required_without_legacy_send(self) -> None:
+    def test_spot_confirmed_write_unknown_requires_review_without_legacy_send(self) -> None:
         import weex_spot_api as spot
+        import weex_trade_guard as guard
 
-        endpoint_key = spot.find_endpoint_key_by_doc_suffix("PlaceOrder")
-        client = mock.Mock()
-        client.trade_endpoint.return_value = {
+        facade = mock.Mock()
+        client = spot.WeexSpotClient(
+            base_url=spot.DEFAULT_BASE_URL,
+            timeout=spot.DEFAULT_TIMEOUT,
+            locale=spot.DEFAULT_LOCALE,
+            api_key=None,
+            api_secret=None,
+            api_passphrase=None,
+            profile_name="main",
+            mcp_trade_facade=facade,
+        )
+        risk_signature = "sha256:" + "1" * 64
+        facade.confirm_intent.return_value = {
             "ok": False,
             "status": None,
             "error": {"code": "upstream_error", "message": "uncertain"},
@@ -1259,35 +1322,37 @@ runpy.run_path(script_path, run_name="__main__")
             "trade_status": "REVIEW_REQUIRED",
             "review_required": True,
         }
-        body = {
-            "symbol": "BTCUSDT",
-            "side": "BUY",
-            "type": "MARKET",
-            "quantity": "1",
-            "newClientOrderId": "client-1",
+        saved_intent = {
+            "intent_id": "intent-spot-1",
+            "prepared_artifact_digest": risk_signature,
+            "trading_mode": "live",
+            "market": "spot",
+            "profile_binding": {"profile_name": "main"},
         }
+        args = guard.build_parser().parse_args([
+            "confirm-mutation", "--intent-id", "intent-spot-1",
+            "--risk-signature", risk_signature,
+            "--trading-mode", "live", "--confirm-live",
+        ])
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            exit_code = spot.execute_endpoint(
-                client=client,
-                endpoint_key=endpoint_key,
-                query={},
-                body=body,
-                dry_run=False,
-                confirm_live=True,
-                pretty=False,
-            )
+        with (
+            mock.patch.object(guard, "load_manual_intent", return_value=saved_intent),
+            mock.patch.object(guard, "_build_spot_client", return_value=(spot, client)),
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = guard.cmd_confirm_mutation(args, now_ms=200)
 
         self.assertEqual(exit_code, 1)
-        client.trade_endpoint.assert_called_once_with(
-            endpoint=spot.ENDPOINTS[endpoint_key],
-            query={},
-            body=body,
+        facade.confirm_intent.assert_called_once_with(
+            intent_id="intent-spot-1", prepared_artifact_digest=risk_signature,
         )
-        client.describe_request.assert_not_called()
+        facade.preview.assert_not_called()
+        facade.confirm.assert_not_called()
+        facade.describe.assert_not_called()
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["outcome"]["class"], "unknown")
-        self.assertEqual(payload["trade_status"], "REVIEW_REQUIRED")
+        self.assertTrue(payload["outcome"]["write_attempted"])
+        self.assertEqual(payload["status"], "REVIEW_REQUIRED")
         self.assertTrue(payload["review_required"])
 
     def test_spot_lazy_mcp_mapping_failure_returns_stable_legacy_error(self) -> None:

@@ -26,6 +26,7 @@ from weex_mcp_read_compat import (
 from weex_mcp_trade_compat import (
     McpTradeCompatibilityError,
     McpTradeFacade,
+    dynamic_scope_notice,
     resolve_local_mcp_trade_settings,
 )
 from weex_profile_language import resolve_language
@@ -298,6 +299,57 @@ class WeexSpotClient:
                 "trade_status": "NOT_SENT",
                 "review_required": False,
             }
+
+    def confirm_trade_intent(
+        self,
+        *,
+        intent_id: str,
+        prepared_artifact_digest: str,
+    ) -> Dict[str, Any]:
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                raise McpTradeCompatibilityError(
+                    "mcp_trade_unavailable",
+                    "The verified MCP Trade facade is not configured.",
+                )
+            return self.mcp_trade_facade.confirm_intent(
+                intent_id=intent_id,
+                prepared_artifact_digest=prepared_artifact_digest,
+            )
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
+
+    def reconcile_trade_intent(self, *, intent_id: str) -> Dict[str, Any]:
+        try:
+            if self.mcp_trade_facade is None and self.mcp_trade_settings_factory is not None:
+                self.mcp_trade_facade = McpTradeFacade(
+                    settings=self.mcp_trade_settings_factory()
+                )
+            if self.mcp_trade_facade is None:
+                raise McpTradeCompatibilityError(
+                    "mcp_trade_unavailable",
+                    "The verified MCP Trade facade is not configured.",
+                )
+            return self.mcp_trade_facade.reconcile_intent(intent_id)
+        except McpTradeCompatibilityError as exc:
+            return {
+                "ok": False,
+                "status": None,
+                "error": {"code": exc.code, "message": exc.message},
+                "trade_status": "NOT_SENT",
+                "review_required": False,
+            }
+
     def describe_request(
         self,
         endpoint: Endpoint,
@@ -389,10 +441,10 @@ def execute_endpoint(
     endpoint = ENDPOINTS[endpoint_key]
     environment = private_environment() if endpoint.requires_auth else None
 
-    if is_mutating(endpoint) and not confirm_live and not dry_run:
+    if is_mutating(endpoint) and confirm_live and not dry_run:
         raise SystemExit(
-            f"Refusing live mutating request for {endpoint_key}. "
-            "Use --confirm-live to send, or --dry-run to preview."
+            "two_phase_confirmation_required: Remove the confirmation flag to prepare. "
+            "Review the risk, then use weex_trade_guard.py confirm-mutation."
         )
 
     if dry_run:
@@ -412,7 +464,7 @@ def execute_endpoint(
         return 0
 
     if is_mutating(endpoint):
-        resp = client.trade_endpoint(endpoint=endpoint, query=query, body=body)
+        resp = client.preview_trade_endpoint(endpoint=endpoint, query=query, body=body)
     else:
         resp = client.read_endpoint(endpoint=endpoint, query=query, body=body)
     payload = {
@@ -425,7 +477,26 @@ def execute_endpoint(
     }
     if environment is not None:
         add_environment_context(payload, environment)
-    for field in ("outcome", "trade_status", "review_required"):
+    if is_mutating(endpoint) and resp.get("ok") is True:
+        summary = resp["summary"]
+        risk = resp["risk"]
+        payload["mutation_preview"] = {"summary": summary, "risk": risk}
+        payload["confirmation_required"] = True
+        payload["trading_mode"] = "live"
+        notice = dynamic_scope_notice(
+            risk, action=summary.get("action"), language=resolve_language()
+        )
+        if notice is not None:
+            payload["dynamic_scope_notice"] = notice
+    for field in (
+        "outcome",
+        "trade_status",
+        "review_required",
+        "intent_id",
+        "risk_signature",
+        "expires_at",
+        "warning",
+    ):
         if field in resp:
             payload[field] = resp[field]
     if resp.get("review_required") is True and "data" in resp:
@@ -599,14 +670,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_call = sub.add_parser(
         "call",
         help="Call a spot endpoint by key with JSON query/body",
-        description="Call a specific official spot endpoint through MCP using JSON query and body payloads.",
+        description="Read or prepare an official spot endpoint through MCP using JSON query and body payloads.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p_call.add_argument("--endpoint", required=True, choices=sorted(ENDPOINTS.keys()), help="Exact endpoint key from list-endpoints")
     p_call.add_argument("--query", default="{}", help="JSON object string")
     p_call.add_argument("--body", default="{}", help="JSON object string")
     p_call.add_argument("--dry-run", action="store_true", help="Show the MCP redacted request description without signing or sending")
-    p_call.add_argument("--confirm-live", action="store_true", help="Allow live mutating requests")
+    p_call.add_argument("--confirm-live", action="store_true", help="Legacy flag; confirm a prepared live mutation with weex_trade_guard.py confirm-mutation")
     p_call.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
     p_ticker = sub.add_parser(
@@ -621,18 +692,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_place = sub.add_parser(
         "place-order",
         help="Convenience wrapper for the live spot PlaceOrder doc",
-        description="Place one spot order using the documented V3 fields exposed by this wrapper.",
+        description="Prepare one spot order for separate confirmation using the documented V3 fields.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p_place.add_argument("--symbol", required=True, help="Trading pair symbol, for example BTCUSDT")
     p_place.add_argument("--side", required=True, choices=["BUY", "SELL", "buy", "sell"], help="Order side: BUY or SELL")
-    p_place.add_argument("--order-type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET sends immediately at market price")
+    p_place.add_argument("--order-type", required=True, choices=["LIMIT", "MARKET", "limit", "market"], help="Order type: LIMIT requires a price, MARKET executes at market price after confirmation")
     p_place.add_argument("--quantity", required=True, help="Order quantity in the format expected by WEEX for this spot market")
     p_place.add_argument("--price", default=None, help="Limit price; usually required for LIMIT orders and omitted for MARKET orders")
     p_place.add_argument("--time-in-force", default=None, choices=["GTC", "IOC", "FOK", "gtc", "ioc", "fok"], help="Execution policy for LIMIT orders: GTC, IOC, or FOK")
     p_place.add_argument("--new-client-order-id", default=None, help="Optional client-defined order identifier; auto-generated when omitted")
     p_place.add_argument("--dry-run", action="store_true", help="Show the MCP redacted request description without signing or sending")
-    p_place.add_argument("--confirm-live", action="store_true", help="Required to actually send the order instead of refusing live mutation")
+    p_place.add_argument("--confirm-live", action="store_true", help="Legacy flag; confirm a prepared live mutation with weex_trade_guard.py confirm-mutation")
     p_place.add_argument("--pretty", action="store_true", help="Pretty-print JSON output for easier reading")
 
     return parser

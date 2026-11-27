@@ -133,7 +133,7 @@
       ]
     },
     "references/mcp-boundary-contract-v2.json": {
-      "role": "Current user-confirmed but non-active MCP/Trader candidate contract for package 0.3.1 and grant v2, including terminal receipts, restart recovery, Gateway grant construction, manual intent binding, and the unchanged 14 Direct mutation tools and compatibility digests.",
+      "role": "Current user-confirmed but non-active MCP/Trader candidate contract for package 0.3.2 and grant v2, including terminal receipts, restart recovery, Host-private reconciliation with closed safe evidence, Gateway grant construction, manual intent binding, and the unchanged 14 Direct mutation tools and compatibility digests.",
       "when": [
         "implementing or reviewing the coordinated MCP and Trader boundary migration",
         "checking the exact candidate Direct tool, owner, grant terminal, recovery, outcome, and permission contracts",
@@ -154,7 +154,7 @@
       ]
     },
     "references/manual-mutation-intent-v2.json": {
-      "role": "Tracked T12 target schema for the universal manual mutation intent, complete PreparedMutation, two digests, stable identity bindings, state and reconciliation machines, single-slot policy, legacy migration, and terminal audit records; it is not yet active runtime behavior.",
+      "role": "Tracked T12 target schema for the universal manual mutation intent, complete PreparedMutation, two digests, stable identity bindings, state and reconciliation machines, MCP-owned reconciliation evidence digests, single-slot policy, legacy migration, and terminal audit records; it is not yet active runtime behavior.",
       "when": [
         "implementing or reviewing T12 manual intent persistence and reconciliation",
         "checking exact state, grant, legacy, single-slot, and audit-journal constraints"
@@ -187,7 +187,7 @@
       ]
     },
     "scripts/validate_mcp_boundary_contract.py": {
-      "role": "Offline standard-library validator for current boundary v2, immutable historical v1, manual intent v2, exact compatibility inventory and matrix, approved historical source-evidence bindings, capability-specific target paths, and clean-bundle independence.",
+      "role": "Offline standard-library validator for current boundary v2, immutable historical v1, Host-private ReconciliationResult safe evidence, manual intent v2, exact compatibility inventory and matrix, approved historical source-evidence bindings, capability-specific target paths, and clean-bundle independence.",
       "when": [
         "reviewing or changing any MCP boundary contract artifact",
         "running repository consistency and candidate preflight checks",
@@ -209,28 +209,35 @@
       ]
     },
     "scripts/verify_mcp_boundary_pair.py": {
-      "role": "Offline standard-library verifier that binds the current tracked boundary v2 candidate to matching non-active WEEX MCP candidate metadata without executing MCP code.",
+      "role": "Offline standard-library verifier that binds the current tracked boundary v2 source contract to matching non-active WEEX MCP metadata, runtime/package versions, server metadata, official repository URLs, and optionally the artifact-pinned Trader mapping without executing MCP code.",
       "when": [
         "reviewing or changing the coordinated MCP and Trader boundary candidate",
-        "checking that one explicit MCP checkout matches the tracked contract digests and source baselines"
+        "checking that one explicit MCP checkout matches the tracked contract digests and source baselines",
+        "using --require-artifact-pin only after the candidate wheel and sdist hashes are available"
       ],
       "depends_on": [
         "references/mcp-boundary-contract-v2.json",
+        "references/mcp-capability-mapping.json",
         "scripts/validate_mcp_boundary_contract.py",
-        "the selected MCP checkout src/weex_mcp/compatibility.py"
+        "the selected MCP checkout src/weex_mcp/compatibility.py, src/weex_mcp/_version.py, server.json, and pyproject.toml"
       ],
       "surface": [
         "expected_mcp_metadata",
-        "verify_pair"
+        "expected_runtime_versions",
+        "validate_artifact_pin_candidate",
+        "verify_pair",
+        "--require-artifact-pin"
       ]
     },
     "scripts/weex_mcp_gateway.py": {
-      "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare, pure ExecutionGrant construction, Direct grant context, and strict wrapper transport metadata.",
+      "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare and restart recovery, pure ExecutionGrant construction, Direct grant context, and strict wrapper transport metadata.",
       "when": [
         "constructing a Local User MCP service for one profile, effective Spot/Futures route pair, and Trade mode",
         "validating the verified MCP artifact, active manifest, boundary static manifest, and dynamic availability before a business request",
         "preparing one typed mutation without exposing a public preview tool or consuming a grant",
         "building one issued execution grant from a verified PreparedMutation and the current trusted Gateway context without persisting or claiming it",
+        "recovering one durable CLAIMED grant through the MCP Host-private service after process restart",
+        "reconciling a saved PreparedMutation through the MCP Host-private read service",
         "calling an allowlisted typed MCP tool with credentials and grants supplied only through trusted context",
         "describing one typed request without constructing a service, loading credentials, signing, or sending network traffic",
         "probing package and manifest readiness without loading credentials or sending a business request"
@@ -247,6 +254,8 @@
         "describe_local_mcp_request",
         "prepare_mutation",
         "build_execution_grant",
+        "recover_mutation",
+        "reconcile_mutation",
         "runtime_status",
         "probe_local_mcp_runtime"
       ]
@@ -270,21 +279,25 @@
       ]
     },
     "scripts/weex_mcp_trade_compat.py": {
-      "role": "Mapping-driven legacy manual Trade migration facade that unwraps the fixed Gateway result and transport status while retaining preview/confirm state until the universal intent migration completes.",
+      "role": "Mapping-driven manual Trade facade that preserves the 21 legacy request mappings while using 14 MCP Direct tools, durable intent-v2 grants, typed outcomes, restart recovery, and stored-template reconciliation.",
       "when": [
-        "mapping a legacy Contract or Spot write endpoint to an MCP preview/confirm tool pair",
-        "persisting a credential-free manual Trade preview for later confirmation",
-        "projecting accepted, rejected, partial, unknown, and not-sent outcomes without direct REST fallback"
+        "mapping a legacy Contract or Spot write endpoint to an MCP Host-private prepare and Direct mutation",
+        "persisting a credential-free manual PreparedMutation for later confirmation",
+        "confirming by durable intent ID and prepared artifact digest across processes",
+        "reconciling a claimed or review-required intent from its stored MCP template",
+        "projecting accepted, rejected, partial, unknown, invocation-rejected, and not-sent outcomes without direct REST fallback"
       ],
       "depends_on": [
         "references/mcp-capability-mapping.json",
+        "references/mcp-boundary-contract-v2.json",
         "scripts/weex_mcp_gateway.py",
-        "scripts/weex_mcp_read_compat.py"
+        "scripts/weex_mcp_read_compat.py",
+        "scripts/weex_order_intent_state.py"
       ],
       "surface": [
         "LocalMcpTradeSettings",
         "resolve_local_mcp_trade_settings",
-        "McpTradeFacade.preview/describe/confirm"
+        "McpTradeFacade.preview/describe/confirm/confirm_intent/reconcile_intent"
       ]
     },
     "scripts/weex_mcp_partner_compat.py": {
@@ -304,11 +317,11 @@
       ]
     },
     "scripts/weex_mcp_auto_trade.py": {
-      "role": "One-shot in-process delegated authorization adapter that binds a reserved Auto submission group to one MCP Trade confirm and read-only state recheck.",
+      "role": "Legacy Auto reservation-binding adapter retained for explicit T13B SQLite migration; MCP Direct submission remains fail-closed until that migration is complete.",
       "when": [
-        "authorizing an automated MCP Trade confirm after quota reservation commits",
-        "binding profile, operation, preview, usage, group, and client-order identities to an opaque one-time ref",
-        "projecting safe delegated authorization audit metadata without persisting refs or credentials"
+        "auditing legacy delegated reservation bindings before the explicit SQLite migration",
+        "preserving old Auto state for rollback and migration evidence",
+        "verifying that pre-migration automated MCP writes remain invocation-rejected without a downstream write"
       ],
       "depends_on": [
         "scripts/weex_auto_trade_state.py",
@@ -484,12 +497,14 @@
       ]
     },
     "scripts/weex_order_intent_state.py": {
-      "role": "Pending-order confirmation state store for preview-before-submit trading flows, including atomic persistence, platform file locking, and a single-use cross-process confirmation claim.",
+      "role": "Owner-only universal manual mutation intent-v2 and GrantConsumer store with platform file locking, atomic confirm-and-issue, MCP-only claim/finalize/recover, single-slot enforcement, strict legacy migration, and append-only terminal audit overlay.",
       "when": [
-        "saving the latest pending order intent",
-        "loading the latest pending order intent",
-        "atomically claiming an order intent before any confirmation transport attempt",
-        "checking whether an order confirmation intent has expired"
+        "creating or loading the current manual mutation intent",
+        "atomically confirming an intent and issuing its execution grant",
+        "supplying MCP dispatch with file-backed load, claim, finalize, and recover",
+        "recovering a claimed grant after process restart",
+        "recording terminal or resolved reconciliation evidence before releasing the global slot",
+        "migrating old pending intent state without reconstructing or resending it"
       ],
       "depends_on": [
         "scripts/weex_agent_state.py"
@@ -497,12 +512,16 @@
       "surface": [
         "IntentStateError",
         "intent_path",
-        "build_intent",
-        "save_intent",
-        "load_intent",
-        "claim_intent_for_confirmation",
-        "clear_intent",
-        "intent_is_expired"
+        "audit_path",
+        "build_unclaimed_intent",
+        "save_unclaimed_intent",
+        "load_manual_intent",
+        "ensure_manual_intent_slot_available",
+        "confirm_and_issue_intent",
+        "execution_grant_for_dispatch",
+        "claimed_execution_grant_for_recovery",
+        "reconciliation_template_for_intent",
+        "FileManualIntentStore"
       ]
     },
     "scripts/weex_risk_review_core.py": {
@@ -637,7 +656,7 @@
       ]
     },
     "scripts/weex_trade_guard.py": {
-      "role": "Trade guard that previews order risk, previews TP/SL conditional order risk, scans current account risk, stores environment-bound intents, gates live or demo order submission, and enforces automatic scope/quota plus Spot product-quantity and side-specific asset-balance checks before injected official order submission.",
+      "role": "Trade guard that previews order and TP/SL risk, presents localized confirmation, confirms durable intent-v2 mutations, reconciles by stored intent ID, scans account risk, and keeps automatic scope/quota checks isolated from the manual grant store.",
       "when": [
         "previewing a futures or spot order before submission",
         "previewing a simulated futures order before submission",
@@ -647,6 +666,7 @@
         "requiring explicit confirmation plus --confirm-live before a real order is sent",
         "requiring explicit confirmation plus --confirm-demo before a simulated futures order is sent",
         "submitting a previously previewed pending order or TP/SL intent",
+        "reconciling one durable manual mutation intent without accepting caller-supplied outcome evidence",
         "submitting an official Spot/Futures automatic order only after deterministic risk, valuation, authorization, and atomic quota checks"
       ],
       "depends_on": [
@@ -662,11 +682,15 @@
         "account-scan",
         "confirm-order",
         "confirm-tp-sl",
+        "confirm-mutation",
+        "reconcile-intent",
         "cmd_preview_order",
         "cmd_preview_tp_sl",
         "cmd_account_scan",
         "cmd_confirm_order",
+        "cmd_reconcile_intent",
         "cmd_confirm_tp_sl",
+        "cmd_confirm_mutation",
         "resolve_official_auto_trade_operation",
         "submit_authorized_order"
       ]

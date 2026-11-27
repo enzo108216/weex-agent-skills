@@ -64,6 +64,7 @@ EXPECTED_SCHEMA_COMPONENTS = {
     "outcome",
     "transport_meta",
     "reconciliation",
+    "reconciliation_result",
     "request_identity",
     "batch_item",
 }
@@ -220,6 +221,49 @@ NOT_SENT_TERMINAL_OUTCOME = {
 NOT_SENT_TERMINAL_OUTCOME_DIGEST = (
     "sha256:8f587cdbad0e314e82c20fefe6edf4379243e56eb154cb8ca47b198db2198027"
 )
+RECONCILIATION_EVIDENCE_DIGEST_DOMAIN = (
+    "weex-mcp/reconciliation-evidence/v1\\0"
+)
+EXPECTED_RECONCILIATION_RESULT_STATUSES = [
+    "RESOLVED_ACCEPTED",
+    "UNRESOLVED",
+    "MANUAL_REVIEW_REQUIRED",
+]
+EXPECTED_RECONCILIATION_EVIDENCE_ERRORS = [
+    "read_failed",
+    "invalid_response",
+    "identity_not_found",
+    "identity_ambiguous",
+    "search_incomplete",
+    "state_mismatch",
+]
+EXPECTED_RECONCILIATION_READ_TOOLS = [
+    "account_get_orders",
+    "account_get_conditional_orders",
+    "account_get_symbol_config",
+    "account_get_positions",
+    "account_get_position",
+]
+EXPECTED_SAFE_OBSERVATION_FIELDS = {
+    "market",
+    "trading_mode",
+    "symbol",
+    "order_id",
+    "client_order_id",
+    "client_algo_id",
+    "position_id",
+    "scope",
+    "order_kind",
+    "status",
+    "margin_mode",
+    "position_side",
+    "plan_type",
+    "quantity_mode",
+    "enabled",
+    "amount",
+    "trigger_price",
+    "target",
+}
 EXPECTED_INTENT_STATES = [
     "UNCLAIMED",
     "CONFIRMED",
@@ -627,6 +671,31 @@ def validate_manual_intent_contract(
     }
     if set(properties["action"].get("enum", [])) != expected_actions:
         raise ValueError("manual intent action allowlist mismatch")
+    contract_versions = properties.get("contract_versions")
+    if contract_versions != {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "package": {"const": "0.3.2"},
+            "tool_contract": {"const": "2"},
+            "prepare": {"const": "1"},
+            "intent": {"const": "2"},
+            "grant": {"const": "2"},
+            "boundary_contract_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$",
+            },
+        },
+        "required": [
+            "package",
+            "tool_contract",
+            "prepare",
+            "intent",
+            "grant",
+            "boundary_contract_digest",
+        ],
+    }:
+        raise ValueError("manual intent contract versions mismatch")
 
     root_branches = manual_intent.get("oneOf")
     if not isinstance(root_branches, list) or len(root_branches) != 2:
@@ -931,6 +1000,7 @@ def validate_manual_intent_contract(
         "CONFIRMED intent and ISSUED grant are written in one file-lock transaction.",
         "Skill code issues grants but never calls claim, finalize, or recover.",
         "reconcile accepts only intent_id and consumes the stored reconciliation template.",
+        "Skill persists the evidence_digest returned by MCP ReconciliationResult byte-for-byte and never computes or replaces it.",
         "legacy previews are never converted into v2 grants.",
         "The legacy migration envelope stores only source metadata and reconciliation evidence; it never fabricates PreparedMutation, grant, binding, argument, digest, or request identity fields.",
         "PreparedMutation expires_at is Unix milliseconds and is never multiplied by 1000.",
@@ -973,6 +1043,256 @@ def validate_manual_intent_contract(
     return stored_digest
 
 
+def validate_reconciliation_result_contract(contract: dict[str, Any]) -> None:
+    components = contract.get("schema_components")
+    if not isinstance(components, dict):
+        raise ValueError("ReconciliationResult schema components are missing")
+    result = components.get("reconciliation_result")
+    if (
+        not isinstance(result, dict)
+        or result.get("type") != "object"
+        or result.get("additionalProperties") is not False
+    ):
+        raise ValueError("ReconciliationResult must be a closed object")
+    properties = result.get("properties")
+    expected_fields = [
+        "tool_name",
+        "prepared_artifact_digest",
+        "status",
+        "result",
+        "observed_at",
+        "evidence",
+        "evidence_digest",
+    ]
+    if (
+        not isinstance(properties, dict)
+        or set(properties) != set(expected_fields)
+        or result.get("required") != expected_fields
+    ):
+        raise ValueError("ReconciliationResult field contract mismatch")
+    direct_tools = contract.get("direct_tools")
+    if not isinstance(direct_tools, list) or properties["tool_name"] != {
+        "type": "string",
+        "enum": [tool.get("name") for tool in direct_tools],
+    }:
+        raise ValueError("ReconciliationResult tool binding mismatch")
+    digest_schema = {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    if properties["prepared_artifact_digest"] != digest_schema or properties[
+        "evidence_digest"
+    ] != digest_schema:
+        raise ValueError("ReconciliationResult digest field mismatch")
+    if properties["status"] != {
+        "type": "string",
+        "enum": EXPECTED_RECONCILIATION_RESULT_STATUSES,
+    }:
+        raise ValueError("ReconciliationResult status contract mismatch")
+    if properties["result"] != {
+        "oneOf": [{"const": "ACCEPTED"}, {"type": "null"}]
+    }:
+        raise ValueError("ReconciliationResult result contract mismatch")
+    if properties["observed_at"] != {"type": "integer", "minimum": 0}:
+        raise ValueError("ReconciliationResult observed_at contract mismatch")
+
+    conditions = _conditional_map(result.get("allOf"), "status")
+    if set(conditions) != set(EXPECTED_RECONCILIATION_RESULT_STATUSES):
+        raise ValueError("ReconciliationResult status coverage mismatch")
+    for status in EXPECTED_RECONCILIATION_RESULT_STATUSES:
+        expected_result = (
+            {"const": "ACCEPTED"}
+            if status == "RESOLVED_ACCEPTED"
+            else {"type": "null"}
+        )
+        if (
+            conditions[status]
+            .get("then", {})
+            .get("properties", {})
+            .get("result")
+            != expected_result
+        ):
+            raise ValueError(f"ReconciliationResult result mismatch: {status}")
+
+    definitions = result.get("$defs")
+    if not isinstance(definitions, dict) or set(definitions) != {
+        "safe_observation",
+        "query_evidence",
+        "per_item_evidence",
+        "manual_evidence",
+    }:
+        raise ValueError("ReconciliationResult evidence definitions mismatch")
+    safe_observation = definitions["safe_observation"]
+    query_template = components.get("reconciliation", {}).get("$defs", {}).get(
+        "query", {}
+    )
+    expected_observation = query_template.get("properties", {}).get("expected")
+    if (
+        not isinstance(safe_observation, dict)
+        or safe_observation.get("additionalProperties") is not False
+        or set(safe_observation.get("properties", {}))
+        != EXPECTED_SAFE_OBSERVATION_FIELDS
+        or safe_observation != expected_observation
+    ):
+        raise ValueError("ReconciliationResult safe observation must be closed")
+
+    query = definitions["query_evidence"]
+    query_fields = [
+        "kind",
+        "strategy",
+        "read_tool",
+        "completeness",
+        "identity",
+        "matched",
+        "search_complete",
+        "observation",
+        "error_code",
+    ]
+    if (
+        query.get("type") != "object"
+        or query.get("additionalProperties") is not False
+        or set(query.get("properties", {})) != set(query_fields)
+        or query.get("required") != query_fields
+    ):
+        raise ValueError("ReconciliationResult query evidence must be closed")
+    query_properties = query["properties"]
+    if (
+        query_properties["kind"] != {"const": "query"}
+        or query_properties["strategy"]
+        != {
+            "type": "string",
+            "enum": ["query_exact_identity", "query_state"],
+        }
+        or query_properties["read_tool"]
+        != {
+            "type": "string",
+            "enum": EXPECTED_RECONCILIATION_READ_TOOLS,
+        }
+        or query_properties["completeness"]
+        != {
+            "type": "string",
+            "enum": ["deterministic", "state_based", "partial"],
+        }
+        or query_properties["identity"]
+        != {"$ref": "#/schema_components/request_identity"}
+        or query_properties["matched"] != {"type": "boolean"}
+        or query_properties["search_complete"] != {"type": "boolean"}
+        or query_properties["observation"]
+        != {
+            "oneOf": [
+                {
+                    "$ref": (
+                        "#/schema_components/reconciliation_result/$defs/"
+                        "safe_observation"
+                    )
+                },
+                {"type": "null"},
+            ]
+        }
+        or query_properties["error_code"]
+        != {
+            "oneOf": [
+                {
+                    "type": "string",
+                    "enum": EXPECTED_RECONCILIATION_EVIDENCE_ERRORS,
+                },
+                {"type": "null"},
+            ]
+        }
+    ):
+        raise ValueError("ReconciliationResult query evidence contract mismatch")
+
+    per_item = definitions["per_item_evidence"]
+    if (
+        per_item.get("type") != "object"
+        or per_item.get("additionalProperties") is not False
+        or set(per_item.get("properties", {}))
+        != {"kind", "completeness", "items"}
+        or per_item.get("required") != ["kind", "completeness", "items"]
+        or per_item["properties"]["kind"] != {"const": "per_item"}
+        or per_item["properties"]["completeness"] != {"const": "partial"}
+    ):
+        raise ValueError("ReconciliationResult per-item evidence must be closed")
+    items = per_item["properties"]["items"]
+    item = items.get("items") if isinstance(items, dict) else None
+    if (
+        not isinstance(item, dict)
+        or items.get("type") != "array"
+        or items.get("minItems") != 1
+        or item.get("additionalProperties") is not False
+        or set(item.get("properties", {})) != {"index", "identity", "query"}
+        or item.get("required") != ["index", "identity", "query"]
+        or item["properties"]["index"] != {"type": "integer", "minimum": 0}
+        or item["properties"]["identity"]
+        != {"$ref": "#/schema_components/request_identity"}
+        or item["properties"]["query"]
+        != {
+            "$ref": (
+                "#/schema_components/reconciliation_result/$defs/query_evidence"
+            )
+        }
+    ):
+        raise ValueError("ReconciliationResult per-item evidence contract mismatch")
+
+    manual = definitions["manual_evidence"]
+    manual_template = components.get("reconciliation", {}).get("$defs", {}).get(
+        "manual", {}
+    )
+    if (
+        manual.get("type") != "object"
+        or manual.get("additionalProperties") is not False
+        or set(manual.get("properties", {}))
+        != {"kind", "reason", "selector", "identity", "completeness"}
+        or manual.get("required")
+        != ["kind", "reason", "selector", "identity", "completeness"]
+        or manual["properties"]["kind"] != {"const": "manual"}
+        or manual["properties"]["reason"]
+        != manual_template.get("properties", {}).get("reason")
+        or manual["properties"]["selector"]
+        != manual_template.get("properties", {}).get("selector")
+        or manual["properties"]["identity"]
+        != {"$ref": "#/schema_components/request_identity"}
+        or manual["properties"]["completeness"]
+        != {"const": "unprovable"}
+    ):
+        raise ValueError("ReconciliationResult manual evidence must be closed")
+
+    expected_evidence_refs = [
+        {
+            "$ref": (
+                "#/schema_components/reconciliation_result/$defs/query_evidence"
+            )
+        },
+        {
+            "$ref": (
+                "#/schema_components/reconciliation_result/$defs/"
+                "per_item_evidence"
+            )
+        },
+        {
+            "$ref": (
+                "#/schema_components/reconciliation_result/$defs/manual_evidence"
+            )
+        },
+    ]
+    if properties["evidence"] != {"oneOf": expected_evidence_refs}:
+        raise ValueError("ReconciliationResult evidence union mismatch")
+    if result.get("x-evidence-digest") != {
+        "algorithm": "sha256",
+        "domain": RECONCILIATION_EVIDENCE_DIGEST_DOMAIN,
+        "canonicalization": (
+            "UTF-8 JSON with ensure_ascii=false, sort_keys=true, "
+            "separators=(',', ':'), and allow_nan=false"
+        ),
+        "includes": [
+            "tool_name",
+            "prepared_artifact_digest",
+            "status",
+            "result",
+            "observed_at",
+            "evidence",
+        ],
+    }:
+        raise ValueError("ReconciliationResult evidence digest contract mismatch")
+
+
 def validate_v2_revision(
     contract: dict[str, Any],
     contract_v1: dict[str, Any],
@@ -981,9 +1301,36 @@ def validate_v2_revision(
     if contract.get("schema_version") != 2:
         raise ValueError("boundary v2 schema version mismatch")
     expected_versions = dict(contract_v1.get("candidate_versions", {}))
-    expected_versions.update({"package": "0.3.1", "grant": "2"})
+    expected_versions.update({"package": "0.3.2", "grant": "2"})
     if contract.get("candidate_versions") != expected_versions:
         raise ValueError("boundary v2 candidate versions mismatch")
+    if contract.get("source_baselines") != {
+        "skill_commit": "650303cfc7264bc83b7c71569745e6852c5c2e71",
+        "mcp_commit": "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
+        "openapi_main": "cc9b95b9db6e61c7e10176b5b70fb05b05b0146c",
+    }:
+        raise ValueError("boundary v2 source baselines mismatch")
+    historical_owners = contract_v1.get("owners")
+    historical_mcp_owners = (
+        historical_owners.get("mcp") if isinstance(historical_owners, dict) else None
+    )
+    if not isinstance(historical_mcp_owners, list):
+        raise ValueError("historical boundary owner contract is missing")
+    expected_owners = {
+        **historical_owners,
+        "mcp": [
+            *historical_mcp_owners,
+            "reconciliation_read_execution",
+            "reconciliation_evidence_digest",
+        ],
+        "mcp_dispatch_only": [
+            "grant_claim",
+            "grant_finalize",
+            "grant_recover",
+        ],
+    }
+    if contract.get("owners") != expected_owners:
+        raise ValueError("boundary v2 owner contract mismatch")
     if contract.get("supersedes") != {
         "schema_version": 1,
         "package": "0.3.0",
@@ -1017,8 +1364,19 @@ def validate_v2_revision(
             "network": "none",
             "allowed_caller": "trusted_host_via_mcp_service",
         },
+        "reconcile_mutation": {
+            "parameters": ["prepared_mutation", "invocation_context", "now_ms"],
+            "returns": "ReconciliationResult",
+            "return_schema_ref": "#/schema_components/reconciliation_result",
+            "network": "reconciliation_reads_only",
+            "allowed_caller": "trusted_host_via_mcp_service",
+        },
     }:
         raise ValueError("boundary v2 MCP Host-private API mismatch")
+    if "reconcile_mutation" in {
+        tool.get("name") for tool in contract.get("direct_tools", [])
+    }:
+        raise ValueError("Host-private reconcile_mutation must not be a public tool")
     builder = contract.get("gateway_host_api", {}).get("build_execution_grant")
     if builder != {
         "parameters": ["prepared_mutation", "grant_id", "issued_at"],
@@ -1087,6 +1445,7 @@ def validate_implementation_contract(contract: dict[str, Any]) -> None:
         schema = query_reconciliation.get("properties", {}).get(field)
         if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
             raise ValueError(f"reconciliation {field} schema must be closed")
+    validate_reconciliation_result_contract(contract)
     if len(components["batch_item"].get("oneOf", [])) != 3:
         raise ValueError("batch item schema must define accepted, rejected, and unknown branches")
     if set(components["execution_grant"].get("$defs", {})) != {
@@ -1403,6 +1762,10 @@ def validate_documents(
         "2026-11-27"
     ):
         raise ValueError("boundary v2 approval identity or date mismatch")
+    if approval.get("authorization_source") != (
+        "Current conversation: the user explicitly authorized D-028."
+    ):
+        raise ValueError("boundary v2 approval source mismatch")
     if set(approval.get("excluded", [])) != {
         "production",
         "T18",
@@ -1413,10 +1776,11 @@ def validate_documents(
     }:
         raise ValueError("boundary v2 approval exclusions mismatch")
     if approval.get("scope") != [
-        "grant terminal receipt",
-        "restart recovery",
-        "Gateway grant builder",
-        "manual intent v2 and reconciliation contract",
+        "package 0.3.2 candidate",
+        "Host-private reconciliation",
+        "ReconciliationResult safe evidence",
+        "manual intent evidence digest ownership",
+        "two-stage confirmation contract",
     ]:
         raise ValueError("boundary v2 approval scope mismatch")
     validate_implementation_contract(contract)
