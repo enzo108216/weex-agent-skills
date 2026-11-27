@@ -592,8 +592,8 @@ def execute_endpoint(
             "method": prepared["method"],
             "url": prepared["url"],
             "headers": prepared["headers"],
-            "query": query,
-            "body": body,
+            "query": prepared["query"],
+            "body": prepared["body"],
         }
         if environment is not None:
             add_environment_context(preview, environment)

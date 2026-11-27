@@ -1852,7 +1852,7 @@
           "const": "2"
         },
         "package": {
-          "const": "0.3.2"
+          "const": "0.3.3"
         },
         "prepare": {
           "const": "1"
@@ -2348,7 +2348,7 @@
     "reconciliation",
     "legacy"
   ],
-  "schema_digest": "sha256:848a0d2a2bb6a4ba1e813f6eb8dc0294ceb3ee30e9774e036a80c0d7772b2eed",
+  "schema_digest": "sha256:450bcd9ea8a2725961ab90254bac2c2df417e2faf9d962e771f428e9f2ccc86e",
   "type": "object",
   "x-invariants": [
     "PreparedMutation is persisted byte-for-byte and is never reconstructed by the Skill.",

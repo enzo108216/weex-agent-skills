@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 MAPPING_PATH = ROOT / "references" / "mcp-capability-mapping.json"
+BOUNDARY_PATH = ROOT / "references" / "mcp-boundary-contract-v2.json"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
@@ -39,7 +40,7 @@ LEGACY_ARGUMENTS = {
         "quantity": "1",
         "newClientOrderId": "demo-1",
     },
-    "spot.account.get_bill_records": {"after": 1, "before": 2},
+    "spot.account.get_bill_records": {"after": 0, "before": 1700000001000},
     "spot.account.get_fund_bill_records": {"pageIndex": 1, "pageSize": 10},
     "spot.market.get_depth_data": {"symbol": "BTCUSDT"},
     "spot.market.get_k_line_data": {"symbol": "BTCUSDT", "interval": "1m"},
@@ -116,6 +117,26 @@ LEGACY_ARGUMENTS = {
 
 
 class McpRequestDescriptionIntegrationTests(unittest.TestCase):
+    def test_spot_bill_request_mapping_preserves_time_bound_fields(self) -> None:
+        from weex_mcp_read_compat import _map_arguments
+
+        mapping = json.loads(MAPPING_PATH.read_text(encoding="utf-8"))
+        entry = next(
+            item for item in mapping["capabilities"]
+            if item["legacy_key"] == "spot.account.get_bill_records"
+        )
+
+        self.assertEqual(
+            _map_arguments(entry, query={}, body={"after": 0, "before": 1700000001000}),
+            {
+                "market": "spot",
+                "trading_mode": "live",
+                "bill_type": "account",
+                "after": "0",
+                "before": "1700000001000",
+            },
+        )
+
     def test_all_51_reads_and_21_writes_match_mcp_routes(self) -> None:
         try:
             from weex_mcp import __version__
@@ -130,41 +151,45 @@ class McpRequestDescriptionIntegrationTests(unittest.TestCase):
         import weex_mcp_trade_compat as trade_compat
 
         mapping = json.loads(MAPPING_PATH.read_text(encoding="utf-8"))
+        boundary = json.loads(BOUNDARY_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
             __version__,
             mapping["verified_mcp_candidate"]["package_version"],
         )
+        write_operations = trade_compat._build_trade_operations(mapping, boundary)
+        self.assertEqual(len(write_operations), 21)
+        self.assertEqual(len({operation["direct_tool"] for operation in write_operations.values()}), 14)
         descriptions = {}
         selected = [
             entry
             for entry in mapping["capabilities"]
             if entry["product"] in {"contract", "spot"}
         ]
-        self.assertEqual(len(selected), 72)
+        self.assertEqual(
+            sum(entry["target"]["variant"] == "read" for entry in selected), 51,
+        )
+        self.assertEqual(len(selected), 51 + len(write_operations))
         for entry in selected:
-            supplied = LEGACY_ARGUMENTS.get(entry["legacy_key"], {})
-            query = supplied if entry["request_transport"] == "query" else {}
-            body = supplied if entry["request_transport"] == "body" else {}
-            if entry["target"]["variant"] == "read":
-                arguments = read_compat._map_arguments(
-                    entry,
-                    query=query,
-                    body=body,
-                )
-            else:
-                arguments = trade_compat._map_trade_arguments(
-                    entry,
-                    query=query,
-                    body=body,
-                    client_id_factory=lambda: "stable-description-id",
-                )
-            description = describe_request(
-                settings=Settings(trade_enabled=True),
-                name=entry["target"]["tool"],
-                arguments=arguments,
-            )
-            parsed = urlsplit(description["url"])
             with self.subTest(legacy_key=entry["legacy_key"]):
+                supplied = LEGACY_ARGUMENTS.get(entry["legacy_key"], {})
+                query = supplied if entry["request_transport"] == "query" else {}
+                body = supplied if entry["request_transport"] == "body" else {}
+                if entry["target"]["variant"] == "read":
+                    name = entry["target"]["tool"]
+                    arguments = read_compat._map_arguments(entry, query=query, body=body)
+                else:
+                    operation = write_operations[(entry["product"], entry["legacy_key"])]
+                    name = operation["direct_tool"]
+                    arguments = trade_compat._map_trade_arguments(
+                        operation,
+                        query=query,
+                        body=body,
+                        client_id_factory=lambda: "stable-description-id",
+                    )
+                description = describe_request(
+                    settings=Settings(trade_enabled=True), name=name, arguments=arguments,
+                )
+                parsed = urlsplit(description["url"])
                 self.assertEqual(description["method"], entry["method"])
                 self.assertEqual(parsed.path, entry["path"])
                 self.assertEqual(
@@ -175,7 +200,7 @@ class McpRequestDescriptionIntegrationTests(unittest.TestCase):
                         else "https://api-contract.weex.com"
                     ),
                 )
-            descriptions[entry["legacy_key"]] = description
+                descriptions[entry["legacy_key"]] = description
 
         self.assertEqual(
             descriptions["spot.market.get_ticker_info"]["query"],
@@ -183,11 +208,11 @@ class McpRequestDescriptionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             descriptions["spot.account.get_bill_records"]["body"],
-            {"after": "1", "before": "2"},
+            {"after": 0, "before": 1700000001000},
         )
         self.assertEqual(
             descriptions["spot.account.get_fund_bill_records"]["body"],
-            {"pageIndex": "1", "pageSize": "10"},
+            {"pageIndex": 1, "pageSize": 10},
         )
         self.assertEqual(
             descriptions["spot.tax.get_spot_account_record"]["body"],

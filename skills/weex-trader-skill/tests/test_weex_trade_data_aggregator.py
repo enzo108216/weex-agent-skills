@@ -1835,19 +1835,23 @@ class ReplayCollectionTests(unittest.TestCase):
         self.assertEqual(payload, [])
         self.assertGreater(len(bodies), 1)
         for body in bodies:
-            exclusive_after = int(body.get("after", -1))
             self.assertLessEqual(
-                int(body["before"]) - exclusive_after,
-                (90 * aggregator.DAY_MS) + 1,
+                int(body["before"]) - int(body["after"]),
+                90 * aggregator.DAY_MS,
             )
+        self.assertEqual(
+            [body["before"] for body in bodies[:-1]], [body["after"] for body in bodies[1:]],
+        )
 
-    def test_fetch_spot_bills_maps_closed_windows_to_gapless_strict_bounds(self) -> None:
+    def test_fetch_spot_bills_maps_closed_windows_to_gapless_half_open_bounds(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
         bodies: list[dict[str, object]] = []
-        full_page = [
-            {"billId": str(index), "cTime": str(1000 + index)}
-            for index in range(aggregator.SPOT_BILL_LIMIT)
+        times = [
+            999, 1000, 3_601_000, 3_601_001, 7_201_000, 7_201_001,
+            *range(2_000, 2_000 + aggregator.SPOT_BILL_LIMIT // 2),
+            *range(4_000_000, 4_000_000 + aggregator.SPOT_BILL_LIMIT // 2),
         ]
+        rows = [{"billId": str(index), "cTime": str(time)} for index, time in enumerate(times)]
 
         def fake_send_spot_request(
             *,
@@ -1861,10 +1865,16 @@ class ReplayCollectionTests(unittest.TestCase):
             self.assertEqual(endpoint_key, "spot.account.get_bill_records")
             self.assertEqual(query, {})
             bodies.append(dict(body or {}))
-            return {"items": full_page if len(bodies) == 1 else []}
+            request = bodies[-1]
+            self.assertEqual(set(request), {"after", "before", "limit"})
+            matches = [
+                row for row in rows
+                if int(request["after"]) <= int(row["cTime"]) < int(request["before"])
+            ]
+            return {"items": matches[: int(request["limit"])]}
 
         with mock.patch.object(fetcher, "_send_spot_request", side_effect=fake_send_spot_request):
-            fetcher.fetch_spot_bills(
+            payload = fetcher.fetch_spot_bills(
                 profile_name="demo",
                 start_ms=1000,
                 end_ms=7_201_000,
@@ -1874,13 +1884,17 @@ class ReplayCollectionTests(unittest.TestCase):
         self.assertEqual(
             [(body["after"], body["before"]) for body in bodies],
             [
-                (999, 7_201_001),
-                (999, 3_601_001),
-                (3_601_000, 7_201_001),
+                (1000, 7_201_001),
+                (1000, 3_601_001),
+                (3_601_001, 7_201_001),
             ],
         )
+        self.assertEqual(
+            sorted(int(row["cTime"]) for row in payload),
+            sorted(time for time in times if 1000 <= time <= 7_201_000),
+        )
 
-    def test_fetch_spot_bills_omits_negative_after_at_epoch_start(self) -> None:
+    def test_fetch_spot_bills_sends_inclusive_epoch_start(self) -> None:
         fetcher = aggregator.WeexApiFetcher()
         with mock.patch.object(fetcher, "_send_spot_request", return_value={"items": []}) as send_mock:
             fetcher.fetch_spot_bills(
@@ -1891,7 +1905,7 @@ class ReplayCollectionTests(unittest.TestCase):
             )
 
         body = send_mock.call_args.kwargs["body"]
-        self.assertNotIn("after", body)
+        self.assertEqual(body["after"], 0)
         self.assertEqual(body["before"], 1001)
 
 

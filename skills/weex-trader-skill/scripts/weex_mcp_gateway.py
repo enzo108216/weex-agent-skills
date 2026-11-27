@@ -67,8 +67,9 @@ _UPSTREAM_PERMISSIONS = frozenset({"spotTrading", "futuresTrading", "accountDeta
 _ACCOUNT_BINDING_DOMAIN = b"weex-trader-local-mcp-account-binding-v1\0"
 _CREDENTIAL_BINDING_DOMAIN = b"weex-trader-local-mcp-credential-binding-v1\0"
 _CREDENTIAL_FINGERPRINT_DOMAIN = b"weex-trader-local-mcp-credential-v2\0"
-_PREVIOUS_RECONCILIATION_BOUNDARY_DIGEST = (
-    "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
+_PREVIOUS_RECONCILIATION_BOUNDARY_DIGESTS = (
+    "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9",
+    "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10",
 )
 
 
@@ -965,7 +966,7 @@ class LocalMcpGateway:
         self._binding_key_status_loader = binding_key_status_loader or _default_binding_key_status_loader
         self._binding_key_fingerprint: str | None = None
         self._secret_provider: Any = _PublicOnlySecretProvider(runtime)
-        self._previous_reconciliation_provider: VaultSecretProvider | None = None
+        self._previous_reconciliation_providers: dict[str, VaultSecretProvider] = {}
         self._account_binding_id: str | None = None
         self._credential_binding_id: str | None = None
         if profile_id is not None:
@@ -995,17 +996,17 @@ class LocalMcpGateway:
                 credential_loader=active_credential_loader,
                 runtime=runtime,
             )
-            self._previous_reconciliation_provider = VaultSecretProvider(
-                profile_id=profile_id,
-                account_binding_id=self._account_binding_id,
-                binding_id=self._credential_binding_id,
-                fingerprint_key=_safe_hmac(
-                    binding_bytes, _CREDENTIAL_FINGERPRINT_DOMAIN,
-                    _PREVIOUS_RECONCILIATION_BOUNDARY_DIGEST,
-                ),
-                credential_loader=active_credential_loader,
-                runtime=runtime,
-            )
+            for boundary_digest in _PREVIOUS_RECONCILIATION_BOUNDARY_DIGESTS:
+                if boundary_digest == candidate["boundary_contract_digest"]:
+                    continue
+                self._previous_reconciliation_providers[boundary_digest] = VaultSecretProvider(
+                    profile_id=profile_id,
+                    account_binding_id=self._account_binding_id,
+                    binding_id=self._credential_binding_id,
+                    fingerprint_key=_safe_hmac(binding_bytes, _CREDENTIAL_FINGERPRINT_DOMAIN, boundary_digest),
+                    credential_loader=active_credential_loader,
+                    runtime=runtime,
+                )
         self._service_settings = {
             "spot_base_url": effective_spot_base_url,
             "futures_base_url": effective_futures_base_url,
@@ -1168,12 +1169,15 @@ class LocalMcpGateway:
         *,
         execution_grant: Any,
         request_id: str,
-        previous_reconciliation: bool = False,
+        previous_reconciliation: str | None = None,
     ) -> Any:
-        provider = self._previous_reconciliation_provider if previous_reconciliation else self._secret_provider
+        provider = (
+            self._previous_reconciliation_providers.get(previous_reconciliation)
+            if previous_reconciliation is not None else self._secret_provider
+        )
         if self.profile_id is None or not isinstance(provider, VaultSecretProvider):
             raise McpGatewayError("profile_required", "A saved profile is required for private MCP tools.")
-        if previous_reconciliation and execution_grant is not None:
+        if previous_reconciliation is not None and execution_grant is not None:
             raise McpGatewayError("invalid_arguments", "Previous mutation reconciliation cannot use an execution grant.")
         self._require_current_binding_key()
         fingerprint = provider._current_credential_fingerprint()
@@ -1182,7 +1186,7 @@ class LocalMcpGateway:
         )
         host_capabilities = self._host_capabilities
         upstream_evidence = dict(self._upstream_evidence)
-        if previous_reconciliation:
+        if previous_reconciliation is not None:
             host_capabilities = frozenset(value for value in host_capabilities if value.startswith("account."))
             upstream_evidence = {key: value for key, value in upstream_evidence.items() if key == "accountDetails"}
         return self._runtime.AuthenticatedInvocationContext(
@@ -1484,12 +1488,11 @@ class LocalMcpGateway:
             or now_ms < 0
         ):
             raise McpGatewayError("invalid_arguments", "A saved prepared mutation and reconciliation time are required.")
-        previous_reconciliation = boundary_contract_digest == _PREVIOUS_RECONCILIATION_BOUNDARY_DIGEST
-        if (
-            boundary_contract_digest is not None
-            and boundary_contract_digest != self._expected_candidate["boundary_contract_digest"]
-            and not previous_reconciliation
-        ):
+        if boundary_contract_digest in (None, self._expected_candidate["boundary_contract_digest"]):
+            previous_reconciliation = None
+        elif boundary_contract_digest in _PREVIOUS_RECONCILIATION_BOUNDARY_DIGESTS:
+            previous_reconciliation = boundary_contract_digest
+        else:
             raise McpGatewayError("invalid_arguments", "The saved mutation contract does not support reconciliation.")
         tool_name = prepared_mutation["tool_name"]
         tool = self._fresh_preflight().get(tool_name)
@@ -1500,7 +1503,7 @@ class LocalMcpGateway:
             request_id=self._next_id("reconcile"),
             previous_reconciliation=previous_reconciliation,
         )
-        if previous_reconciliation and (
+        if previous_reconciliation is not None and (
             prepared_mutation.get("route_fingerprint") != context.account_binding.route_fingerprint
             or prepared_mutation.get("credential_fingerprint") != context.credential_binding.credential_fingerprint
         ):
@@ -1509,11 +1512,11 @@ class LocalMcpGateway:
             )
         try:
             service = self._service
-            if previous_reconciliation:
+            if previous_reconciliation is not None:
                 # Bind the historical fingerprint only to a service without any write authority.
                 service = self._runtime.build_local_user_service(
                     settings=self._runtime.Settings(trade_enabled=False, **self._service_settings),
-                    secret_provider=self._previous_reconciliation_provider,
+                    secret_provider=self._previous_reconciliation_providers[previous_reconciliation],
                 )
             reconciled = service.reconcile_mutation(
                 prepared_mutation=dict(prepared_mutation),

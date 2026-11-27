@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -750,13 +751,13 @@ def _candidate_contract_versions(mapping: Mapping[str, Any]) -> dict[str, str]:
         ),
     }
     if result != {
-        "package": "0.3.2",
+        "package": "0.3.3",
         "tool_contract": "2",
         "prepare": "1",
         "intent": "2",
         "grant": "2",
         "boundary_contract_digest": (
-            "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+            "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53"
         ),
     }:
         raise McpTradeCompatibilityError(
@@ -1146,6 +1147,7 @@ def _project_confirm_result(
         )
     outcome_class = str(outcome["class"])
     result = payload.get("result")
+    legacy_data = _project_legacy_mutation(operation, payload, outcome_class)
     if payload["ok"] and outcome_class == "accepted":
         if not isinstance(result, dict):
             return _confirm_uncertain(
@@ -1158,6 +1160,7 @@ def _project_confirm_result(
             "ok": True,
             "status": status,
             "data": deepcopy(result),
+            **({"legacy_data": legacy_data} if legacy_data is not None else {}),
             "outcome": outcome,
             **(
                 {"warning": deepcopy(payload["warning"])}
@@ -1190,7 +1193,136 @@ def _project_confirm_result(
             )
         ),
         **({"data": deepcopy(result)} if isinstance(result, dict) else {}),
+        **({"legacy_data": legacy_data} if legacy_data is not None else {}),
     }
+
+def _project_legacy_mutation(
+    operation: dict[str, Any],
+    payload: dict[str, Any],
+    outcome_class: str,
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    result = payload.get("result")
+    if (
+        payload.get("action") != _outcome_action(operation)
+        or outcome_class not in {"accepted", "definitive_rejection", "partial"}
+        or payload["ok"] != (outcome_class == "accepted")
+        or not isinstance(result, dict)
+    ):
+        return None
+    key = operation["legacy_key"]
+    container = operation["response"]["legacy_container"]
+    spot_batch = key in {"spot.order.bulk_order", "spot.order.bulk_cancel"}
+    if container != "array" and not spot_batch:
+        return _legacy_mutation_record(key, result, outcome_class, item=False)
+
+    items = result.get("items")
+    if (
+        items is None
+        and outcome_class == "accepted"
+        and result.get("status") == "accepted_noop"
+        and result.get("noop") is True
+        and type(result.get("affected_count")) is int
+        and result["affected_count"] == 0
+    ):
+        items = []
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        return None
+    rows = []
+    for item in items:
+        outcome = item.get("outcome")
+        if not isinstance(outcome, dict) or outcome.get("write_attempted") is not True:
+            return None
+        item_class = outcome.get("class")
+        status = item.get("status")
+        if item_class not in ("accepted", "definitive_rejection", "unknown") or (
+            status != item_class and not (item_class == "accepted" and status == "accepted_noop")
+        ):
+            return None
+        rows.append(_legacy_mutation_record(key, item, item_class, item=True))
+    return {"orderList": rows} if spot_batch else rows
+
+
+def _legacy_mutation_record(
+    key: str,
+    record: dict[str, Any],
+    outcome_class: str,
+    *,
+    item: bool,
+) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    identity = record.get("request_identity")
+    identity = identity if isinstance(identity, dict) else {}
+    if key in {
+        "spot.order.place_order", "spot.order.bulk_order", "transaction.place_order",
+        "transaction.place_orders_batch", "sim.transaction.place_order",
+    }:
+        _copy_legacy_text(projected, "clientOrderId", identity.get("client_order_id"))
+    elif key == "transaction.place_pending_order":
+        _copy_legacy_text(projected, "clientOrderId", identity.get("client_algo_id"))
+    elif key in {"transaction.cancel_order", "transaction.cancel_orders_batch", "transaction.cancel_pending_order"}:
+        _copy_legacy_text(projected, "origClientOrderId", identity.get("client_order_id"))
+
+    if key.startswith(("spot.order.", "transaction.", "sim.transaction.")) and key != "transaction.modify_tp_sl_order":
+        if key == "transaction.close_positions":
+            _copy_legacy_id(projected, "positionId", identity.get("position_id"), as_long=True)
+            _copy_legacy_id(projected, "successOrderId", record.get("upstream_order_id"), as_long=True)
+        else:
+            _copy_legacy_id(
+                projected, "orderId", record.get("upstream_order_id"),
+                as_long=key.startswith("spot.") or key in {
+                    "transaction.cancel_all_orders", "transaction.cancel_all_pending_orders", "transaction.place_tp_sl_order",
+                },
+            )
+    if key.startswith(("transaction.", "sim.transaction.")) and outcome_class in {"accepted", "definitive_rejection"}:
+        projected["success"] = outcome_class == "accepted"
+    if key in {"spot.order.place_order", "account.update_leverage_trade"}:
+        _copy_legacy_text(projected, "symbol", record.get("symbol"))
+    elif key == "spot.order.bulk_order":
+        _copy_legacy_text(projected, "symbol", identity.get("symbol"))
+    elif key in {"spot.order.cancel_order", "spot.order.bulk_cancel", "spot.order.cancel_symbol_orders"}:
+        _copy_legacy_text(projected, "status", record.get("final_order_status"))
+    if key in {"spot.order.place_order", "spot.order.bulk_order"}:
+        compatibility = record.get("compatibility")
+        transact_time = compatibility.get("transact_time") if isinstance(compatibility, dict) else None
+        if type(transact_time) is int and 0 <= transact_time <= 9_223_372_036_854_775_807:
+            projected["transactTime"] = transact_time
+    if key == "account.update_leverage_trade":
+        target = record.get("target")
+        if isinstance(target, dict):
+            if target.get("margin_mode") == "CROSS":
+                projected["marginType"] = "CROSSED"
+            elif target.get("margin_mode") == "ISOLATED":
+                projected["marginType"] = "ISOLATED"
+            for legacy, typed in (
+                ("crossLeverage", "cross_leverage"),
+                ("isolatedLongLeverage", "isolated_long_leverage"),
+                ("isolatedShortLeverage", "isolated_short_leverage"),
+            ):
+                _copy_legacy_text(projected, legacy, target.get(typed))
+    error = record.get("error")
+    if item and isinstance(error, dict):
+        if key == "spot.order.bulk_order" or (key.startswith("transaction.") and key != "transaction.close_positions"):
+            _copy_legacy_text(projected, "errorCode", error.get("code"))
+        if key in {"spot.order.bulk_order", "spot.order.bulk_cancel"}:
+            _copy_legacy_text(projected, "errorMsg", error.get("message"))
+        elif key.startswith("transaction."):
+            _copy_legacy_text(projected, "errorMessage", error.get("message"))
+    return projected
+
+
+def _copy_legacy_text(output: dict[str, Any], key: str, value: Any) -> None:
+    if isinstance(value, str) and value:
+        output[key] = value
+
+
+def _copy_legacy_id(output: dict[str, Any], key: str, value: Any, *, as_long: bool) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]*", value):
+        return
+    if not as_long:
+        output[key] = value
+    elif len(value) < 19 or (len(value) == 19 and value <= "9223372036854775807"):
+        output[key] = int(value)
+
 
 def _gateway_error(exc: McpGatewayError) -> dict[str, Any]:
     return {

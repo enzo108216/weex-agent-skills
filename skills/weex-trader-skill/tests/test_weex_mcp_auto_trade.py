@@ -393,6 +393,38 @@ class AutoOutcomeMappingTests(unittest.TestCase):
                 self.assertEqual(tuple(leg.get("weex_order_id") for leg in normalized), expected)
                 self.assertEqual([leg["status"] for leg in normalized], ["ACCEPTED" if order_id else "REVIEW_REQUIRED" for order_id in expected])
 
+    def test_spot_batch_optional_symbol_must_bind_to_the_reserved_leg(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        reserved = {"leg_id": "leg-0", "client_order_id": "client-1", "order": {"symbol": " btcusdt "}}
+        identity = {"client_order_id": "client-1", "symbol": "BTCUSDT"}
+        for operation_key, leg, observed_identity, expected in (
+            ("spot.order.bulk_order", reserved, identity, "ACCEPTED"),
+            ("spot.order.bulk_order", reserved, {**identity, "symbol": "ETHUSDT"}, "REVIEW_REQUIRED"),
+            ("spot.order.bulk_order", reserved, {**identity, "order_id": "101"}, "REVIEW_REQUIRED"),
+            ("spot.order.bulk_order", {**reserved, "order": {}}, identity, "REVIEW_REQUIRED"),
+            ("transaction.place_orders_batch", reserved, identity, "REVIEW_REQUIRED"),
+        ):
+            with self.subTest(operation_key=operation_key, leg=leg, identity=observed_identity):
+                normalized = runtime._normalize_mcp_submission_results(
+                    operation_key=operation_key,
+                    prepared_legs=[leg],
+                    response={
+                        "ok": True,
+                        "action": "place_batch_orders",
+                        "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+                        "result": {
+                            "status": "accepted", "counts": {"accepted": 1, "rejected": 0, "unknown": 0},
+                            "items": [{
+                                "index": 0, "request_identity": observed_identity, "upstream_order_id": "101",
+                                "status": "accepted", "outcome": {"class": "accepted", "write_attempted": True},
+                            }],
+                        },
+                    },
+                )
+                self.assertEqual(normalized[0]["status"], expected)
+                self.assertEqual(normalized[0].get("weex_order_id"), "101" if expected == "ACCEPTED" else None)
+
     def test_fixed_mcp_malformed_not_sent_or_definitive_rejection_never_release(self) -> None:
         import weex_auto_trade_runtime as runtime
 

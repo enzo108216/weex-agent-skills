@@ -171,7 +171,7 @@ class TradeMappingContractTests(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(
             capabilities_digest,
-            "3d5b9c2ad3bdd3f85f3c64524b551512a0986284b5bee07b9b4d4e075a2381a8",
+            "58263d19781b12a6920fd6d34d37bf1a956ba752c197d5721f0aea89a168bbda",
         )
 
 
@@ -783,6 +783,106 @@ class McpTradeCompatTests(unittest.TestCase):
             )
         self.assertTrue(result["ok"])
         self.assertEqual(gateway.calls[-1][0], "trade_place_order")
+
+    def test_trade_legacy_projection_preserves_typed_spot_and_futures_ids(self) -> None:
+        order_id = "9223372036854775807"
+        timestamp = 1_750_000_000_000
+        for key, action, identity, market, expected in (
+            (
+                "spot.order.place_order", "place_order", {"client_order_id": "client-1"}, "spot",
+                {"orderId": int(order_id), "clientOrderId": "client-1", "symbol": "BTCUSDT", "transactTime": timestamp},
+            ),
+            (
+                "transaction.place_order", "place_order", {"client_order_id": "client-1"}, "futures",
+                {"orderId": order_id, "clientOrderId": "client-1", "success": True},
+            ),
+            (
+                "transaction.place_pending_order", "place_conditional_order", {"client_algo_id": "client-1"}, "futures",
+                {"orderId": order_id, "clientOrderId": "client-1", "success": True},
+            ),
+        ):
+            with self.subTest(key=key):
+                typed = {
+                    "status": "accepted", "request_identity": identity,
+                    "symbol": "BTCUSDT", "market": market, "upstream_order_id": order_id,
+                }
+                if market == "spot":
+                    typed["compatibility"] = {"transact_time": timestamp}
+                projected = self.trade._project_confirm_result(
+                    {**mapping_entry(self.mapping, key), "direct_tool": "trade_" + action},
+                    {
+                        "ok": True, "action": action, "result": typed,
+                        "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+                    },
+                    transport_meta={"http_status": 201},
+                )
+                self.assertEqual(projected["status"], 201)
+                self.assertEqual(projected["data"], typed)
+                self.assertEqual(projected.get("legacy_data"), expected)
+
+    def test_trade_legacy_projection_keeps_partial_batch_identity_and_unknown_semantics(self) -> None:
+        items = [
+            {
+                "index": 0, "request_identity": {"client_order_id": "first", "symbol": "BTCUSDT"}, "upstream_order_id": "21",
+                "compatibility": {"transact_time": 1_750_000_000_000},
+                "status": "accepted", "outcome": {"class": "accepted", "write_attempted": True},
+            },
+            {
+                "index": 1, "request_identity": {"client_order_id": "second"},
+                "status": "definitive_rejection", "outcome": {"class": "definitive_rejection", "write_attempted": True},
+                "error": {"code": "upstream_rejection", "message": "WEEX explicitly rejected the mutation."},
+            },
+            {
+                "index": 2, "request_identity": {"client_order_id": "third"},
+                "status": "unknown", "outcome": {"class": "unknown", "write_attempted": True},
+            },
+        ]
+        typed = {"items": items, "counts": {"accepted": 1, "rejected": 1, "unknown": 1}}
+        payload = {
+            "ok": False, "action": "place_batch_orders", "result": typed,
+            "error": {"code": "partial_write", "message": "Partial result."},
+            "outcome": {"class": "partial", "write_attempted": True, "grant_disposition": "review_required"},
+        }
+        for key, expected in (
+            (
+                "transaction.place_orders_batch",
+                [
+                    {"clientOrderId": "first", "orderId": "21", "success": True},
+                    {"clientOrderId": "second", "errorCode": "upstream_rejection", "errorMessage": "WEEX explicitly rejected the mutation.", "success": False},
+                    {"clientOrderId": "third"},
+                ],
+            ),
+            (
+                "spot.order.bulk_order",
+                {"orderList": [
+                    {"clientOrderId": "first", "orderId": 21, "symbol": "BTCUSDT", "transactTime": 1_750_000_000_000},
+                    {"clientOrderId": "second", "errorCode": "upstream_rejection", "errorMsg": "WEEX explicitly rejected the mutation."},
+                    {"clientOrderId": "third"},
+                ]},
+            ),
+        ):
+            with self.subTest(key=key):
+                projected = self.trade._project_confirm_result(
+                    {**mapping_entry(self.mapping, key), "direct_tool": "trade_place_batch_orders"},
+                    payload, transport_meta=None,
+                )
+                self.assertTrue(projected["review_required"])
+                self.assertEqual(projected["outcome"]["class"], "partial")
+                self.assertEqual(projected["data"], typed)
+                self.assertEqual(projected.get("legacy_data"), expected)
+
+    def test_trade_legacy_projection_never_guesses_exchange_status_from_request(self) -> None:
+        projected = self.trade._project_confirm_result(
+            {**mapping_entry(self.mapping, "spot.order.cancel_order"), "direct_tool": "trade_cancel_order"},
+            {
+                "ok": True, "action": "cancel_order",
+                "result": {"status": "accepted", "request_identity": {"order_id": "17"}},
+                "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+            },
+            transport_meta=None,
+        )
+        self.assertTrue(projected["ok"])
+        self.assertEqual(projected.get("legacy_data"), {})
 
     def test_direct_outcome_classes_keep_review_and_not_sent_boundaries(self) -> None:
         cases = (

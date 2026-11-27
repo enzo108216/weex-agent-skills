@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -676,7 +677,7 @@ def validate_manual_intent_contract(
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "package": {"const": "0.3.2"},
+            "package": {"const": "0.3.3"},
             "tool_contract": {"const": "2"},
             "prepare": {"const": "1"},
             "intent": {"const": "2"},
@@ -1301,12 +1302,12 @@ def validate_v2_revision(
     if contract.get("schema_version") != 2:
         raise ValueError("boundary v2 schema version mismatch")
     expected_versions = dict(contract_v1.get("candidate_versions", {}))
-    expected_versions.update({"package": "0.3.2", "grant": "2"})
+    expected_versions.update({"package": "0.3.3", "grant": "2"})
     if contract.get("candidate_versions") != expected_versions:
         raise ValueError("boundary v2 candidate versions mismatch")
     if contract.get("source_baselines") != {
-        "skill_commit": "650303cfc7264bc83b7c71569745e6852c5c2e71",
-        "mcp_commit": "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
+        "skill_commit": "0613fc9bb7593c5465780d795b6bf589f82944e7",
+        "mcp_commit": "45c7bf5ae63db360cf6ec0e18d92806d3f416391",
         "openapi_main": "cc9b95b9db6e61c7e10176b5b70fb05b05b0146c",
     }:
         raise ValueError("boundary v2 source baselines mismatch")
@@ -1344,7 +1345,12 @@ def validate_v2_revision(
         "schema_digest": manual_intent_digest,
     }:
         raise ValueError("boundary v2 manual intent binding mismatch")
-    if contract.get("direct_tools_digest") != contract_v1.get("direct_tools_digest"):
+    expected_direct_tools = deepcopy(contract_v1["direct_tools"])
+    conditional_cancel = next(tool for tool in expected_direct_tools if tool["name"] == "trade_cancel_conditional_order")
+    conditional_cancel["output_schema"]["properties"]["result"]["properties"]["upstream_order_id"] = {
+        "type": "string", "pattern": "^(0|[1-9][0-9]*)$",
+    }
+    if contract.get("direct_tools_digest") != canonical_digest(expected_direct_tools):
         raise ValueError("boundary v2 Direct tool contract unexpectedly changed")
     if contract.get("legacy_write_mapping_digest") != contract_v1.get(
         "legacy_write_mapping_digest"
@@ -1763,7 +1769,7 @@ def validate_documents(
     ):
         raise ValueError("boundary v2 approval identity or date mismatch")
     if approval.get("authorization_source") != (
-        "Current conversation: the user explicitly authorized D-028."
+        "Current conversation: the user explicitly authorized D-028 and the T13B/T14 typed projection and Spot time bounds revision."
     ):
         raise ValueError("boundary v2 approval source mismatch")
     if set(approval.get("excluded", [])) != {
@@ -1776,11 +1782,13 @@ def validate_documents(
     }:
         raise ValueError("boundary v2 approval exclusions mismatch")
     if approval.get("scope") != [
-        "package 0.3.2 candidate",
+        "package 0.3.3 candidate",
         "Host-private reconciliation",
         "ReconciliationResult safe evidence",
         "manual intent evidence digest ownership",
         "two-stage confirmation contract",
+        "witnessed typed order results and read fields",
+        "Spot bill time bounds",
     ]:
         raise ValueError("boundary v2 approval scope mismatch")
     validate_implementation_contract(contract)

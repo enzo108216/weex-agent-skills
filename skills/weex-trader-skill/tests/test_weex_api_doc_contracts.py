@@ -264,7 +264,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
 
                 response = item["response"]
                 self.assertEqual(response["legacy_container"], expected_response_container(product, definition))
-                self.assertEqual(response["raw_policy"], "preserve_for_compat_serializer")
+                self.assertEqual(response["raw_policy"], "typed_compat_serializer")
                 self.assertEqual(response["http_status_policy"], "compat_serializer_only")
                 self.assertEqual(
                     item["dry_run"],
@@ -351,7 +351,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(payload["mapping_version"], "trader-mcp-capability-v2")
 
         candidate = payload["verified_mcp_candidate"]
-        source_commit = "45c7bf5ae63db360cf6ec0e18d92806d3f416391"
+        source_commit = "d2d501174267adadf7fdc0e3d0e3f22132f57b76"
         self.assertEqual(
             {
                 key: candidate[key]
@@ -366,7 +366,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
             },
             {
                 "official_repository": "https://github.com/weex-labs/weex-mcp",
-                "package_version": "0.3.2",
+                "package_version": "0.3.3",
                 "tool_contract_version": "2",
                 "manifest_version": 2,
                 "source_commit": source_commit,
@@ -377,8 +377,8 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             candidate["distribution_sha256"],
             {
-                "wheel": "abe49bd9773a8df7d819c5f97a17924a3e0e7f89159f996f76c0c7aa640ef142",
-                "sdist": "a32625def682b06c1faf01dffa7e381b8d246f88e823cd3e16143921167f3565",
+                "wheel": "426cc69571ed4fd3196b6b695ba3e530c5bc18995a8ffcecf15af346a8fdbdbd",
+                "sdist": "08d670a762444c20e32946818ba76b4e5e4319ff46f287eb113cc1439747b13e",
             },
         )
         for digest in candidate["distribution_sha256"].values():
@@ -387,7 +387,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             candidate["versions"],
             {
-                "package": "0.3.2",
+                "package": "0.3.3",
                 "tool_contract": "2",
                 "manifest": "2",
                 "output": "1",
@@ -409,11 +409,11 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
                 )
             },
             {
-                "boundary_contract_digest": "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10",
-                "direct_tools_digest": "sha256:7a25945e4f879fa21d5442fd8741c1d0331d510b1f2b7a38a204cb36eee2831f",
+                "boundary_contract_digest": "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53",
+                "direct_tools_digest": "sha256:d9395d33b42b795fe160fedf3a39dc3bddcc36237791ba2d65274bf7bedf964a",
                 "legacy_mapping_digest": "sha256:1ad4fede4ae9211dcd9e1e6d87ccffbe09b77eb183d71cadeb8cf0c63f9c1821",
                 "inventory_digest": "sha256:95737d9647cdecd8eae2d67a9fbb823cc9b56753522459fa55603cfea73fddc1",
-                "matrix_digest": "sha256:cf98b6645eb3712522d08af1871b50ab5803e18b5b4eea586c691eca50a865b8",
+                "matrix_digest": "sha256:4ad74cc1d4f097b32568fb357244f74ccae72a82f3cc9b6269e411c2a2da36de",
             },
         )
         self.assertEqual(
@@ -429,16 +429,16 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
             ("local_user", False): {
                 "tool_count": 31,
                 "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
-                "schema_digest": "sha256:1e7f69c100341709a06ef6a8e2e3636c5b1082404b6b30248d5cc9b0c872026a",
-                "manifest_digest": "sha256:f8c366ec993c8fa767fb48b939ed5b574b1dcc6b3a12d2bbe27aa3717e566e0b",
-                "boundary_static_manifest_digest": "sha256:276312d308fa4a7e850bb89580199026803b40f7446f29f4868659773e0e6c62",
+                "schema_digest": "sha256:3f0fd16d225a552743b5a25326af9cd8b4e24c3243d0b36c6c01ff61374abe93",
+                "manifest_digest": "sha256:4121e86f91f44b45161bcb239000727d3baec7a8cf868867200a2ce599a75aff",
+                "boundary_static_manifest_digest": "sha256:3fa0e01f93e414a76f701c4c6fd1e07525357684c7535a6e282a9b5dada37e8d",
             },
             ("local_user", True): {
                 "tool_count": 45,
                 "tool_set_digest": "sha256:246242baa02e371244c55fa3bb94747f2df3222d189796b29a1ec0280c4f2b59",
-                "schema_digest": "sha256:648d1b903432905e77e90e63ffb2271a05284bdbb6568d4b8edeeeca0fe61ecd",
-                "manifest_digest": "sha256:bafaeffbd34e134534b94e49527fefd5bd5ca8b71afda212f47970f6328cd76e",
-                "boundary_static_manifest_digest": "sha256:676cc884fe7255d84b7420950e39fdbde20fdf63657abc25f82608e826c19c49",
+                "schema_digest": "sha256:d00f0e892f0a948caf957fd0919dfb82bff6fc3c29fe1a0844707a1c15eefc14",
+                "manifest_digest": "sha256:e5dc58157e072a94c86a2dd017cc381ef1bb46a65bdf0db6bed313da80b147b5",
+                "boundary_static_manifest_digest": "sha256:a9a0fe675428bb49e6531a4b26863da1df7545d3761ec16310c9d865ffc7fbba",
             },
         }
         profiles = candidate["compatibility_profiles"]
@@ -494,7 +494,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
                     allow_nan=False,
                 ).encode("utf-8")
             ).hexdigest(),
-            "3d5b9c2ad3bdd3f85f3c64524b551512a0986284b5bee07b9b4d4e075a2381a8",
+            "58263d19781b12a6920fd6d34d37bf1a956ba752c197d5721f0aea89a168bbda",
         )
 
         pending = [

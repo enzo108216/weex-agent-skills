@@ -263,6 +263,7 @@ class McpReadFacade:
             operation,
             payload,
             transport_meta=transport_meta,
+            single_symbol=arguments.get("symbol") is not None,
         )
 
     def describe(
@@ -548,34 +549,80 @@ def _serialize_legacy_response(
     payload: Any,
     *,
     transport_meta: dict[str, Any] | None,
+    single_symbol: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
         return _compat_error("The WEEX MCP read result envelope is invalid.")
     if payload["ok"]:
         data = payload.get("data")
-        if not isinstance(data, dict) or "raw" not in data:
-            return _compat_error("The WEEX MCP read result did not preserve the legacy payload.")
-        raw = data["raw"]
-        if not _matches_container(raw, operation["response"]["legacy_container"]):
+        if not isinstance(data, dict):
+            return _compat_error("The WEEX MCP read result is missing typed data.")
+        tool = operation["target"]["tool"]
+        container = operation["response"]["legacy_container"]
+        if tool.startswith("account_"):
+            projected = _project_typed_account_data(operation, data)
+        else:
+            projected = _project_typed_market_data(
+                tool, data, single_symbol=single_symbol and container == "conditional_object_or_array",
+            )
+        if not _matches_container(projected, container):
             return _compat_error("The WEEX MCP read result does not match the legacy container.")
         return {
             "ok": True,
-            "status": _http_status(transport_meta)
-            or _http_status(data)
-            or _http_status(data.get("transport")),
-            "data": raw,
+            "status": _http_status(transport_meta),
+            "data": projected,
         }
 
     error = payload.get("error")
     if not isinstance(error, dict):
         return _compat_error("The WEEX MCP read error envelope is invalid.")
-    details = error.get("details")
-    status = _http_status(transport_meta) or _http_status(details)
-    if isinstance(details, dict) and "upstream_payload" in details:
-        legacy_error = details["upstream_payload"]
-    else:
-        legacy_error = error
-    return {"ok": False, "status": status, "error": legacy_error}
+    typed_error = dict(error)
+    if isinstance(error.get("details"), dict):
+        typed_error["details"] = {
+            key: value for key, value in error["details"].items() if key != "upstream_payload"
+        }
+    return {"ok": False, "status": _http_status(transport_meta), "error": typed_error}
+
+
+_MARKET_LIST_FIELDS = {
+    "market_get_klines": "klines",
+    "market_get_advanced_klines": "klines",
+    "market_get_recent_trades": "trades",
+    "market_get_funding_rate": "funding_rates",
+    "market_get_catalog": "items",
+    "market_get_ticker_24h": "tickers",
+    "market_get_book_ticker": "book_tickers",
+}
+
+
+def _project_typed_market_data(tool: str, data: dict[str, Any], *, single_symbol: bool) -> Any:
+    list_field = _MARKET_LIST_FIELDS.get(tool)
+    if list_field is not None:
+        items = data.get(list_field)
+        if not isinstance(items, list):
+            return None
+        if single_symbol:
+            return items[0] if len(items) == 1 and isinstance(items[0], dict) else None
+        return items
+    if tool == "market_get_symbol_price":
+        if isinstance(data.get("prices"), list) and not single_symbol:
+            return data["prices"]
+        if {"symbol", "price"} <= data.keys():
+            return {key: data[key] for key in ("symbol", "price", "time") if key in data}
+    if tool == "market_get_exchange_info" and isinstance(data.get("symbols"), list):
+        return {
+            key: data[key] for key in ("timezone", "serverTime", "rateLimits", "assets", "symbols")
+            if key in data
+        }
+    if tool == "market_get_depth" and all(isinstance(data.get(key), list) for key in ("bids", "asks")):
+        return {key: data[key] for key in ("lastUpdateId", "bids", "asks") if key in data}
+    if tool == "market_get_open_interest" and isinstance(data.get("open_interest"), dict):
+        return data["open_interest"]
+    if tool == "market_get_server_time" and type(data.get("server_time")) is int:
+        return {"serverTime": data["server_time"]}
+    if tool == "market_ping" and data.get("reachable") is True:
+        return {}
+    return None
 
 
 def _compat_error(message: str) -> dict[str, Any]:
@@ -609,3 +656,113 @@ __all__ = [
     "McpReadFacade",
     "resolve_local_mcp_read_settings",
 ]
+
+
+def _project_typed_account_data(
+    operation: dict[str, Any], data: Any,
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """Restore the legacy data container from the selected Account result."""
+    if not isinstance(data, dict):
+        return None
+    target = operation["target"]
+    tool = target["tool"]
+    fixed = target["fixed_arguments"]
+    for field in ("market", "trading_mode", "status", "bill_type"):
+        if field in fixed and field in data and data[field] != fixed[field]:
+            return None
+
+    def rows(value: Any) -> list[dict[str, Any]] | None:
+        if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+            return value
+        return None
+
+    if tool == "account_get_balance":
+        balances = rows(data.get("balances"))
+        if balances is None or fixed.get("market") == "futures":
+            return balances
+        return {
+            "balances": balances,
+            **{
+                field: data[field]
+                for field in (
+                    "accountType", "canDeposit", "canTrade", "canWithdraw",
+                    "commissionRates", "makerCommission", "permissions",
+                    "symbolCommissions", "takerCommission", "uid", "updateTime",
+                )
+                if field in data
+            },
+        }
+
+    list_containers = {
+        "account_get_positions": "positions",
+        "account_get_position": "positions",
+        "account_get_trades": "trades",
+        "account_get_symbol_config": "symbol_configs",
+        "account_get_transfer_records": "transfer_records",
+    }
+    if tool in list_containers:
+        return rows(data.get(list_containers[tool]))
+
+    if tool == "account_get_config":
+        config = data.get("config")
+        required = ("canDeposit", "canTrade", "canWithdraw")
+        if not isinstance(config, dict) or not all(isinstance(config.get(field), bool) for field in required):
+            return None
+        return {field: config[field] for field in (*required, "dualSidePosition", "updateTime") if field in config}
+
+    if tool == "account_get_commission_rate":
+        commission_rate = data.get("commission_rate")
+        if not isinstance(commission_rate, dict) or not isinstance(commission_rate.get("symbol"), str):
+            return None
+        return {
+            field: commission_rate[field]
+            for field in ("symbol", "makerCommissionRate", "takerCommissionRate")
+            if field in commission_rate
+        }
+
+    if tool == "account_get_orders":
+        orders = data.get("orders")
+        if fixed.get("status") == "single":
+            return orders if isinstance(orders, dict) else None
+        return rows(orders)
+
+    if tool == "account_get_conditional_orders":
+        orders = rows(data.get("conditional_orders"))
+        if orders is None or fixed.get("status") == "open":
+            return orders
+        has_more = data.get("has_more")
+        return {"orders": orders, "hasMore": has_more} if isinstance(has_more, bool) else None
+
+    if tool == "account_get_bills":
+        bills = data.get("bills")
+        bill_type = fixed.get("bill_type")
+        if bill_type in {"account", "tax"}:
+            return rows(bills)
+        if bill_type not in {"funding", "income"} or not isinstance(bills, dict):
+            return None
+        items = rows(bills.get("items"))
+        if items is None:
+            return None
+        page: dict[str, Any] = {"items": items}
+        if "hasNextPage" in bills:
+            if not isinstance(bills["hasNextPage"], bool):
+                return None
+            page["hasNextPage"] = bills["hasNextPage"]
+        if bill_type == "funding":
+            for field in ("page", "pageSize", "pages", "total"):
+                if field in bills:
+                    value = bills[field]
+                    if value is not None and type(value) is not int:
+                        return None
+                    page[field] = value
+        elif "nextKey" in bills:
+            next_key = bills["nextKey"]
+            if next_key is not None and not isinstance(next_key, dict):
+                return None
+            page["nextKey"] = (
+                None if next_key is None else
+                {field: next_key[field] for field in ("nextKeyId", "nextKeyTime") if field in next_key}
+            )
+        return page
+
+    return None

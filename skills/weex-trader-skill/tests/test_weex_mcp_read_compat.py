@@ -139,8 +139,8 @@ class McpReadCompatTests(unittest.TestCase):
 
         aliases = {
             "spot.account.get_bill_records": {
-                "after": "start_time",
-                "before": "end_time",
+                "after": "after",
+                "before": "before",
             },
             "spot.account.get_fund_bill_records": {
                 "pageIndex": "page",
@@ -204,7 +204,7 @@ class McpReadCompatTests(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(
             digest,
-            "0b91cae6f4d8adfcaa23e94dbe9c048fa01485002bbc7230849100cac19d1761",
+            "bfbbfb1d2299d8461f5b8ade9c280284328f66b0dc5be508a209642e578cfb3f",
         )
         self.assertEqual(
             self.mapping["compatibility_gates"]["t5_read"],
@@ -399,7 +399,7 @@ class McpReadCompatTests(unittest.TestCase):
             payload={
                 "ok": True,
                 "data": {
-                    "raw": [{"billId": "b-1"}],
+                    "bills": [{"billId": "b-1"}],
                     "http_status": 200,
                 },
             },
@@ -429,8 +429,8 @@ class McpReadCompatTests(unittest.TestCase):
                         "bill_type": "account",
                         "coin_id": "7",
                         "biz_type": "TRADE",
-                        "start_time": "1000",
-                        "end_time": "2000",
+                        "after": "1000",
+                        "before": "2000",
                         "limit": "50",
                     },
                 )
@@ -465,7 +465,7 @@ class McpReadCompatTests(unittest.TestCase):
             payload={
                 "ok": True,
                 "data": {
-                    "raw": [{"symbol": "BTCUSDT"}, {"symbol": "ETHUSDT"}],
+                    "book_tickers": [{"symbol": "BTCUSDT"}, {"symbol": "ETHUSDT"}],
                     "transport": {"http_status": 200},
                 },
             }
@@ -489,31 +489,39 @@ class McpReadCompatTests(unittest.TestCase):
                 )
             ],
         )
-        self.assertEqual(response["status"], 200)
+        self.assertEqual(response, {
+            "ok": True, "status": None,
+            "data": [{"symbol": "BTCUSDT"}, {"symbol": "ETHUSDT"}],
+        })
 
-    def test_success_requires_raw_and_never_invents_http_status(self) -> None:
-        entry = mapping_entry(self.mapping, "account.get_account_balance")
-        gateway = FakeGateway(payload={"ok": True, "data": {"raw": []}})
+    def test_typed_market_success_uses_shape_and_never_requires_raw(self) -> None:
+        entry = mapping_entry(self.mapping, "market.get_symbol_price")
+        gateway = FakeGateway(payload={
+            "ok": True, "data": {"symbol": "BTCUSDT", "price": "11", "time": 1700000000001, "http_status": 200},
+        })
         response = self.facade(gateway).execute(
             product="contract",
             endpoint=endpoint_from_mapping(entry),
-            query={},
+            query={"symbol": "BTCUSDT"},
             body={},
         )
-        self.assertEqual(response, {"ok": True, "status": None, "data": []})
+        self.assertEqual(response, {
+            "ok": True, "status": None,
+            "data": {"symbol": "BTCUSDT", "price": "11", "time": 1700000000001},
+        })
 
-        gateway.payload = {"ok": True, "data": {"balances": []}}
+        gateway.payload = {"ok": True, "data": {"raw": {"price": "11"}}}
         invalid = self.facade(gateway).execute(
             product="contract",
             endpoint=endpoint_from_mapping(entry),
-            query={},
+            query={"symbol": "BTCUSDT"},
             body={},
         )
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["status"], None)
         self.assertEqual(invalid["error"]["code"], "compat_response_invalid")
 
-    def test_error_restores_safe_upstream_payload_or_keeps_typed_error(self) -> None:
+    def test_error_uses_typed_error_and_wrapper_transport_metadata(self) -> None:
         entry = mapping_entry(self.mapping, "spot.order.history_orders")
         gateway = FakeGateway(
             payload={
@@ -527,7 +535,8 @@ class McpReadCompatTests(unittest.TestCase):
                         "upstream_payload": {"code": "-1059", "msg": "too many requests"},
                     },
                 },
-            }
+            },
+            transport_meta={"http_status": 429},
         )
         response = self.facade(gateway).execute(
             product="spot",
@@ -536,11 +545,11 @@ class McpReadCompatTests(unittest.TestCase):
             body={},
         )
         self.assertEqual(response["status"], 429)
-        self.assertEqual(
-            response["error"],
-            {"code": "-1059", "msg": "too many requests"},
-        )
+        self.assertEqual(response["error"]["code"], "upstream_error")
+        self.assertEqual(response["error"]["details"]["upstream_code"], "-1059")
+        self.assertNotIn("upstream_payload", response["error"]["details"])
 
+        gateway.transport_meta = None
         gateway.payload = {
             "ok": False,
             "error": {"code": "invalid_arguments", "message": "limit is invalid"},
@@ -599,6 +608,102 @@ class McpReadCompatTests(unittest.TestCase):
                         body={},
                     )
         self.assertEqual(gateway.calls, [])
+
+
+class AccountTypedProjectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.compat = load_compat_module()
+        self.mapping = load_mapping()
+
+    def project(self, key: str, data: dict[str, object]):
+        self.assertTrue(hasattr(self.compat, "_project_typed_account_data"), "typed Account projection is missing")
+        return self.compat._project_typed_account_data(mapping_entry(self.mapping, key), data)
+
+    def test_spot_balance_keeps_only_approved_account_fields(self) -> None:
+        data = {
+            "market": "spot", "trading_mode": "live", "source": "weex_private_rest",
+            "accountType": "SPOT", "balances": [{"asset": "USDT", "free": "1", "locked": "0"}],
+            "canTrade": False, "canDeposit": True, "canWithdraw": False,
+            "makerCommission": 0, "takerCommission": 8,
+            "commissionRates": {"maker": "0.0", "taker": "0.0008"},
+            "symbolCommissions": {"BTCUSDT": {"makerCommission": "0.0001"}},
+            "permissions": ["SPOT"], "uid": 9_007_199_254_740_993, "updateTime": 1_751_234_567_890,
+            "brokered": True, "unknown": "omit", "raw": {"canTrade": True}, "http_status": 200,
+        }
+        self.assertEqual(self.project("spot.account.get_account_balance", data), {
+            "accountType": "SPOT", "balances": [{"asset": "USDT", "free": "1", "locked": "0"}],
+            "canTrade": False, "canDeposit": True, "canWithdraw": False,
+            "makerCommission": 0, "takerCommission": 8,
+            "commissionRates": {"maker": "0.0", "taker": "0.0008"},
+            "symbolCommissions": {"BTCUSDT": {"makerCommission": "0.0001"}},
+            "permissions": ["SPOT"], "uid": 9_007_199_254_740_993, "updateTime": 1_751_234_567_890,
+        })
+
+    def test_account_legacy_lists_use_only_the_selected_typed_container(self) -> None:
+        fixtures = (
+            ("account.get_account_balance", "balances", {"asset": "USDT", "availableBalance": "0"}),
+            ("sim.account.get_account_balance", "balances", {"asset": "USDT", "balance": "2"}),
+            ("account.get_all_positions", "positions", {"size": "0.1", "symbol": "BTCUSDT"}),
+            ("account.get_single_position", "positions", {"size": "0", "symbol": "BTCUSDT"}),
+            ("sim.account.get_all_positions", "positions", {"size": "0.1", "symbol": "BTCUSDT"}),
+            ("account.get_symbol_config", "symbol_configs", {"symbol": "BTCUSDT", "marginType": "crossed"}),
+            ("spot.account.transfer_records", "transfer_records", {"tradeTime": "1", "fromSymbol": "BTCUSDT"}),
+            ("transaction.get_trade_details", "trades", {"orderId": "1", "commissionAsset": "USDT"}),
+            ("spot.order.transaction_details", "trades", {"orderId": "2", "isBuyer": False}),
+            ("transaction.get_current_order_status", "orders", {"orderId": "1", "status": "NEW"}),
+            ("sim.transaction.get_order_history", "orders", {"orderId": "2", "status": "FILLED"}),
+            ("spot.order.history_orders", "orders", {"orderId": "4", "cummulativeQuoteQty": "12"}),
+            ("transaction.get_current_pending_orders", "conditional_orders", {"algoId": "1", "algoStatus": "NEW"}),
+            ("spot.account.get_bill_records", "bills", {"billId": "1", "cTime": "12"}),
+            ("spot.tax.get_spot_account_record", "bills", {"billId": "2", "cTime": "12"}),
+        )
+        for endpoint, container, row in fixtures:
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(self.project(endpoint, {
+                    container: [row], "raw": [{"unknown": "omit"}], "source": "weex_private_rest",
+                }), [row])
+                self.assertEqual(self.project(endpoint, {container: []}), [])
+                self.assertIsNone(self.project(endpoint, {container: ["not an object"]}))
+
+    def test_account_objects_and_order_variants_keep_the_legacy_shape(self) -> None:
+        rate = {"symbol": "BTCUSDT", "makerCommissionRate": "0"}
+        self.assertEqual(self.project("account.get_commission_rate", {
+            "commission_rate": {**rate, "apiMakerFeeRate": "0.01", "unknown": "omit"},
+        }), rate)
+        config = {"canTrade": True, "canDeposit": False, "canWithdraw": True, "dualSidePosition": False, "updateTime": 1}
+        self.assertEqual(self.project("account.get_account_config", {
+            "config": {**config, "unknown": "omit"}, "market": "futures",
+        }), config)
+        for endpoint in ("spot.order.order_details", "transaction.get_single_order_info"):
+            with self.subTest(endpoint=endpoint):
+                order = {"orderId": "1", "status": "NEW"}
+                self.assertEqual(self.project(endpoint, {"orders": order, "status": "single"}), order)
+                self.assertIsNone(self.project(endpoint, {"orders": [order], "status": "single"}))
+        self.assertIsNone(self.project("account.get_account_balance", {"raw": []}))
+        self.assertIsNone(self.project("transaction.get_current_order_status", {"orders": [], "status": "single"}))
+
+    def test_paged_account_variants_keep_only_their_confirmed_envelope(self) -> None:
+        orders = [{"algoId": "1", "algoStatus": "FINISHED"}]
+        self.assertEqual(self.project("transaction.get_historical_pending_orders", {
+            "status": "history", "conditional_orders": orders, "has_more": False, "source": "weex_private_rest",
+        }), {"orders": orders, "hasMore": False})
+        self.assertIsNone(self.project("transaction.get_historical_pending_orders", {
+            "conditional_orders": orders, "has_more": 0,
+        }))
+
+        items = [{"billId": "1", "asset": "USDT", "income": "1"}]
+        income = {"items": items, "hasNextPage": True, "nextKey": {"nextKeyId": 2, "nextKeyTime": 100}}
+        self.assertEqual(self.project("account.get_contract_bills", {
+            "market": "futures", "bill_type": "income", "bills": {
+                **income, "page": 2, "nextKey": {**income["nextKey"], "unknown": "omit"},
+            },
+        }), income)
+        page = {"items": [], "hasNextPage": False, "page": None, "pageSize": None, "pages": None, "total": 0}
+        self.assertEqual(self.project("spot.account.get_fund_bill_records", {
+            "market": "spot", "bill_type": "funding", "bills": {**page, "nextKey": {"nextKeyId": 2}},
+        }), page)
+        self.assertIsNone(self.project("account.get_contract_bills", {"bills": items}))
+        self.assertIsNone(self.project("spot.account.get_bill_records", {"bills": page}))
 
 
 if __name__ == "__main__":

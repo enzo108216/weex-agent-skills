@@ -615,12 +615,13 @@ runpy.run_path(script_path, run_name="__main__")
             "positionSide": "LONG",
             "type": "LIMIT",
             "timeInForce": "GTC",
-            "quantity": "0.01",
+            "quantity": 0.01,
             "price": "69000",
             "newClientOrderId": "demo-order-1",
             "TpWorkingType": "CONTRACT_PRICE",
             "SlWorkingType": "MARK_PRICE",
         }
+        wire_body = {**body, "quantity": "0.01"}
         client.mcp_trade_facade.describe.return_value = {
             "method": "POST",
             "url": "https://api-contract.weex.com/capi/v3/sim/order",
@@ -629,7 +630,8 @@ runpy.run_path(script_path, run_name="__main__")
                 "ACCESS-TIMESTAMP": "<generated-at-send>",
             },
             "query": {},
-            "body": body,
+            "body": wire_body,
+            "_meta": {"request_description_version": 1},
         }
 
         stdout = io.StringIO()
@@ -651,7 +653,8 @@ runpy.run_path(script_path, run_name="__main__")
         self.assertEqual(exit_code, 0)
         self.assertTrue(payload["url"].endswith("/capi/v3/sim/order"))
         self.assertEqual(payload["endpoint"], "sim.transaction.place_order")
-        self.assertEqual(payload["body"], body)
+        self.assertEqual(payload["body"], wire_body)
+        self.assertNotIn("_meta", payload)
         self.assertEqual(payload["environment"]["trading_mode"], "demo")
         self.assertFalse(payload["environment"]["uses_real_funds"])
         self.assertEqual(
@@ -666,6 +669,72 @@ runpy.run_path(script_path, run_name="__main__")
             "<generated-at-send>",
         )
         client.mcp_trade_facade.describe.assert_called_once()
+        client.mcp_trade_facade.preview.assert_not_called()
+
+    def test_public_dry_run_displays_only_the_mcp_described_query(self) -> None:
+        import weex_contract_api as contract
+        import weex_spot_api as spot
+
+        cases = (
+            (
+                contract,
+                "market.get_recent_trades",
+                "https://api-contract.weex.com/capi/v3/market/trades",
+                {"symbol": "btcusdt", "limit": 10},
+                {"symbol": "BTCUSDT", "limit": "10"},
+                {"confirm_demo": False, "trading_mode": "live"},
+            ),
+            (
+                spot,
+                "spot.market.get_ticker_info",
+                "https://api-spot.weex.com/api/v3/market/ticker/price",
+                {"symbols": ["BTCUSDT", "ETHUSDT"]},
+                {"symbols": '["BTCUSDT","ETHUSDT"]'},
+                {},
+            ),
+        )
+        for api, endpoint_key, url, caller_query, wire_query, extra in cases:
+            with self.subTest(endpoint=endpoint_key):
+                client = mock.Mock()
+                client.describe_request.return_value = {
+                    "method": "GET",
+                    "url": url,
+                    "headers": {"Accept": "application/json"},
+                    "query": wire_query,
+                    "body": {},
+                    "_meta": {"request_description_version": 1},
+                }
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    exit_code = api.execute_endpoint(
+                        client=client,
+                        endpoint_key=endpoint_key,
+                        query=caller_query,
+                        body={},
+                        dry_run=True,
+                        confirm_live=False,
+                        pretty=False,
+                        **extra,
+                    )
+
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(
+                    json.loads(stdout.getvalue()),
+                    {
+                        "dry_run": True,
+                        "endpoint": endpoint_key,
+                        "method": "GET",
+                        "url": url,
+                        "headers": {"Accept": "application/json"},
+                        "query": wire_query,
+                        "body": {},
+                    },
+                )
+                client.describe_request.assert_called_once_with(
+                    api.ENDPOINTS[endpoint_key], query=caller_query, body={},
+                )
+                client.read_endpoint.assert_not_called()
+                client.preview_trade_endpoint.assert_not_called()
 
     def test_contract_private_order_query_result_includes_environment_prefix(self) -> None:
         import weex_contract_api as contract
@@ -1241,9 +1310,10 @@ runpy.run_path(script_path, run_name="__main__")
             "symbol": "BTCUSDT",
             "side": "BUY",
             "type": "MARKET",
-            "quantity": "1",
+            "quantity": 1,
             "newClientOrderId": "spot-dry-run-1",
         }
+        wire_body = {**body, "quantity": "1"}
         client.mcp_trade_facade.describe.return_value = {
             "method": "POST",
             "url": "https://api-spot.weex.com/api/v3/order",
@@ -1252,7 +1322,7 @@ runpy.run_path(script_path, run_name="__main__")
                 "ACCESS-TIMESTAMP": "<generated-at-send>",
             },
             "query": {},
-            "body": body,
+            "body": wire_body,
         }
 
         stdout = io.StringIO()
@@ -1269,13 +1339,14 @@ runpy.run_path(script_path, run_name="__main__")
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["body"], body)
+        self.assertEqual(payload["body"], wire_body)
         self.assertEqual(payload["headers"]["ACCESS-SIGN"], "***")
         self.assertEqual(
             payload["headers"]["ACCESS-TIMESTAMP"],
             "<generated-at-send>",
         )
         client.mcp_trade_facade.describe.assert_called_once()
+        client.mcp_trade_facade.preview.assert_not_called()
 
     def test_spot_private_order_preview_includes_live_environment_prefix(self) -> None:
         import weex_spot_api as spot

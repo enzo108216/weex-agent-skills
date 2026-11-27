@@ -177,13 +177,13 @@ def profile_binding() -> dict[str, object]:
 
 def contract_versions() -> dict[str, str]:
     return {
-        "package": "0.3.2",
+        "package": "0.3.3",
         "tool_contract": "2",
         "prepare": "1",
         "intent": "2",
         "grant": "2",
         "boundary_contract_digest": (
-            "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+            "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53"
         ),
     }
 
@@ -410,6 +410,64 @@ class ManualIntentStateTests(unittest.TestCase):
 
         self.assertEqual(intent_state.load_terminal_audit_records(), [record])
         self.assertEqual(audit_path.read_bytes(), original_bytes)
+
+    def test_032_intents_use_historical_rules_only_after_the_pin_advances(self) -> None:
+        historical = {
+            "package": "0.3.2", "tool_contract": "2", "prepare": "1", "intent": "2", "grant": "2",
+            "boundary_contract_digest": "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10",
+        }
+        old_intents = {
+            state: {
+                **self.previous_intent(state, intent_id=f"intent-032-{state.lower()}"),
+                "contract_versions": historical,
+            }
+            for state in ("UNCLAIMED", "CONFIRMED", "CLAIMED", "REVIEW_REQUIRED")
+        }
+        grant_identity = {
+            "grant_id": "grant-1", "principal_id": "principal-id",
+            "account_binding_id": "account-id", "tool_name": "trade_place_order",
+        }
+        self.write_raw_state(old_intents["UNCLAIMED"])
+        with mock.patch.object(intent_state, "_INTENT_CONTRACT_VERSIONS", historical):
+            self.assertEqual(intent_state.load_manual_intent(now_ms=300), old_intents["UNCLAIMED"])
+
+        next_pin = {**historical, "package": "0.3.3", "boundary_contract_digest": "sha256:" + "8" * 64}
+        with mock.patch.object(intent_state, "_INTENT_CONTRACT_VERSIONS", next_pin):
+            for original, expected in (
+                ("UNCLAIMED", "LEGACY_INVALIDATED"), ("CONFIRMED", "NOT_SENT_TERMINAL"),
+                ("CLAIMED", "CLAIMED"), ("REVIEW_REQUIRED", "REVIEW_REQUIRED"),
+            ):
+                with self.subTest(original=original):
+                    previous = old_intents[original]
+                    self.write_raw_state(previous)
+                    restored = intent_state.load_manual_intent(now_ms=400)
+                    self.assertEqual(restored["state"], expected)
+                    with self.assertRaises(intent_state.IntentStateError):
+                        intent_state.execution_grant_for_dispatch(
+                            previous["intent_id"], runtime_loader=fake_runtime_models, now_ms=400,
+                        )
+                    if original == "CLAIMED":
+                        recovered = intent_state.claimed_execution_grant_for_recovery(
+                            previous["intent_id"], runtime_loader=fake_runtime_models, now_ms=400,
+                        )
+                        self.assertEqual(recovered.claim_id, "claim-1")
+                        self.store().recover(**grant_identity, now=500)
+                        restored = intent_state.load_manual_intent(now_ms=500)
+                        self.assertEqual(restored["state"], "REVIEW_REQUIRED")
+                    if original in {"CLAIMED", "REVIEW_REQUIRED"}:
+                        self.assertEqual(restored["prepared_mutation"], previous["prepared_mutation"])
+                        with self.assertRaises(intent_state.IntentStateError):
+                            intent_state.ensure_manual_intent_slot_available(now_ms=500)
+            self.assertEqual(
+                [record["intent"]["state"] for record in intent_state.load_terminal_audit_records()],
+                ["LEGACY_INVALIDATED", "NOT_SENT_TERMINAL"],
+            )
+            self.write_raw_state({
+                **old_intents["REVIEW_REQUIRED"],
+                "contract_versions": {**historical, "boundary_contract_digest": "sha256:" + "9" * 64},
+            })
+            with self.assertRaises(intent_state.IntentStateError):
+                intent_state.load_manual_intent(now_ms=600)
 
     def test_build_unclaimed_intent_uses_prepared_values_without_scaling_expiry(self) -> None:
         prepared = prepared_mutation(expires_at=12_345)

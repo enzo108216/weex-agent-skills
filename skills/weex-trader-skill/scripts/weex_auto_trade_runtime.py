@@ -1041,8 +1041,17 @@ def _normalize_mcp_submission_results(
             type(index) is not int
             or not 0 <= index < len(clients)
             or index in indexes
-            or item.get("request_identity") != {identity_field: clients[index]}
         ):
+            return held
+        identity = item.get("request_identity")
+        expected_identity = {identity_field: clients[index]}
+        if operation_key == "spot.order.bulk_order" and isinstance(identity, dict) and "symbol" in identity:
+            reserved_order = prepared_legs[index].get("order")
+            reserved_symbol = reserved_order.get("symbol") if isinstance(reserved_order, dict) else None
+            if not isinstance(reserved_symbol, str) or not reserved_symbol.strip():
+                return held
+            expected_identity["symbol"] = reserved_symbol.strip().upper()
+        if identity != expected_identity:
             return held
         indexes.add(index)
         item_status = item.get("status")

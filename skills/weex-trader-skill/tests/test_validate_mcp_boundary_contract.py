@@ -135,13 +135,13 @@ class McpBoundaryContractTests(unittest.TestCase):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
 
         self.assertEqual(contract["schema_version"], 2)
-        self.assertEqual(contract["candidate_versions"]["package"], "0.3.2")
+        self.assertEqual(contract["candidate_versions"]["package"], "0.3.3")
         self.assertEqual(contract["candidate_versions"]["grant"], "2")
         self.assertEqual(
             contract["source_baselines"],
             {
-                "skill_commit": "650303cfc7264bc83b7c71569745e6852c5c2e71",
-                "mcp_commit": "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
+                "skill_commit": "0613fc9bb7593c5465780d795b6bf589f82944e7",
+                "mcp_commit": "45c7bf5ae63db360cf6ec0e18d92806d3f416391",
                 "openapi_main": "cc9b95b9db6e61c7e10176b5b70fb05b05b0146c",
             },
         )
@@ -536,7 +536,7 @@ class McpBoundaryContractTests(unittest.TestCase):
         self.assertEqual(schema["intent_version"], 2)
         self.assertEqual(
             schema["properties"]["contract_versions"]["properties"]["package"],
-            {"const": "0.3.2"},
+            {"const": "0.3.3"},
         )
         self.assertEqual(
             schema["properties"]["state"]["enum"],
@@ -1053,7 +1053,7 @@ class McpBoundaryContractTests(unittest.TestCase):
         expected = pair_validator.expected_mcp_metadata(contract)
         self.assertEqual(
             expected["source_mcp_baseline_commit"],
-            "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
+            "45c7bf5ae63db360cf6ec0e18d92806d3f416391",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             mcp_root = Path(temp_dir) / "mcp"
@@ -1095,7 +1095,7 @@ class McpBoundaryContractTests(unittest.TestCase):
 
             original = compatibility.read_text(encoding="utf-8")
             compatibility.write_text(
-                original.replace("'package': '0.3.2'", "'package': '9.9.9'", 1),
+                original.replace("'package': '0.3.3'", "'package': '9.9.9'", 1),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "runtime candidate versions"):
@@ -1105,14 +1105,14 @@ class McpBoundaryContractTests(unittest.TestCase):
             version_path.write_text("__version__ = '9.9.9'\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "_version.py"):
                 pair_validator.verify_pair(ROOT, mcp_root)
-            version_path.write_text("__version__ = '0.3.2'\n", encoding="utf-8")
+            version_path.write_text("__version__ = '0.3.3'\n", encoding="utf-8")
 
             server = json.loads(server_path.read_text(encoding="utf-8"))
             server["packages"][0]["version"] = "9.9.9"
             server_path.write_text(json.dumps(server), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "server.json package version"):
                 pair_validator.verify_pair(ROOT, mcp_root)
-            server["packages"][0]["version"] = "0.3.2"
+            server["packages"][0]["version"] = "0.3.3"
             server["repository"]["url"] = "https://github.com/example/fork"
             server_path.write_text(json.dumps(server), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "official repository"):

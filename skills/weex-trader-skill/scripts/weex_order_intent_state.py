@@ -45,22 +45,25 @@ _REVIEW_REQUIRED_OUTCOME_DIGEST = (
     "sha256:4bde4a17c691eb4462fbc26b6d4e2fa0af1d897055b356df4a287b2c822d7f2c"
 )
 _INTENT_CONTRACT_VERSIONS = {
-    "package": "0.3.2",
+    "package": "0.3.3",
     "tool_contract": "2",
     "prepare": "1",
     "intent": "2",
     "grant": "2",
     "boundary_contract_digest": (
-        "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+        "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53"
     ),
 }
-_PREVIOUS_INTENT_CONTRACT_VERSIONS = {
-    **_INTENT_CONTRACT_VERSIONS,
-    "package": "0.3.1",
-    "boundary_contract_digest": (
-        "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9"
-    ),
-}
+_PREVIOUS_INTENT_CONTRACT_VERSIONS = (
+    {
+        "package": "0.3.1", "tool_contract": "2", "prepare": "1", "intent": "2", "grant": "2",
+        "boundary_contract_digest": "sha256:a6762cafe7b9338b658252e6048582c2be8fca0bc1b5c730223ff807868be9b9",
+    },
+    {
+        "package": "0.3.2", "tool_contract": "2", "prepare": "1", "intent": "2", "grant": "2",
+        "boundary_contract_digest": "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10",
+    },
+)
 _DIRECT_TOOLS = frozenset(
     {
         "trade_place_order",
@@ -732,7 +735,7 @@ def _validate_manual_intent(
             "Manual mutation profile binding is invalid.",
         )
     if versions != _INTENT_CONTRACT_VERSIONS and not (
-        allow_previous_candidate and versions == _PREVIOUS_INTENT_CONTRACT_VERSIONS
+        allow_previous_candidate and versions in _PREVIOUS_INTENT_CONTRACT_VERSIONS
     ):
         raise IntentStateError(
             "intent_state_corrupt",
@@ -1204,7 +1207,8 @@ def _effective_manual_intent_locked(
     overlay = _latest_audit_intent_locked(str(current["intent_id"]))
     if overlay is not None:
         return overlay
-    if current.get("contract_versions") == _PREVIOUS_INTENT_CONTRACT_VERSIONS:
+    versions = current.get("contract_versions")
+    if versions != _INTENT_CONTRACT_VERSIONS and versions in _PREVIOUS_INTENT_CONTRACT_VERSIONS:
         if current["state"] == "UNCLAIMED":
             return _invalidate_unclaimed_locked(current, now_ms=now_ms)
         if current["state"] == "CONFIRMED":

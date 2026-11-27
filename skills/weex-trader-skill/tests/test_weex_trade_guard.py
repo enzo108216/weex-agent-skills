@@ -138,13 +138,13 @@ def v2_manual_intent(
             "credential_fingerprint": "credential-fingerprint",
         },
         contract_versions={
-            "package": "0.3.2",
+            "package": "0.3.3",
             "tool_contract": "2",
             "prepare": "1",
             "intent": "2",
             "grant": "2",
             "boundary_contract_digest": (
-                "sha256:a08c5997ab1ef4698ad1bd37ff89378fedf340600dde668d0f9fc5fc256b7b10"
+                "sha256:23c0fa218f2dcb3024b3067f8456d17e3f968ca63a7d9409e7b5a36ed9b0fc53"
             ),
         },
         intent_id=intent_id,

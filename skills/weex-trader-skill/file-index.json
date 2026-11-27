@@ -133,7 +133,7 @@
       ]
     },
     "references/mcp-boundary-contract-v2.json": {
-      "role": "Current user-confirmed but non-active MCP/Trader candidate contract for package 0.3.2 and grant v2, including terminal receipts, restart recovery, Host-private reconciliation with closed safe evidence, Gateway grant construction, manual intent binding, and the unchanged 14 Direct mutation tools and compatibility digests.",
+      "role": "Current user-confirmed but non-active MCP/Trader candidate contract for package 0.3.3 and grant v2, including terminal receipts, restart recovery, Host-private reconciliation with closed safe evidence, Gateway grant construction, manual intent binding, and the unchanged 14 Direct mutation tools and compatibility digests.",
       "when": [
         "implementing or reviewing the coordinated MCP and Trader boundary migration",
         "checking the exact candidate Direct tool, owner, grant terminal, recovery, outcome, and permission contracts",

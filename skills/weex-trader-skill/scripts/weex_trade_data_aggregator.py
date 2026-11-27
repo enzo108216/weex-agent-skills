@@ -2817,11 +2817,10 @@ class WeexApiFetcher:
         def collect_window(window_start: int, window_end: int) -> None:
             nonlocal partial
             body: dict[str, Any] = {
+                "after": window_start,
                 "before": window_end + 1,
                 "limit": SPOT_BILL_LIMIT,
             }
-            if window_start > 0:
-                body["after"] = window_start - 1
             payload = self._send_spot_request(
                 profile_name=profile_name,
                 endpoint_key="spot.account.get_bill_records",
