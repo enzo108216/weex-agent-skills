@@ -464,6 +464,68 @@ runpy.run_path(script_path, run_name="__main__")
         preflight_mock.assert_called_once_with(command="spot.place-order", auto_setup=True, language=None)
         resolve_mock.assert_not_called()
 
+    def test_auto_trade_migration_status_missing_state_does_not_initialize(self) -> None:
+        import weex_auto_trade as auto
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            config_home = Path(tempdir) / "uninitialized"
+            stdout = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": str(config_home)}),
+                mock.patch.object(auto, "_load_input") as load_input,
+                mock.patch.object(auto, "_load_profile_resolver") as profile_resolver,
+                mock.patch.object(auto.AutoTradeState, "initialize") as initialize,
+                contextlib.redirect_stdout(stdout),
+            ):
+                exit_code = auto.main(["migration-status"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                json.loads(stdout.getvalue()),
+                {
+                    "ok": True,
+                    "status": "NOT_INITIALIZED",
+                    "user_version": None,
+                    "target_version": 6,
+                },
+            )
+            load_input.assert_not_called()
+            profile_resolver.assert_not_called()
+            initialize.assert_not_called()
+            self.assertFalse(config_home.exists())
+
+    def test_auto_trade_migrate_state_calls_state_migration_directly(self) -> None:
+        import weex_auto_trade as auto
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            expected = {
+                "ok": True,
+                "status": "STATE_MIGRATED",
+                "user_version": 6,
+                "target_version": 6,
+                "previous_version": 5,
+                "snapshot_id": "snap_" + "1" * 32,
+            }
+            stdout = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"WEEX_TRADER_SKILL_HOME": tempdir}),
+                mock.patch.object(auto, "_load_input") as load_input,
+                mock.patch.object(auto, "_load_profile_resolver") as profile_resolver,
+                mock.patch.object(auto.AutoTradeState, "initialize") as initialize,
+                mock.patch.object(
+                    auto.AutoTradeState, "migrate_state", create=True, return_value=expected,
+                ) as migrate,
+                contextlib.redirect_stdout(stdout),
+            ):
+                exit_code = auto.main(["migrate-state", "--pretty"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue()), expected)
+            load_input.assert_not_called()
+            profile_resolver.assert_not_called()
+            initialize.assert_not_called()
+            migrate.assert_called_once_with()
+
     def test_contract_describe_request_rejects_body_for_get(self) -> None:
         import weex_contract_api as contract
 

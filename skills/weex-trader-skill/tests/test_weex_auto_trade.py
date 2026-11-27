@@ -109,6 +109,173 @@ def complete_spot_symbol_facts(*, maker_fee="0", taker_fee="0"):
 
 
 class AutoTradeStateSchemaTests(unittest.TestCase):
+    def _make_v5_database(self, state_module, root: Path) -> Path:
+        root.mkdir(mode=0o700)
+        db_path = root / "state.sqlite3"
+        db_path.touch(mode=0o600)
+        db_path.chmod(0o600)
+        with closing(sqlite3.connect(db_path, isolation_level=None)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.executescript(state_module.SCHEMA_V1)
+            connection.execute("PRAGMA user_version = 1")
+            for version in range(1, 5):
+                foreign_keys_off = version in state_module.MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF
+                if foreign_keys_off:
+                    connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("BEGIN IMMEDIATE")
+                state_module.MIGRATION_REGISTRY[version](connection)
+                connection.execute(f"PRAGMA user_version = {version + 1}")
+                connection.execute("COMMIT")
+                if foreign_keys_off:
+                    connection.execute("PRAGMA foreign_keys = ON")
+            state_module._validate_connection(connection, full=True, expected_version=5)
+            connection.execute("PRAGMA journal_mode = WAL")
+        return db_path
+
+    def test_migration_status_is_read_only_when_state_does_not_exist(self) -> None:
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            config_dir = Path(tempdir) / "config"
+            state = state_module.AutoTradeState(config_dir / "auto-trade" / "state.sqlite3")
+            self.assertTrue(hasattr(state, "migration_status"), "missing read-only migration status")
+            self.assertEqual(state.migration_status(), {
+                "ok": True, "status": "NOT_INITIALIZED", "user_version": None, "target_version": 6,
+            })
+            self.assertFalse(config_dir.exists())
+
+    def test_v5_startup_requires_explicit_migration_without_modifying_database(self) -> None:
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._make_v5_database(state_module, Path(tempdir) / "state")
+            original = db_path.read_bytes()
+            state = state_module.AutoTradeState(db_path)
+
+            with self.assertRaisesRegex(state_module.StateConflictError, "migrate-state"):
+                state.initialize()
+
+            self.assertEqual(db_path.read_bytes(), original)
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+
+    def test_v5_migration_status_leaves_database_directory_unchanged(self) -> None:
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._make_v5_database(state_module, Path(tempdir) / "state")
+            original = {path.name: path.read_bytes() for path in db_path.parent.iterdir()}
+            state = state_module.AutoTradeState(db_path)
+
+            self.assertTrue(hasattr(state, "migration_status"), "missing read-only migration status")
+            self.assertEqual(state.migration_status(), {
+                "ok": True, "status": "MIGRATION_REQUIRED", "user_version": 5, "target_version": 6,
+            })
+
+            self.assertEqual({path.name: path.read_bytes() for path in db_path.parent.iterdir()}, original)
+
+    def test_explicit_v5_migration_preserves_rows_and_publishes_unchanged_old_snapshot(self) -> None:
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._make_v5_database(state_module, Path(tempdir) / "state")
+            state = state_module.AutoTradeState(db_path)
+            strategy = state.register_strategy(
+                profile_id="profile-1", strategy_name="v5-migrate", distribution="official",
+            )
+            now = datetime(2026, 8, 16, 11, 0, tzinfo=UTC)
+            request = state.ensure_authorization(
+                strategy_id=strategy["strategy_id"], scope=complete_scope(), now=now,
+            )
+            authorization = state.grant_authorization(
+                strategy_id=strategy["strategy_id"], request_id=request["request_id"],
+                scope_signature=request["scope_signature"], confirm_live=True, now=now,
+            )
+            state.prepare_submission_group(
+                strategy_id=strategy["strategy_id"], authorization_id=authorization["authorization_id"],
+                idempotency_key="v5-pending", request_fingerprint="a" * 64, now=now,
+                legs=[{
+                    "leg_id": "leg-0", "leg_index": 0, "leg_type": "PRIMARY", "module": "SPOT",
+                    "symbol": "BTCUSDT", "estimated_amount_u": "10", "valuation_source": "fixture",
+                    "side": "BUY", "order_type": "LIMIT", "quantity": "1", "price": "10",
+                }],
+            )
+
+            def original_rows(path):
+                with closing(sqlite3.connect(path)) as connection:
+                    return {
+                        table: connection.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                        for table in (
+                            "strategies", "authorization_requests", "authorizations", "authorization_usage",
+                            "auto_trade_orders", "authorization_events",
+                        )
+                    }
+
+            rows = original_rows(db_path)
+            self.assertTrue(rows["authorization_usage"])
+            self.assertTrue(hasattr(state, "migrate_state"), "missing explicit migration")
+            result = state.migrate_state()
+            self.assertEqual((result["status"], result["previous_version"], result["user_version"]),
+                             ("STATE_MIGRATED", 5, 6))
+            snapshot_path = db_path.parent / "snapshots" / result["relative_path"]
+            self.assertEqual(result["sha256"], hashlib.sha256(snapshot_path.read_bytes()).hexdigest())
+            self.assertEqual(stat.S_IMODE(snapshot_path.stat().st_mode), 0o600)
+            with closing(sqlite3.connect(snapshot_path)) as connection:
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+                self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(original_rows(snapshot_path), rows)
+            self.assertEqual(original_rows(db_path), rows)
+            with closing(sqlite3.connect(db_path)) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM auto_execution_grants").fetchone()[0], 0)
+            self.assertEqual(state.migrate_state()["status"], "CURRENT")
+
+    def test_explicit_v5_migration_validation_failure_keeps_old_database_and_snapshot(self) -> None:
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._make_v5_database(state_module, Path(tempdir) / "state")
+            state = state_module.AutoTradeState(db_path)
+            original = db_path.read_bytes()
+            validate = state_module._validate_connection
+
+            def reject_v6(connection, *, expected_version=6, **kwargs):
+                if expected_version == 6:
+                    raise state_module.StateConflictError("injected v6 validation failure")
+                return validate(connection, expected_version=expected_version, **kwargs)
+
+            self.assertTrue(hasattr(state, "migrate_state"), "missing explicit migration")
+            with patch.object(state_module, "_validate_connection", side_effect=reject_v6):
+                with self.assertRaisesRegex(state_module.StateConflictError, "injected v6 validation failure"):
+                    state.migrate_state()
+
+            self.assertEqual(db_path.read_bytes(), original)
+            snapshots = list((db_path.parent / "snapshots").rglob("*.sqlite3"))
+            self.assertEqual(len(snapshots), 1)
+            with closing(sqlite3.connect(snapshots[0])) as connection:
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertFalse(list(db_path.parent.glob("*.tmp")))
+
+    def test_v5_directory_sync_failure_restores_the_active_schema(self) -> None:
+        state_module = load_state_module()
+        with tempfile.TemporaryDirectory() as tempdir:
+            db_path = self._make_v5_database(state_module, Path(tempdir) / "state")
+            state = state_module.AutoTradeState(db_path)
+            sync = state_module._fsync_directory
+            injected = False
+
+            def fail_first_sync_after_publish(path):
+                nonlocal injected
+                if not injected and path == db_path.parent and state.migration_status()["user_version"] == 6:
+                    injected = True
+                    raise OSError("injected post-switch directory sync error")
+                sync(path)
+
+            with patch.object(state_module, "_fsync_directory", side_effect=fail_first_sync_after_publish):
+                with self.assertRaises(state_module.StateConflictError):
+                    state.migrate_state()
+            self.assertTrue(injected)
+            self.assertEqual(state.migration_status()["user_version"], 5)
+            backups = list((db_path.parent / "snapshots").rglob("*.sqlite3"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(db_path.read_bytes(), backups[0].read_bytes())
+            self.assertFalse(list(db_path.parent.glob("*.tmp")))
+
     def test_v4_validity_constraint_migrates_without_data_loss_and_accepts_720_hours(self) -> None:
         state_module = load_state_module()
 
@@ -149,7 +316,7 @@ class AutoTradeStateSchemaTests(unittest.TestCase):
             )
 
             state = state_module.AutoTradeState(db_path)
-            state.initialize()
+            state.migrate_state()
             self.assertEqual(
                 state.health_check(full=True)["user_version"],
                 state_module.CURRENT_SCHEMA_VERSION,
@@ -228,6 +395,7 @@ class AutoTradeStateSchemaTests(unittest.TestCase):
                     "authorization_usage",
                     "auto_trade_orders",
                     "authorization_events",
+                    "auto_execution_grants",
                 },
             )
             self.assertEqual(user_version, state_module.CURRENT_SCHEMA_VERSION)
@@ -302,7 +470,7 @@ class AutoTradeStateSchemaTests(unittest.TestCase):
             self.assertTrue(hasattr(state_module, "MIGRATION_REGISTRY"), "migration registry is not implemented")
             self.assertIn(1, state_module.MIGRATION_REGISTRY)
             state = state_module.AutoTradeState(db_path)
-            state.initialize()
+            state.migrate_state()
             with closing(sqlite3.connect(db_path)) as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
@@ -311,17 +479,19 @@ class AutoTradeStateSchemaTests(unittest.TestCase):
 
             failing_db = Path(tempdir) / "failing" / "state.sqlite3"
             failing_state = state_module.AutoTradeState(failing_db)
-            failing_state.initialize()
+            failing_db.parent.mkdir(mode=0o700)
             with closing(sqlite3.connect(failing_db)) as connection:
+                connection.executescript(state_module.SCHEMA_V1)
                 connection.execute("PRAGMA user_version = 1")
                 connection.commit()
+            failing_db.chmod(0o600)
             original_migration = state_module.MIGRATION_REGISTRY[1]
             state_module.MIGRATION_REGISTRY[1] = lambda connection: (_ for _ in ()).throw(
                 RuntimeError("injected migration failure")
             )
             try:
-                with self.assertRaises(state_module.StateConflictError):
-                    failing_state.initialize()
+                with self.assertRaisesRegex(state_module.StateConflictError, "schema migration failed"):
+                    failing_state.migrate_state()
             finally:
                 state_module.MIGRATION_REGISTRY[1] = original_migration
             with closing(sqlite3.connect(failing_db)) as connection:
@@ -382,6 +552,7 @@ class AutoTradeStateSchemaTests(unittest.TestCase):
                 now=now,
             )
             with closing(sqlite3.connect(db_path)) as connection:
+                connection.execute("DROP TABLE auto_execution_grants")
                 connection.execute(
                     "ALTER TABLE authorization_usage DROP COLUMN request_fingerprint"
                 )
@@ -396,7 +567,7 @@ class AutoTradeStateSchemaTests(unittest.TestCase):
                 connection.execute("PRAGMA user_version = 2")
                 connection.commit()
 
-            state.initialize()
+            state.migrate_state()
             replay = state.get_submission_group_by_idempotency(
                 authorization_id=authorization["authorization_id"],
                 idempotency_key="legacy-v2",
@@ -1077,6 +1248,7 @@ class AutoTradeSnapshotTests(unittest.TestCase):
             snapshots_dir = config_dir / "snapshots"
             snapshot_path = snapshots_dir / snapshot["relative_path"]
             with closing(sqlite3.connect(snapshot_path)) as connection:
+                connection.execute("DROP TABLE auto_execution_grants")
                 connection.execute(
                     "ALTER TABLE authorization_usage DROP COLUMN request_fingerprint"
                 )
@@ -2999,6 +3171,43 @@ class AutoTradeFacadeProductionBoundaryTests(unittest.TestCase):
         )
         return state, cli_module, profile, strategy, authorization
 
+    def test_facade_recovers_interrupted_grants_under_operation_lock_before_handler(self) -> None:
+        from contextlib import contextmanager
+
+        cli_module = load_cli_module()
+        events = []
+
+        @contextmanager
+        def operation_lock():
+            events.append("lock_acquired")
+            try:
+                yield
+            finally:
+                events.append("lock_released")
+
+        def list_strategies(**kwargs):
+            self.assertEqual(kwargs, {"profile_id": "profile-1", "include_retired": True})
+            events.append("list_strategies")
+            return []
+
+        state = SimpleNamespace(
+            operation_lock=operation_lock,
+            recover_interrupted_grants=lambda: events.append("recover_interrupted_grants"),
+            list_strategies=list_strategies,
+        )
+        facade = cli_module.AutoTradeFacade(
+            state,
+            profile_resolver=lambda name: SimpleNamespace(name=name, profile_id="profile-1"),
+        )
+
+        response = facade.execute("list-strategies", {"profile": "strategy-live"})
+
+        self.assertEqual(response, {"ok": True, "profile": "strategy-live", "strategies": []})
+        self.assertEqual(
+            events,
+            ["lock_acquired", "recover_interrupted_grants", "list_strategies", "lock_released"],
+        )
+
     def test_public_auto_and_event_projections_separate_leg_amount_from_quota(self) -> None:
         cli_module = load_cli_module()
         public = cli_module._public_auto_result(
@@ -4337,7 +4546,7 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
                 raise result
             return result
 
-    def test_official_boundary_blocks_delegated_mutation_until_t13b(self) -> None:
+    def _contract_submission_runtime(self, response):
         import weex_auto_trade_runtime as runtime_module
 
         endpoint = SimpleNamespace(mutating=True, key="transaction.place_order")
@@ -4347,105 +4556,114 @@ class AutoTradeOfficialRuntimeTests(unittest.TestCase):
         )
         client = Mock()
         delegation = Mock()
+        delegation.execute.return_value = response
         boundary = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
         boundary._client = lambda module, private: (api_module, client)
-        result = boundary.call(
-            module="FUTURES",
-            endpoint_key="transaction.place_order",
-            body={"symbol": "BTCUSDT", "newClientOrderId": "client-1"},
-            mutating=True,
-            delegation=delegation,
+        runtime = runtime_module.OfficialAutoTradeRuntime(
+            profile_name="strategy-live", api=boundary, risk_aggregator=Mock(),
         )
-        self.assertTrue(result["_mcp_mutation"])
-        self.assertEqual(
-            result["response"]["error"]["code"],
-            "auto_grant_migration_required",
-        )
-        self.assertEqual(
-            result["response"]["outcome"],
+        return runtime, client, delegation, endpoint
+
+    def test_official_runtime_submits_through_durable_delegation_and_projects_bound_leg(self) -> None:
+        order = {"symbol": "BTCUSDT", "newClientOrderId": "client-1"}
+        runtime, client, delegation, endpoint = self._contract_submission_runtime(
             {
-                "class": "invocation_rejected",
-                "write_attempted": False,
-                "grant_disposition": "unchanged",
-                "action": "order",
-            },
+                "action": "place_order",
+                "ok": True,
+                "outcome": {
+                    "class": "accepted",
+                    "write_attempted": True,
+                    "grant_disposition": "accepted",
+                },
+                "result": {
+                    "status": "accepted",
+                    "request_identity": {"client_order_id": "client-1"},
+                    "symbol": "BTCUSDT",
+                    "market": "futures",
+                    "upstream_order_id": "101",
+                },
+            }
         )
-        delegation.authorize.assert_not_called()
-        delegation.bind_preview.assert_not_called()
+        result = runtime.submitter(
+            endpoint.key,
+            [{"leg_id": "leg-0", "client_order_id": "client-1", "order": order}],
+            delegation,
+        )
+
+        self.assertEqual(
+            result,
+            [{
+                "leg_id": "leg-0",
+                "client_order_id": "client-1",
+                "status": "ACCEPTED",
+                "weex_order_id": "101",
+            }],
+        )
+        delegation.execute.assert_called_once_with(
+            settings=client.mcp_trade_settings_factory.return_value,
+            endpoint=endpoint,
+            query={},
+            body=order,
+        )
+        client.read_endpoint.assert_not_called()
+        client.trade_endpoint.assert_not_called()
+
+    def test_official_boundary_requires_delegate_and_profile_for_automated_mutation(self) -> None:
+        runtime, client, delegation, endpoint = self._contract_submission_runtime({})
+        client.mcp_trade_settings_factory = None
+        prepared_legs = [
+            {"leg_id": "leg-0", "client_order_id": "client-1", "order": {"symbol": "BTCUSDT"}},
+        ]
 
         with self.assertRaisesRegex(ValueError, "delegated authorization"):
-            boundary.call(
-                module="FUTURES",
-                endpoint_key="transaction.place_order",
-                body={"symbol": "BTCUSDT"},
-                mutating=True,
-            )
+            runtime.submitter(endpoint.key, prepared_legs, None)
+        with self.assertRaisesRegex(ValueError, "saved profile"):
+            runtime.submitter(endpoint.key, prepared_legs, delegation)
+        delegation.execute.assert_not_called()
+        client.read_endpoint.assert_not_called()
+        client.trade_endpoint.assert_not_called()
 
-    def test_official_boundary_preserves_preissue_invocation_rejected_outcome(self) -> None:
-        import weex_auto_trade_runtime as runtime_module
-
-        endpoint = SimpleNamespace(mutating=True, key="transaction.place_order")
-        api_module = SimpleNamespace(
-            ENDPOINTS={"transaction.place_order": endpoint},
-            validate_endpoint_trading_mode=lambda selected, mode: None,
-        )
-        client = Mock()
-        boundary = runtime_module.OfficialApiBoundary(profile_name="strategy-live")
-        boundary._client = lambda module, private: (api_module, client)
-        result = boundary.call(
-            module="FUTURES",
-            endpoint_key="transaction.place_order",
-            body={"symbol": "BTCUSDT"},
-            mutating=True,
-            delegation=Mock(),
-        )
-        self.assertEqual(
-            result["response"]["outcome"],
-            {
-                "class": "invocation_rejected",
-                "write_attempted": False,
-                "grant_disposition": "unchanged",
-                "action": "order",
-            },
-        )
-
-    def test_preissue_invocation_rejected_releases_reserved_legs_without_review(self) -> None:
-        import weex_auto_trade_runtime as runtime_module
-
-        results = runtime_module._normalize_mcp_submission_results(
-            operation_key="spot.order.place_order",
-            response={
-                "ok": False,
-                "error": {"code": "auto_grant_migration_required"},
-                "outcome": {
-                    "class": "invocation_rejected",
-                    "write_attempted": False,
-                    "grant_disposition": "unchanged",
-                    "action": "order",
-                },
-                "trade_status": "NOT_SENT",
-                "review_required": False,
-            },
-            prepared_legs=[
-                {
-                    "leg_id": "leg-0",
-                    "client_order_id": "client-0",
-                }
-            ],
-        )
-
-        self.assertEqual(
-            results,
-            [
-                {
-                    "leg_id": "leg-0",
-                    "client_order_id": "client-0",
-                    "status": "RELEASED",
-                    "success": False,
-                    "error_code": "auto_grant_migration_required",
-                }
-            ],
-        )
+    def test_official_runtime_holds_unproven_leg_and_releases_only_terminal_not_sent(self) -> None:
+        for outcome_class, disposition, error_code, expected_status in (
+            ("invocation_rejected", "unchanged", "execution_not_authorized", "REVIEW_REQUIRED"),
+            ("not_sent", "not_sent_terminal", "stale_precondition", "RELEASED"),
+        ):
+            with self.subTest(outcome_class=outcome_class):
+                runtime, client, delegation, endpoint = self._contract_submission_runtime(
+                    {
+                        "action": "place_order",
+                        "ok": False,
+                        "outcome": {
+                            "class": outcome_class,
+                            "write_attempted": False,
+                            "grant_disposition": disposition,
+                        },
+                        "error": {
+                            "code": error_code,
+                            "message": "Order was not submitted.",
+                            "category": "authorization" if outcome_class == "invocation_rejected" else error_code,
+                            "retryable": False,
+                        },
+                    }
+                )
+                result = runtime.submitter(
+                    endpoint.key,
+                    [{
+                        "leg_id": "leg-0",
+                        "client_order_id": "client-1",
+                        "order": {"symbol": "BTCUSDT", "newClientOrderId": "client-1"},
+                    }],
+                    delegation,
+                )
+                self.assertEqual(len(result), 1)
+                self.assertEqual(result[0]["client_order_id"], "client-1")
+                self.assertEqual(result[0]["status"], expected_status)
+                self.assertEqual(
+                    result[0].get("error_code"),
+                    "not_sent" if expected_status == "RELEASED" else None,
+                )
+                delegation.execute.assert_called_once()
+                client.read_endpoint.assert_not_called()
 
     def test_official_boundary_preserves_read_error_code_for_spot_history_fallback(self) -> None:
         import weex_auto_trade_runtime as runtime_module

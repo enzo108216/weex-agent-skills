@@ -8,19 +8,22 @@ import os
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import stat
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from contextlib import closing, contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 from typing import Any
 
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 EVENT_SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 5_000
 MAX_VALID_HOURS = Decimal("720")
@@ -50,7 +53,7 @@ DEPRECATED_EXPANDED_SCOPE_COLUMNS = (
     "max_order_count",
 )
 SYMBOL_PATTERN = re.compile(r"^[A-Z0-9:_-]+$")
-EXPECTED_TABLES = frozenset(
+_LEGACY_TABLES = frozenset(
     {
         "strategies",
         "authorization_requests",
@@ -60,6 +63,16 @@ EXPECTED_TABLES = frozenset(
         "authorization_events",
     }
 )
+EXPECTED_TABLES = _LEGACY_TABLES | {"auto_execution_grants"}
+_AUTO_GRANT_OUTCOMES = {
+    "accepted": (True, "accepted", "ACCEPTED"),
+    "definitive_rejection": (True, "definitive_rejection", "DEFINITIVE_REJECTION"),
+    "not_sent": (False, "not_sent_terminal", "NOT_SENT_TERMINAL"),
+    "unknown": (True, "review_required", "REVIEW_REQUIRED"),
+    "partial": (True, "review_required", "REVIEW_REQUIRED"),
+}
+_AUTO_GRANT_TERMINAL_STATES = frozenset(entry[2] for entry in _AUTO_GRANT_OUTCOMES.values())
+_AUTO_GRANT_BINDING_FIELDS = ("grant_id", "principal_id", "account_binding_id", "tool_name")
 _OFFICIAL_USAGE_EVIDENCE_SOURCES = frozenset(
     {
         "WEEX_SPOT_ORDER_ACCEPTED",
@@ -183,6 +196,12 @@ class StateConflictError(RuntimeError):
     """Raised when local state cannot be used without weakening the guard."""
 
     code = "STATE_CONFLICT"
+
+
+class StateMigrationRequiredError(StateConflictError):
+    """Raised when an existing database requires explicit schema migration."""
+
+    code = "MIGRATION_REQUIRED"
 
 
 SCHEMA_V1 = """
@@ -477,13 +496,82 @@ def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE auto_execution_grants (
+            submission_group_id TEXT PRIMARY KEY,
+            authorization_id TEXT NOT NULL,
+            strategy_id TEXT NOT NULL,
+            request_fingerprint TEXT NOT NULL,
+            grant_id TEXT NOT NULL UNIQUE,
+            principal_id TEXT NOT NULL,
+            account_binding_id TEXT NOT NULL,
+            credential_fingerprint TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            prepared_artifact_digest TEXT NOT NULL,
+            execution_binding_digest TEXT NOT NULL,
+            prepared_json TEXT NOT NULL,
+            issued_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK (state IN (
+                'ISSUED', 'CLAIMED', 'ACCEPTED', 'DEFINITIVE_REJECTION',
+                'NOT_SENT_TERMINAL', 'REVIEW_REQUIRED'
+            )),
+            claim_id TEXT,
+            claimed_at INTEGER,
+            outcome_digest TEXT,
+            FOREIGN KEY (authorization_id, strategy_id)
+                REFERENCES authorizations(authorization_id, strategy_id)
+        )
+    """)
+
+
 MIGRATION_REGISTRY = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
+    5: _migrate_v5_to_v6,
 }
 MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF = frozenset({4})
+
+
+def _migrate_schema(connection: sqlite3.Connection, version: int) -> None:
+    while version < CURRENT_SCHEMA_VERSION:
+        migration = MIGRATION_REGISTRY.get(version)
+        if migration is None:
+            raise StateConflictError(
+                f"missing migration from automated-trading state schema version {version}"
+            )
+        disable_foreign_keys = version in MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF
+        try:
+            if disable_foreign_keys:
+                connection.execute("PRAGMA foreign_keys = OFF")
+                if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 0:
+                    raise StateConflictError("unable to disable SQLite foreign keys for schema migration")
+            connection.execute("BEGIN IMMEDIATE")
+            migration(connection)
+            next_version = version + 1
+            connection.execute(f"PRAGMA user_version = {next_version}")
+            _validate_connection(
+                connection,
+                full=True,
+                expected_version=next_version,
+                require_foreign_keys=not disable_foreign_keys,
+            )
+            connection.execute("COMMIT")
+            if disable_foreign_keys:
+                connection.execute("PRAGMA foreign_keys = ON")
+                _validate_connection(connection, full=True, expected_version=next_version)
+            version = next_version
+        except Exception as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            if disable_foreign_keys:
+                connection.execute("PRAGMA foreign_keys = ON")
+            if isinstance(exc, StateConflictError):
+                raise
+            raise StateConflictError("automated-trading schema migration failed") from exc
 
 
 class AutoTradeState:
@@ -528,7 +616,7 @@ class AutoTradeState:
 
         existed = self.db_path.exists()
         if existed:
-            _require_owner_only(self.db_path, expected_mode=0o600, label="state database")
+            _require_current_schema(self.migration_status()["user_version"])
         else:
             try:
                 descriptor = os.open(
@@ -542,10 +630,10 @@ class AutoTradeState:
                 raise StateConflictError("unable to create owner-only automated-trading state") from exc
         try:
             with closing(self._connect()) as connection:
-                connection.execute("PRAGMA journal_mode = WAL")
-                connection.execute("PRAGMA synchronous = FULL")
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-                if version == 0:
+                if existed or version != 0:
+                    _require_current_schema(version)
+                else:
                     try:
                         connection.executescript(
                             "BEGIN IMMEDIATE;\n"
@@ -557,64 +645,125 @@ class AutoTradeState:
                         if connection.in_transaction:
                             connection.execute("ROLLBACK")
                         raise
-                    version = 1
-                if version > CURRENT_SCHEMA_VERSION:
-                    raise StateConflictError(
-                        f"unsupported automated-trading state schema version: {version}"
-                    )
-                while version < CURRENT_SCHEMA_VERSION:
-                    migration = MIGRATION_REGISTRY.get(version)
-                    if migration is None:
-                        raise StateConflictError(
-                            f"missing migration from automated-trading state schema version {version}"
-                        )
-                    disable_foreign_keys = version in MIGRATIONS_REQUIRING_FOREIGN_KEYS_OFF
-                    try:
-                        if disable_foreign_keys:
-                            connection.execute("PRAGMA foreign_keys = OFF")
-                            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 0:
-                                raise StateConflictError(
-                                    "unable to disable SQLite foreign keys for schema migration"
-                                )
-                        connection.execute("BEGIN IMMEDIATE")
-                        migration(connection)
-                        next_version = version + 1
-                        connection.execute(f"PRAGMA user_version = {next_version}")
-                        _validate_connection(
-                            connection,
-                            full=True,
-                            expected_version=next_version,
-                            require_foreign_keys=not disable_foreign_keys,
-                        )
-                        connection.execute("COMMIT")
-                        if disable_foreign_keys:
-                            connection.execute("PRAGMA foreign_keys = ON")
-                            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-                                raise StateConflictError(
-                                    "unable to restore SQLite foreign keys after schema migration"
-                                )
-                            _validate_connection(
-                                connection,
-                                full=True,
-                                expected_version=next_version,
-                            )
-                        version = next_version
-                    except StateConflictError:
-                        if connection.in_transaction:
-                            connection.execute("ROLLBACK")
-                        if disable_foreign_keys:
-                            connection.execute("PRAGMA foreign_keys = ON")
-                        raise
-                    except Exception as exc:
-                        if connection.in_transaction:
-                            connection.execute("ROLLBACK")
-                        if disable_foreign_keys:
-                            connection.execute("PRAGMA foreign_keys = ON")
-                        raise StateConflictError("automated-trading schema migration failed") from exc
+                    _migrate_schema(connection, 1)
                 _validate_connection(connection, full=not existed)
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("PRAGMA synchronous = FULL")
         except (OSError, sqlite3.Error) as exc:
             raise StateConflictError("unable to initialize automated-trading state") from exc
         _require_owner_only(self.db_path, expected_mode=0o600, label="state database")
+
+    def migration_status(self) -> dict[str, Any]:
+        """Inspect the schema without creating a database, SQLite sidecar, or lock."""
+        try:
+            self.db_path.lstat()
+        except FileNotFoundError:
+            return {
+                "ok": True, "status": "NOT_INITIALIZED", "user_version": None,
+                "target_version": CURRENT_SCHEMA_VERSION,
+            }
+        except OSError as exc:
+            raise StateConflictError("automated-trading state database is unavailable") from exc
+        _require_owner_only(self.db_path.parent, expected_mode=0o700, label="state directory")
+        _require_owner_only(self.db_path, expected_mode=0o600, label="state database")
+        try:
+            # The version is published in the main file on every supported schema switch.
+            # immutable prevents even a read-only probe creating WAL sidecars.
+            uri = self.db_path.absolute().as_uri() + "?mode=ro&immutable=1"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        except (OSError, sqlite3.Error) as exc:
+            raise StateConflictError("unable to inspect automated-trading schema version") from exc
+        if not _has_complete_migration_path(version):
+            raise StateConflictError(f"unsupported automated-trading state schema version: {version}")
+        return {
+            "ok": True,
+            "status": "CURRENT" if version == CURRENT_SCHEMA_VERSION else "MIGRATION_REQUIRED",
+            "user_version": version,
+            "target_version": CURRENT_SCHEMA_VERSION,
+        }
+
+    def migrate_state(self) -> dict[str, Any]:
+        """Back up the old database, migrate a copy, then replace the active file."""
+        status = self.migration_status()
+        if status["status"] != "MIGRATION_REQUIRED":
+            return status
+        temp_path = self.db_path.parent / f".migrate-{uuid.uuid4().hex}.tmp"
+        rollback_path = temp_path.with_suffix(".rollback.tmp")
+        try:
+            with self.operation_lock():
+                status = self.migration_status()
+                if status["status"] != "MIGRATION_REQUIRED":
+                    return status
+                old_version = status["user_version"]
+                snapshots_dir = self._snapshots_dir()
+                preserved_dir = snapshots_dir / "preserved"
+                _ensure_owner_only_directory(snapshots_dir)
+                _ensure_owner_only_directory(preserved_dir)
+                snapshot_id = "snap_" + uuid.uuid4().hex
+                snapshot_path = preserved_dir / f"pre-migrate-{snapshot_id}.sqlite3"
+                self._backup_active_database(snapshot_path, expected_version=old_version)
+                record = {
+                    "snapshot_id": snapshot_id,
+                    "created_at": _utc_now(),
+                    "relative_path": snapshot_path.relative_to(snapshots_dir).as_posix(),
+                    "database_schema_version": old_version,
+                    "size_bytes": snapshot_path.stat().st_size,
+                    "sha256": _sha256_regular_file(snapshot_path),
+                }
+                _write_owner_only_json(snapshot_path.with_suffix(".json"), record)
+                _fsync_directory(snapshots_dir)
+                _fsync_directory(snapshots_dir.parent)
+
+                descriptor = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(descriptor)
+                shutil.copyfile(snapshot_path, temp_path)
+                os.chmod(temp_path, 0o600)
+                temporary = AutoTradeState(temp_path, busy_timeout_ms=self.busy_timeout_ms)
+                with closing(temporary._connect()) as target:
+                    _migrate_schema(target, old_version)
+                    _validate_connection(target, full=True)
+                _fsync_regular_file(temp_path)
+
+                # Old workers are stopped during maintenance; reject a still-busy WAL.
+                with closing(self._connect()) as source:
+                    busy, _, _ = source.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                    if busy:
+                        raise StateConflictError("automated-trading database is busy; stop old workers before migration")
+                descriptor = os.open(rollback_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(descriptor)
+                shutil.copyfile(snapshot_path, rollback_path)
+                _fsync_regular_file(rollback_path)
+                for suffix in ("-wal", "-shm"):
+                    _unlink_if_exists(Path(str(self.db_path) + suffix))
+                os.replace(temp_path, self.db_path)
+                try:
+                    _fsync_directory(self.db_path.parent)
+                except OSError as exc:
+                    try:
+                        os.replace(rollback_path, self.db_path)
+                        _fsync_directory(self.db_path.parent)
+                    except OSError as rollback_exc:
+                        raise StateConflictError(
+                            "automated-trading schema switch could not be verified; "
+                            "keep workers stopped and inspect the preserved migration backup"
+                        ) from rollback_exc
+                    raise StateConflictError(
+                        "automated-trading schema switch failed; the previous database was restored"
+                    ) from exc
+                return {
+                    "ok": True,
+                    "status": "STATE_MIGRATED",
+                    "previous_version": old_version,
+                    "user_version": CURRENT_SCHEMA_VERSION,
+                    "target_version": CURRENT_SCHEMA_VERSION,
+                    **record,
+                }
+        except (OSError, sqlite3.Error) as exc:
+            raise StateConflictError("unable to migrate automated-trading state") from exc
+        finally:
+            _unlink_if_exists(temp_path)
+            _unlink_if_exists(rollback_path)
 
     def health_check(self, *, full: bool = False) -> dict[str, Any]:
         _require_owner_only(self.db_path.parent, expected_mode=0o700, label="state directory")
@@ -813,7 +962,9 @@ class AutoTradeState:
                     temp_restore_path,
                     busy_timeout_ms=self.busy_timeout_ms,
                 )
-                restored_state.initialize()
+                with closing(restored_state._connect()) as restored_connection:
+                    _migrate_schema(restored_connection, record["database_schema_version"])
+                    _validate_connection(restored_connection, full=True)
                 revoked_count, pending_count, review_count = (
                     restored_state._apply_restore_safety(
                         snapshot_id=snapshot_id,
@@ -866,7 +1017,9 @@ class AutoTradeState:
             for suffix in ("-wal", "-shm"):
                 _unlink_if_exists(Path(str(temp_restore_path) + suffix))
 
-    def _backup_active_database(self, target_path: Path) -> None:
+    def _backup_active_database(
+        self, target_path: Path, *, expected_version: int = CURRENT_SCHEMA_VERSION,
+    ) -> None:
         descriptor = os.open(
             target_path,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -874,14 +1027,15 @@ class AutoTradeState:
         )
         os.close(descriptor)
         try:
-            with closing(self._connect()) as source, closing(
+            source_uri = self.db_path.absolute().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(source_uri, uri=True, timeout=self.busy_timeout_ms / 1_000)) as source, closing(
                 sqlite3.connect(target_path, isolation_level=None)
             ) as target:
                 target.row_factory = sqlite3.Row
                 target.execute("PRAGMA foreign_keys = ON")
                 source.backup(target)
                 target.execute("PRAGMA journal_mode = DELETE")
-                _validate_connection(target, full=True)
+                _validate_connection(target, full=True, expected_version=expected_version)
             os.chmod(target_path, 0o600)
             _fsync_regular_file(target_path)
         except Exception:
@@ -2445,6 +2599,221 @@ class AutoTradeState:
                 "unable to read delegated automated-trading submission"
             ) from exc
 
+    @contextmanager
+    def _auto_grant_transaction(self):
+        try:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                yield connection
+                connection.execute("COMMIT")
+        except (OSError, sqlite3.Error) as exc:
+            raise StateConflictError("unable to persist delegated execution grant state") from exc
+
+    def issue_execution_grant(
+        self, *, submission_group_id: str, authorization_id: str, strategy_id: str,
+        profile_id: str, request_fingerprint: str, client_order_ids: list[str],
+        grant: Any, prepared: Mapping[str, Any],
+    ) -> Any:
+        """Issue one grant for an existing reserved submission group without claiming it."""
+        from weex_order_intent_state import _default_runtime_models, _rehydrate_prepared
+
+        runtime = _default_runtime_models()
+        if (
+            not isinstance(grant, runtime.ExecutionGrant)
+            or grant.state != "ISSUED"
+            or grant.principal_id != profile_id
+            or grant.claim_id is not None
+            or grant.terminal_state is not None
+            or grant.outcome_digest is not None
+            or not isinstance(prepared, Mapping)
+        ):
+            raise ValueError("DELEGATED_EXECUTION_GRANT_INVALID")
+        artifact = _rehydrate_prepared({"prepared_mutation": dict(prepared)}, runtime)
+        _require_auto_grant_artifact(grant, artifact)
+        _required_sha256(request_fingerprint, "request_fingerprint")
+        with self._auto_grant_transaction() as connection:
+            authorization, bound_clients = _reserved_auto_grant_group(
+                connection, submission_group_id=submission_group_id, authorization_id=authorization_id,
+                strategy_id=strategy_id, profile_id=profile_id,
+                request_fingerprint=request_fingerprint, artifact=artifact,
+            )
+            if client_order_ids != bound_clients:
+                raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+            self._assert_automatic_trading_enabled()
+            if _auto_grant_inactive_reason(authorization, grant.issued_at) is not None:
+                raise ValueError("AUTHORIZATION_NOT_ACTIVE")
+            expires_at = min(grant.expires_at, artifact.expires_at, _auto_grant_expiry(authorization))
+            issued = replace(grant, expires_at=expires_at)
+            runtime.IssuedGrant(grant=issued, prepared_mutation=artifact, confirmed_at=issued.issued_at)
+            connection.execute(
+                """
+                INSERT INTO auto_execution_grants (
+                    submission_group_id, authorization_id, strategy_id, request_fingerprint,
+                    grant_id, principal_id, account_binding_id, credential_fingerprint, tool_name,
+                    prepared_artifact_digest, execution_binding_digest, prepared_json,
+                    issued_at, expires_at, state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ISSUED')
+                """,
+                (
+                    submission_group_id, authorization_id, strategy_id, request_fingerprint,
+                    issued.grant_id, issued.principal_id, issued.account_binding_id,
+                    issued.credential_fingerprint, issued.tool_name, issued.prepared_artifact_digest,
+                    issued.execution_binding_digest, _canonical_grant_json(artifact.to_dict()),
+                    issued.issued_at, issued.expires_at,
+                ),
+            )
+        return issued
+
+    def load(self, *, grant_id: str, principal_id: str, account_binding_id: str, tool_name: str) -> Any:
+        """Return an ISSUED grant for MCP dispatch without granting authority to claim it."""
+        from weex_order_intent_state import _default_runtime_models
+
+        runtime = _default_runtime_models()
+        with closing(self._connect()) as connection:
+            row = _bound_auto_grant(connection, grant_id, principal_id, account_binding_id, tool_name)
+            return _decode_issued_auto_grant(row, runtime)
+
+    def claim(
+        self, *, grant_id: str, principal_id: str, account_binding_id: str, tool_name: str,
+        prepared_artifact_digest: str, execution_binding_digest: str, now: int,
+    ) -> Any:
+        from weex_order_intent_state import _default_runtime_models
+
+        if type(now) is not int or now < 0:
+            raise ValueError("grant claim time is invalid")
+        runtime = _default_runtime_models()
+        with self._auto_grant_transaction() as connection:
+            row = _bound_auto_grant(connection, grant_id, principal_id, account_binding_id, tool_name)
+            issued = _decode_issued_auto_grant(row, runtime)
+            if (
+                row["prepared_artifact_digest"] != prepared_artifact_digest
+                or row["execution_binding_digest"] != execution_binding_digest
+                or now < row["issued_at"]
+            ):
+                raise ValueError("DELEGATED_EXECUTION_GRANT_MISMATCH")
+            authorization, _ = _reserved_auto_grant_group(
+                connection, submission_group_id=row["submission_group_id"],
+                authorization_id=row["authorization_id"], strategy_id=row["strategy_id"],
+                profile_id=row["principal_id"], request_fingerprint=row["request_fingerprint"],
+                artifact=issued.prepared_mutation,
+            )
+            reason = _auto_grant_inactive_reason(authorization, now)
+            if reason is None and now >= issued.prepared_mutation.expires_at:
+                reason = "prepared_expired"
+            if reason is None and now >= row["expires_at"]:
+                reason = "grant_expired"
+            try:
+                self._assert_automatic_trading_enabled()
+            except ValueError:
+                reason = reason or "revoked"
+            if reason is None:
+                result = runtime.GrantClaim(
+                    grant_id=grant_id, claim_id="claim_" + uuid.uuid4().hex,
+                    state="CLAIMED", claimed_at=now,
+                )
+                connection.execute(
+                    "UPDATE auto_execution_grants SET state = 'CLAIMED', claim_id = ?, claimed_at = ? WHERE grant_id = ?",
+                    (result.claim_id, now, grant_id),
+                )
+            else:
+                digest = runtime.NOT_SENT_TERMINAL_OUTCOME_DIGEST
+                result = runtime.GrantTerminalReceipt(
+                    grant_id=grant_id, state="NOT_SENT_TERMINAL", terminal_state="NOT_SENT_TERMINAL",
+                    resolved_at=now, reason=reason, outcome_digest=digest,
+                )
+                connection.execute(
+                    "UPDATE auto_execution_grants SET state = 'NOT_SENT_TERMINAL', outcome_digest = ? WHERE grant_id = ?",
+                    (digest, grant_id),
+                )
+        return result
+
+    def finalize(
+        self, *, grant_id: str, principal_id: str, account_binding_id: str, tool_name: str,
+        claim_id: str, terminal_state: str, outcome_digest: str,
+    ) -> None:
+        from weex_order_intent_state import NOT_SENT_TERMINAL_OUTCOME_DIGEST
+
+        if (
+            not isinstance(claim_id, str) or not claim_id
+            or terminal_state not in _AUTO_GRANT_TERMINAL_STATES
+            or not isinstance(outcome_digest, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", outcome_digest) is None
+            or (terminal_state == "NOT_SENT_TERMINAL" and outcome_digest != NOT_SENT_TERMINAL_OUTCOME_DIGEST)
+        ):
+            raise ValueError("invalid delegated execution grant outcome")
+        with self._auto_grant_transaction() as connection:
+            row = _bound_auto_grant(connection, grant_id, principal_id, account_binding_id, tool_name)
+            if row["claim_id"] != claim_id:
+                raise ValueError("DELEGATED_EXECUTION_GRANT_MISMATCH")
+            if row["state"] == terminal_state and row["outcome_digest"] == outcome_digest:
+                return None
+            if row["state"] != "CLAIMED":
+                raise ValueError("DELEGATED_EXECUTION_GRANT_NOT_CLAIMED")
+            connection.execute(
+                "UPDATE auto_execution_grants SET state = ?, outcome_digest = ? WHERE grant_id = ?",
+                (terminal_state, outcome_digest, grant_id),
+            )
+
+    def recover(self, *, grant_id: str, principal_id: str, account_binding_id: str, tool_name: str, now: int) -> Any:
+        from weex_order_intent_state import _default_runtime_models
+
+        if type(now) is not int or now < 0:
+            raise ValueError("grant recovery time is invalid")
+        runtime = _default_runtime_models()
+        with self._auto_grant_transaction() as connection:
+            row = _bound_auto_grant(connection, grant_id, principal_id, account_binding_id, tool_name)
+            if row["state"] != "CLAIMED":
+                raise ValueError("DELEGATED_EXECUTION_GRANT_NOT_CLAIMED")
+            result = runtime.GrantRecovery(
+                grant_id=grant_id, state="REVIEW_REQUIRED", recovered_at=now, reason="unfinalized_claim",
+            )
+            connection.execute(
+                "UPDATE auto_execution_grants SET state = 'REVIEW_REQUIRED', outcome_digest = ? WHERE grant_id = ?",
+                (_unfinalized_auto_grant_digest(), grant_id),
+            )
+        return result
+
+    def recover_interrupted_grants(self) -> None:
+        """Hold unresolved legs after an interrupted grant or incomplete result projection."""
+        with self.operation_lock(), self._auto_grant_transaction() as connection:
+            connection.execute(
+                "UPDATE auto_execution_grants SET state = 'REVIEW_REQUIRED', outcome_digest = ? WHERE state = 'CLAIMED'",
+                (_unfinalized_auto_grant_digest(),),
+            )
+            connection.execute(
+                """
+                UPDATE authorization_usage SET status = 'REVIEW_REQUIRED', updated_at = ?
+                WHERE status = 'RESERVED' AND EXISTS (
+                    SELECT 1 FROM auto_execution_grants AS grant
+                    WHERE grant.submission_group_id = authorization_usage.submission_group_id
+                      AND grant.authorization_id = authorization_usage.authorization_id
+                      AND grant.strategy_id = authorization_usage.strategy_id
+                )
+                """,
+                (_utc_now(),),
+            )
+
+    def execution_grant_outcome_matches(self, *, submission_group_id: str, grant: Any, outcome: Mapping[str, Any]) -> bool:
+        if not isinstance(outcome, Mapping) or set(outcome) != {"class", "write_attempted", "grant_disposition"}:
+            return False
+        outcome_class = outcome["class"]
+        expected = _AUTO_GRANT_OUTCOMES.get(outcome_class) if isinstance(outcome_class, str) else None
+        if expected is None or outcome["write_attempted"] is not expected[0] or outcome["grant_disposition"] != expected[1]:
+            return False
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM auto_execution_grants WHERE submission_group_id = ?", (submission_group_id,),
+            ).fetchone()
+        return bool(
+            row is not None
+            and row["state"] == expected[2]
+            and row["outcome_digest"] == _auto_grant_digest(dict(outcome))
+            and all(row[field] == getattr(grant, field, None) for field in (
+                *_AUTO_GRANT_BINDING_FIELDS, "prepared_artifact_digest", "execution_binding_digest",
+                "credential_fingerprint", "issued_at", "expires_at",
+            ))
+        )
+
     def get_submission_group_by_idempotency(
         self,
         *,
@@ -2883,6 +3252,11 @@ class AutoTradeState:
                 for field_name, expected in binding_values.items():
                     if getattr(evidence, field_name) != expected:
                         raise ValueError("USAGE_EVIDENCE_BINDING_MISMATCH")
+                if outcome == "RELEASED" and connection.execute(
+                    "SELECT 1 FROM auto_execution_grants WHERE submission_group_id = ?",
+                    (usage["submission_group_id"],),
+                ).fetchone() is not None:
+                    raise ValueError("NATIVE_GRANT_ABSENCE_CANNOT_RELEASE_USAGE")
                 if outcome == "RELEASED" and order["weex_order_id"] is not None:
                     raise ValueError("ORDER_MAPPING_CONFLICT")
                 if usage["status"] == outcome:
@@ -3782,6 +4156,16 @@ def _has_complete_migration_path(version: Any) -> bool:
     return True
 
 
+def _require_current_schema(version: int) -> None:
+    if version == CURRENT_SCHEMA_VERSION:
+        return
+    if _has_complete_migration_path(version):
+        raise StateMigrationRequiredError(
+            f"automated-trading schema version {version} requires explicit migrate-state"
+        )
+    raise StateConflictError(f"unsupported automated-trading state schema version: {version}")
+
+
 def _write_snapshot_index(snapshots_dir: Path, records: list[dict[str, str]]) -> None:
     index_path = snapshots_dir / "index.json"
     temp_path = snapshots_dir / f".index-{uuid.uuid4().hex}.tmp"
@@ -4022,7 +4406,7 @@ def _validate_connection(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         )
     }
-    if tables != EXPECTED_TABLES:
+    if tables != (EXPECTED_TABLES if version >= 6 else _LEGACY_TABLES):
         raise StateConflictError("automated-trading state table set is not supported")
 
     pragma_name = "integrity_check" if full else "quick_check"
@@ -4125,7 +4509,7 @@ def _validate_business_invariants(
             )
         ):
             raise StateConflictError("usage authorization linkage invariant failed")
-        request_fingerprint = usage["request_fingerprint"]
+        request_fingerprint = usage["request_fingerprint"] if schema_version >= 3 else None
         if request_fingerprint is not None and (
             not isinstance(request_fingerprint, str)
             or re.fullmatch(r"[0-9a-f]{64}", request_fingerprint) is None
@@ -4223,6 +4607,195 @@ def _validate_business_invariants(
             order["authorization_id"] != authorization["authorization_id"]
         ):
             raise StateConflictError("event authorization order chain invariant failed")
+
+
+def _canonical_grant_json(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _auto_grant_digest(payload: dict[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(_canonical_grant_json(payload).encode("utf-8")).hexdigest()
+
+
+def _unfinalized_auto_grant_digest() -> str:
+    return _auto_grant_digest({"class": "unknown", "write_attempted": True, "grant_disposition": "review_required"})
+
+
+def _auto_grant_expiry(authorization: sqlite3.Row) -> int:
+    return (_parse_time(authorization["expires_at"]) - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(milliseconds=1)
+
+
+def _auto_grant_inactive_reason(authorization: sqlite3.Row, now: int) -> str | None:
+    if authorization["strategy_status"] != "ACTIVE" or authorization["status"] == "REVOKED":
+        return "revoked"
+    if authorization["status"] == "EXPIRED" or now >= _auto_grant_expiry(authorization):
+        return "grant_expired"
+    now_text = _format_time(datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=now))
+    if authorization["status"] != "ACTIVE" or authorization["starts_at"] > now_text:
+        raise ValueError("AUTHORIZATION_NOT_ACTIVE")
+    return None
+
+
+def _require_auto_grant_artifact(grant: Any, artifact: Any) -> None:
+    if (
+        grant.tool_name != artifact.tool_name
+        or grant.prepared_artifact_digest != artifact.prepared_artifact_digest
+        or grant.execution_binding_digest != artifact.execution_binding_digest
+        or grant.credential_fingerprint != artifact.credential_fingerprint
+        or artifact.contract_version != "1"
+        or artifact.trading_mode != "live"
+        or artifact.risk_facts.get("dynamic_scope") is True
+    ):
+        raise ValueError("DELEGATED_EXECUTION_GRANT_MISMATCH")
+
+
+def _bound_auto_grant(
+    connection: sqlite3.Connection, grant_id: str, principal_id: str, account_binding_id: str, tool_name: str,
+) -> sqlite3.Row:
+    row = connection.execute("SELECT * FROM auto_execution_grants WHERE grant_id = ?", (grant_id,)).fetchone()
+    if row is None or any(
+        row[field] != expected for field, expected in zip(
+            _AUTO_GRANT_BINDING_FIELDS, (grant_id, principal_id, account_binding_id, tool_name), strict=True,
+        )
+    ):
+        raise ValueError("DELEGATED_EXECUTION_GRANT_MISMATCH")
+    return row
+
+
+def _decode_issued_auto_grant(row: sqlite3.Row, runtime: Any) -> Any:
+    from weex_order_intent_state import _rehydrate_prepared
+
+    if row["state"] != "ISSUED":
+        raise ValueError("DELEGATED_EXECUTION_GRANT_NOT_ISSUED")
+    artifact = _rehydrate_prepared({"prepared_mutation": json.loads(row["prepared_json"])}, runtime)
+    grant = runtime.ExecutionGrant(
+        **{field: row[field] for field in _AUTO_GRANT_BINDING_FIELDS},
+        state=row["state"], credential_fingerprint=row["credential_fingerprint"],
+        prepared_artifact_digest=row["prepared_artifact_digest"], execution_binding_digest=row["execution_binding_digest"],
+        issued_at=row["issued_at"], expires_at=row["expires_at"], claim_id=row["claim_id"],
+        outcome_digest=row["outcome_digest"],
+    )
+    _require_auto_grant_artifact(grant, artifact)
+    if grant.claim_id is not None or grant.outcome_digest is not None or grant.expires_at > artifact.expires_at:
+        raise ValueError("DELEGATED_EXECUTION_GRANT_INVALID")
+    return runtime.IssuedGrant(grant=grant, prepared_mutation=artifact, confirmed_at=grant.issued_at)
+
+
+def _reserved_auto_grant_group(
+    connection: sqlite3.Connection, *, submission_group_id: str, authorization_id: str,
+    strategy_id: str, profile_id: str, request_fingerprint: str, artifact: Any,
+) -> tuple[sqlite3.Row, list[str]]:
+    authorization = connection.execute(
+        """
+        SELECT a.*, s.profile_id, s.status AS strategy_status, s.owner_key AS strategy_owner_key,
+               s.trading_mode AS strategy_mode
+        FROM authorizations AS a JOIN strategies AS s ON s.strategy_id = a.strategy_id
+        WHERE a.authorization_id = ?
+        """,
+        (authorization_id,),
+    ).fetchone()
+    if authorization is None or any((
+        authorization["strategy_id"] != strategy_id,
+        authorization["profile_id"] != profile_id,
+        authorization["owner_key"] != authorization["strategy_owner_key"],
+        authorization["strategy_mode"] != "live",
+    )):
+        raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+    if _has_deprecated_expanded_scope(authorization):
+        raise ValueError("AUTHORIZATION_SCOPE_REAUTHORIZATION_REQUIRED")
+
+    arguments = artifact.canonical_arguments
+    tool_name = artifact.tool_name
+    market = artifact.market
+    if (
+        market not in {"spot", "futures"}
+        or arguments.get("market") != market
+        or arguments.get("trading_mode") != "live"
+        or artifact.action != tool_name.removeprefix("trade_")
+    ):
+        raise ValueError("UNSUPPORTED_OPERATION")
+    if tool_name == "trade_place_batch_orders":
+        legs = arguments.get("orders")
+    elif tool_name == "trade_place_order":
+        legs = [arguments]
+    elif market == "futures" and (
+        tool_name == "trade_place_conditional_order"
+        or (tool_name == "trade_place_tp_sl" and arguments.get("quantity_mode") == "exact")
+    ):
+        legs = [arguments]
+    else:
+        raise ValueError("UNSUPPORTED_OPERATION")
+    if not isinstance(legs, list) or not legs or any(not isinstance(leg, dict) for leg in legs):
+        raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+    usages = connection.execute(
+        """
+        SELECT u.*, o.client_order_id, o.weex_order_id, o.side, o.order_type, o.quantity, o.price
+        FROM authorization_usage AS u LEFT JOIN auto_trade_orders AS o
+          ON o.usage_id = u.usage_id AND o.authorization_id = u.authorization_id
+         AND o.strategy_id = u.strategy_id AND o.submission_group_id = u.submission_group_id
+         AND o.leg_id = u.leg_id AND o.leg_index = u.leg_index AND o.leg_type = u.leg_type
+         AND o.module = u.module AND o.symbol = u.symbol
+        WHERE u.submission_group_id = ? ORDER BY u.leg_index, u.usage_id
+        """,
+        (submission_group_id,),
+    ).fetchall()
+    if len(usages) != len(legs):
+        raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+    total = _stored_decimal(authorization["max_total_amount_u"], positive=True)
+    max_single = _stored_decimal(authorization["max_single_amount_u"], positive=True)
+    reserved = _stored_decimal(authorization["reserved_amount_u"], positive=False)
+    accepted = _stored_decimal(authorization["accepted_amount_u"], positive=False)
+    group_total = Decimal("0")
+    allowed_symbols = set(authorization["symbols_csv"].split(","))
+    client_ids = []
+    for usage, leg in zip(usages, legs, strict=True):
+        if tool_name == "trade_place_tp_sl":
+            order_type = leg.get("plan_type")
+            leg_type = order_type
+            side = {"LONG": "SELL", "SHORT": "BUY"}.get(leg.get("position_side"))
+            raw_price = leg.get("execute_price")
+            if raw_price == "0":
+                raw_price = None
+            client_id = leg.get("client_algo_id")
+        elif tool_name == "trade_place_conditional_order":
+            leg_type = "CONDITIONAL"
+            order_type, side, raw_price = leg.get("order_type"), leg.get("side"), leg.get("price")
+            client_id = leg.get("client_algo_id")
+        else:
+            leg_type = "BATCH_CHILD" if len(legs) > 1 else "PRIMARY"
+            order_type, side, raw_price = leg.get("order_type"), leg.get("side"), leg.get("price")
+            client_id = leg.get("client_order_id")
+        quantity = _positive_decimal_text(leg.get("quantity"), "quantity")
+        price = _positive_decimal_text(raw_price, "price") if raw_price is not None else None
+        if any((
+            usage["authorization_id"] != authorization_id,
+            usage["strategy_id"] != strategy_id,
+            usage["owner_key"] != authorization["owner_key"],
+            usage["request_fingerprint"] != request_fingerprint,
+            usage["status"] != "RESERVED",
+            usage["module"] != market.upper(),
+            usage["symbol"] != leg.get("symbol", arguments.get("symbol")),
+            usage["leg_type"] != leg_type,
+            usage["order_type"] != order_type,
+            usage["side"] != side,
+            usage["quantity"] != quantity,
+            usage["price"] != price,
+            not isinstance(client_id, str) or not client_id or usage["client_order_id"] != client_id,
+            usage["weex_order_id"] is not None,
+        )):
+            raise ValueError("DELEGATED_SUBMISSION_GROUP_MISMATCH")
+        amount = _stored_decimal(usage["estimated_amount_u"], positive=True)
+        if (
+            not authorization[f"{market}_allowed"]
+            or (not authorization["all_symbols"] and usage["symbol"] not in allowed_symbols)
+            or amount > max_single
+        ):
+            raise ValueError("SCOPE_MISMATCH")
+        group_total = _exact_decimal_sum(group_total, amount)
+        client_ids.append(client_id)
+    if group_total > reserved or _exact_decimal_sum(accepted, reserved) > total:
+        raise ValueError("TOTAL_LIMIT_EXCEEDED")
+    return authorization, client_ids
 
 
 def _legacy_replay_leg_matches(

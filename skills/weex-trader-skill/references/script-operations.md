@@ -230,7 +230,7 @@ Terminal and resolved outcomes are appended and fsynced to the owner-only audit 
 
 ## Automated Strategy Authorization
 
-This is a saved-profile, real-trading-only JSON facade. It does not accept raw API credentials, demo trading, arbitrary state paths, direct database fields, or caller-supplied trusted risk/amount/exchange facts. Put one request object in a local JSON file or send it on stdin with `--input -`. Input is limited to 1 MiB, and duplicate JSON keys and unknown fields are rejected. `grant-authorization`, `submit-auto`, `resolve-auto-usage`, and `enable-auto-trading-after-restore` require `--confirm-live` for their live state transition.
+Strategy commands use a saved profile in real trading mode. They do not accept raw API credentials, demo trading, arbitrary state paths, direct database fields, or caller-supplied trusted risk/amount/exchange facts. Put one request object in a local JSON file or send it on stdin with `--input -`. Input is limited to 1 MiB, and duplicate JSON keys and unknown fields are rejected. `grant-authorization`, `submit-auto`, `resolve-auto-usage`, and `enable-auto-trading-after-restore` require `--confirm-live` for their live state transition.
 
 Register a stable strategy identity. Reuse the returned `strategy_id` after a rename or restart; do not reuse it for a copied strategy:
 
@@ -304,7 +304,7 @@ python3 scripts/weex_auto_trade.py event-list --input @strategy.json --pretty
 python3 scripts/weex_auto_trade.py revoke-authorization --input @revoke-authorization.json --pretty
 ```
 
-`revoke-authorization` blocks new reservations for that strategy and retains all six-table history. `retire-strategy` also revokes its active authorization and prevents new authorization requests for that strategy identity. Neither command cancels, retries, or amends an exchange order.
+`revoke-authorization` blocks new reservations for that strategy and retains its usage, grant, and audit history. `retire-strategy` also revokes its active authorization and prevents new authorization requests for that strategy identity. Neither command cancels, retries, or amends an exchange order.
 
 Accepted conservative quota and exchange fill facts are separate ledgers. `reconcile-auto-order` accepts only the local order identity; the facade resolves its saved profile, module, symbol, client ID, and WEEX order ID, then calls the bundled official read-only order/trade endpoints. It does not accept caller-supplied exchange status, fill, fee, or source fields.
 
@@ -330,6 +330,20 @@ To rebuild local spot and futures REST definitions from the current WEEX V3 docs
 # Windows users: replace python3 with py -3
 python3 scripts/generate_weex_api_definitions.py --product all
 ```
+
+## Automatic Authorization Database Migration
+
+```bash
+python3 scripts/weex_auto_trade.py migration-status --pretty
+```
+
+This command reads the existing database version without creating state. `NOT_INITIALIZED` means there is no existing database; `CURRENT` means no upgrade is needed. If it reports `MIGRATION_REQUIRED`, stop existing automated submissions and notification workers before explicitly running:
+
+```bash
+python3 scripts/weex_auto_trade.py migrate-state --pretty
+```
+
+Neither command takes request JSON, a saved profile, or a live confirmation flag. Ordinary commands require the current schema and do not upgrade an existing database at startup. Migration retains an owner-only copy of the previous database, validates the upgraded copy, and then switches the active path. Preserve the old copy for rollback evidence; do not overwrite new v6 activity with it.
 
 ## Automatic Authorization Database Snapshot And Restore
 
@@ -367,7 +381,7 @@ Choose a count from 1 through 100 by adding `"retention_count":3` to the request
 - Each Trader-managed index record contains exactly six fields: immutable `snapshot_id`, UTC `created_at`, managed `relative_path`, `database_schema_version`, `size_bytes`, and lowercase SHA-256 `sha256`. Size, digest, and the database's actual `user_version` must match before restore. Serialize snapshot creation and order managed regular snapshots by `created_at`, then `snapshot_id`; do not use file mtime or a caller-supplied filename.
 - Delete the oldest managed regular snapshots only after the new snapshot is successfully published, until the number of managed regular snapshots is no greater than the requested retention count. A creation, validation, index, disk, or publish failure must delete zero old snapshots; do not delete an old snapshot first to free space.
 - If deletion fails after publication, keep the new snapshot and every undeleted older snapshot, return `retention_status=INCOMPLETE` with the actual retained count and warning, and do not roll back the new snapshot, automatically retry deletion, or skip the failed oldest item to delete newer items.
-- The active authorization database, its six-table history, preserved pre-restore database evidence, temporary/failed files, and unknown files do not count toward retention and must never be deleted by snapshot rotation.
+- The active authorization database, its history, preserved pre-migration and pre-restore database evidence, temporary/failed files, and unknown files do not count toward retention and must never be deleted by snapshot rotation.
 
 ### Restore
 
@@ -395,6 +409,8 @@ python3 scripts/weex_auto_trade.py restore-state --input @restore-state.json --p
 A successful response uses `status=STATE_RESTORED_DISABLED`, reports how many ACTIVE authorizations were revoked, how many pending requests were rejected, how many RESERVED/REVIEW_REQUIRED records need manual reconciliation, and the owner-only pre-restore evidence path. The persistent `auto-trade/automatic-trading.disabled` file blocks both single-leg and submission-group reservations. Do not delete or edit it manually. A newly created authorization does not clear this latch by itself. Before explicit enable, grant/ensure/list still show the truthful authorization `status=ACTIVE`, but `next_action` is `RESOLVE_AUTO_USAGE_AND_ENABLE_AUTO_TRADING_AFTER_RESTORE` while unresolved usage remains and `ENABLE_AUTO_TRADING_AFTER_RESTORE` after it is cleared. Only successful explicit enable changes it to `SUBMIT_ALLOWED`. A `SUBMISSION_STATE_UNCERTAIN` latch instead returns `INSPECT_AND_RECONCILE_MANUALLY`.
 
 For each unresolved usage, run `resolve-auto-usage` with only the usage identity below. The facade performs the official read-only WEEX query itself; it rejects caller-supplied outcome, evidence source, and order ID fields. Only a complete, unique result bound to the local usage and order mapping can resolve the record. A timeout, disconnect, ambiguous result, mismatched client/order ID, or unsupported Futures client-ID lookup remains `REVIEW_REQUIRED`.
+
+For a submission with a v6 execution grant, an order missing from a read-only query is not proof of rejection or non-delivery. Keep the reservation until a bound result proves the leg's disposition.
 
 ```json
 {"profile":"main","strategy_id":"<strategy_id>","usage_id":"<usage_id>"}

@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
-"""One-shot delegated authorization adapter for automated MCP Trade confirms."""
+"""Reservation-bound automated mutations through the verified Local MCP runtime."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
-import secrets
 import time
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
-_OPERATION_ACTIONS = {
-    "spot.order.place_order": "order",
-    "spot.order.bulk_order": "batch_order",
-    "transaction.place_order": "order",
-    "transaction.place_orders_batch": "batch_order",
-    "transaction.place_pending_order": "conditional_order",
-    "transaction.place_tp_sl_order": "tp_sl",
-}
+from weex_mcp_gateway import LocalMcpGateway
+from weex_mcp_read_compat import _unwrap_gateway_result
+from weex_mcp_trade_compat import McpTradeFacade, _map_trade_arguments
+
+
+_AUTO_OPERATIONS = frozenset({
+    "spot.order.place_order",
+    "spot.order.bulk_order",
+    "transaction.place_order",
+    "transaction.place_orders_batch",
+    "transaction.place_pending_order",
+    "transaction.place_tp_sl_order",
+})
 
 
 class AutoTradeDelegationError(RuntimeError):
@@ -32,7 +37,7 @@ class AutoTradeDelegationError(RuntimeError):
 
 
 class AutoTradeDelegation:
-    """Bind one reserved submission group to one in-process delegated confirm."""
+    """Prepare and submit one reserved group using a durable SQLite grant."""
 
     def __init__(
         self,
@@ -46,11 +51,9 @@ class AutoTradeDelegation:
         client_order_ids: list[str],
         expected_orders: list[dict[str, Any]],
         operation_key: str,
-        now_epoch: Callable[[], int] | None = None,
-        ref_factory: Callable[[], str] | None = None,
+        now_epoch: Callable[[], float] | None = None,
     ) -> None:
-        action = _OPERATION_ACTIONS.get(operation_key)
-        if action is None:
+        if operation_key not in _AUTO_OPERATIONS:
             raise ValueError("operation_key is not supported for delegated execution")
         if not all(
             isinstance(value, str) and value
@@ -86,187 +89,127 @@ class AutoTradeDelegation:
         self.client_order_ids = list(client_order_ids)
         self._expected_orders_digest = _orders_digest(expected_orders)
         self.operation_key = operation_key
-        self.action = action
-        self._now_epoch = now_epoch or (lambda: int(time.time()))
-        self._ref = (ref_factory or (lambda: "auto_" + secrets.token_urlsafe(32)))()
-        if not isinstance(self._ref, str) or not self._ref:
-            raise ValueError("delegated authorization ref must be a non-empty string")
-        self._profile_id: str | None = None
-        self._preview_expires_at: int | None = None
-        self._execution_digest: str | None = None
-        self._bound = False
-        self._used = False
+        self._now_epoch = now_epoch or time.time
 
-    @property
-    def delegated_ref(self) -> str:
-        return self._ref
-
-    def bind_preview(
+    def execute(
         self,
         *,
-        profile_id: str,
-        preview: Mapping[str, Any],
-        summary: Mapping[str, Any],
-        risk: Mapping[str, Any],
-    ) -> None:
-        if self._bound or self._used:
-            raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution preview is already bound.",
-            )
-        if not isinstance(profile_id, str) or not profile_id:
-            raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution profile is invalid.",
-            )
-        if preview.get("legacy_key") != self.operation_key:
-            raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution operation does not match the preview.",
-            )
-        preview_profile = preview.get("profile_id")
-        expires_at = preview.get("expires_at")
-        arguments = preview.get("arguments")
-        if (
-            preview_profile != profile_id
-            or isinstance(expires_at, bool)
-            or not isinstance(expires_at, int)
-            or expires_at <= self._now_epoch()
-            or not isinstance(arguments, Mapping)
-            or not isinstance(summary, Mapping)
-            or not isinstance(risk, Mapping)
-        ):
-            raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution preview binding is invalid.",
-            )
-        preview_client_ids = _client_order_ids(arguments)
-        if preview_client_ids != self.client_order_ids:
+        settings: Any,
+        endpoint: Any,
+        query: dict[str, Any],
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        if getattr(endpoint, "key", None) != self.operation_key or query:
             raise AutoTradeDelegationError(
                 "execution_authorization_denied",
-                "Delegated execution client-order identities do not match the reservation.",
+                "Delegated execution operation does not match the reservation.",
             )
         if not hmac.compare_digest(
-            _orders_digest(
-                _orders_from_request_body(
-                    self.operation_key,
-                    summary.get("request_body"),
-                )
-            ),
+            _orders_digest(_orders_from_request_body(self.operation_key, body)),
             self._expected_orders_digest,
         ):
             raise AutoTradeDelegationError(
                 "execution_authorization_denied",
                 "Delegated execution request does not match the reservation.",
             )
-        self._profile_id = profile_id
-        self._preview_expires_at = expires_at
-        self._execution_digest = _execution_digest(
-            action=self.action,
-            market=str(summary.get("market") or ""),
-            trading_mode=str(summary.get("trading_mode") or ""),
-            summary=summary,
-            risk=risk,
+        product = "spot" if self.operation_key.startswith("spot.") else "contract"
+        operation = McpTradeFacade(settings=settings)._operation(product=product, endpoint=endpoint)
+        arguments = _map_trade_arguments(
+            operation, query=query, body=body, client_id_factory=_missing_client_id,
         )
-        self._bound = True
-
-    def authorize(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if self._used:
-            raise AutoTradeDelegationError(
-                "execution_authorization_denied",
-                "Delegated execution authorization was already used.",
-            )
-        if not self._bound or self._profile_id is None or self._execution_digest is None:
-            raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution preview is not bound.",
-            )
-        delegated_ref = payload.get("delegated_ref")
-        context = payload.get("context")
-        execution = payload.get("execution")
-        fingerprint = payload.get("credential_fingerprint")
+        expected_market = "spot" if product == "spot" else "futures"
         if (
-            not isinstance(delegated_ref, Mapping)
-            or set(delegated_ref) != {"ref"}
-            or not hmac.compare_digest(str(delegated_ref.get("ref") or ""), self._ref)
-            or not isinstance(context, Mapping)
-            or context.get("user_id") != self._profile_id
-            or not isinstance(execution, Mapping)
-            or not isinstance(fingerprint, str)
-            or not fingerprint
+            arguments.get("market") != expected_market
+            or arguments.get("trading_mode") != "live"
+            or _client_order_ids(arguments) != self.client_order_ids
+            or (
+                operation["direct_tool"] == "trade_place_tp_sl"
+                and arguments.get("quantity_mode") != "exact"
+            )
         ):
             raise AutoTradeDelegationError(
                 "execution_authorization_denied",
-                "Delegated execution authorization binding was rejected.",
+                "Delegated execution market, mode, or client identities do not match the reservation.",
             )
-        digest = _execution_digest(
-            action=str(execution.get("action") or ""),
-            market=str(execution.get("market") or ""),
-            trading_mode=str(execution.get("trading_mode") or ""),
-            summary=execution.get("summary"),
-            risk=execution.get("risk"),
-        )
-        if (
-            execution.get("action") != self.action
-            or not hmac.compare_digest(digest, self._execution_digest)
-        ):
-            raise AutoTradeDelegationError(
-                "execution_authorization_denied",
-                "Delegated execution action or preview did not match.",
-            )
-        current_epoch = self._now_epoch()
         snapshot = self.state.read_delegated_submission_group(
             authorization_id=self.authorization_id,
             submission_group_id=self.submission_group_id,
             request_fingerprint=self.request_fingerprint,
             usage_ids=self.usage_ids,
             client_order_ids=self.client_order_ids,
-            now=datetime.fromtimestamp(current_epoch, tz=UTC),
+            now=datetime.fromtimestamp(self._now_epoch(), tz=UTC),
         )
-        if not isinstance(snapshot, Mapping):
-            raise AutoTradeDelegationError(
-                "execution_authorization_denied",
-                "Delegated execution state snapshot is invalid.",
-            )
         if (
             snapshot.get("strategy_id") != self.strategy_id
-            or snapshot.get("profile_id") != self._profile_id
+            or snapshot.get("profile_id") != settings.profile_id
+            or snapshot.get("usage_ids") != self.usage_ids
+            or snapshot.get("client_order_ids") != self.client_order_ids
         ):
             raise AutoTradeDelegationError(
                 "execution_authorization_denied",
                 "Delegated execution state binding did not match.",
             )
-        state_expires = snapshot.get("expires_at")
-        if isinstance(state_expires, bool) or not isinstance(state_expires, int):
+        gateway = LocalMcpGateway(
+            profile_id=settings.profile_id,
+            effective_spot_base_url=settings.spot_base_url,
+            effective_futures_base_url=settings.futures_base_url,
+            trade_enabled=True,
+            timeout_seconds=settings.timeout_seconds,
+            request_locale=settings.locale,
+            grant_consumer=self.state,
+        )
+        tool = operation["direct_tool"]
+        prepared = gateway.prepare_mutation(tool, deepcopy(arguments))
+        canonical = prepared.get("canonical_arguments")
+        if (
+            prepared.get("tool_name") != tool
+            or prepared.get("market") != expected_market
+            or prepared.get("trading_mode") != "live"
+            or not isinstance(canonical, dict)
+            or canonical != arguments
+        ):
             raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution state expiry is invalid.",
+                "execution_authorization_denied",
+                "PreparedMutation does not match the reserved order.",
             )
-        expires_at = min(state_expires, int(self._preview_expires_at or 0))
-        if expires_at <= current_epoch:
+        grant = gateway.build_execution_grant(
+            prepared,
+            grant_id=f"auto_{self.submission_group_id}",
+            issued_at=int(self._now_epoch() * 1000),
+        )
+        issued = self.state.issue_execution_grant(
+            submission_group_id=self.submission_group_id,
+            authorization_id=self.authorization_id,
+            strategy_id=self.strategy_id,
+            profile_id=settings.profile_id,
+            request_fingerprint=self.request_fingerprint,
+            client_order_ids=self.client_order_ids,
+            grant=grant,
+            prepared=prepared,
+        )
+        unwrapped = _unwrap_gateway_result(
+            gateway.call_typed_tool(tool, canonical, execution_grant=issued),
+        )
+        if unwrapped is None:
             raise AutoTradeDelegationError(
-                "execution_authorization_expired",
-                "Delegated execution authorization expired.",
+                "execution_outcome_unverified", "MCP did not return a verified mutation result.",
             )
-        scope_signature = snapshot.get("scope_signature")
-        if not isinstance(scope_signature, str) or not scope_signature:
+        payload, _transport_meta = unwrapped
+        if not isinstance(payload, dict) or not self.state.execution_grant_outcome_matches(
+            submission_group_id=self.submission_group_id,
+            grant=issued,
+            outcome=payload.get("outcome"),
+        ):
             raise AutoTradeDelegationError(
-                "execution_authorization_invalid",
-                "Delegated execution scope is invalid.",
+                "execution_outcome_unverified", "MCP outcome does not match the durable execution grant.",
             )
-        scope_fingerprint = hashlib.sha256(
-            f"{scope_signature}:{self._execution_digest}:{fingerprint}".encode("utf-8")
-        ).hexdigest()
-        self._used = True
-        return {
-            "authorization_id": self.authorization_id,
-            "scope_fingerprint": scope_fingerprint,
-            "expires_at": expires_at,
-            "audit_metadata": {
-                "submission_group_id": self.submission_group_id,
-                "usage_count": len(self.usage_ids),
-            },
-        }
+        return payload
+
+
+def _missing_client_id() -> str:
+    raise AutoTradeDelegationError(
+        "execution_authorization_invalid", "Reserved execution must already have a client ID.",
+    )
 
 
 def _client_order_ids(arguments: Mapping[str, Any]) -> list[str]:
@@ -286,35 +229,6 @@ def _client_order_ids(arguments: Mapping[str, Any]) -> list[str]:
             "Delegated execution preview is missing client-order identities.",
         )
     return values
-
-
-def _execution_digest(
-    *,
-    action: str,
-    market: str,
-    trading_mode: str,
-    summary: Any,
-    risk: Any,
-) -> str:
-    if not isinstance(summary, Mapping) or not isinstance(risk, Mapping):
-        raise AutoTradeDelegationError(
-            "execution_authorization_invalid",
-            "Delegated execution summary or risk is invalid.",
-        )
-    encoded = json.dumps(
-        {
-            "action": action,
-            "market": market,
-            "trading_mode": trading_mode,
-            "summary": summary,
-            "risk": risk,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _request_fingerprint(
@@ -401,7 +315,7 @@ def _orders_from_request_body(
     if not isinstance(request_body, Mapping):
         raise AutoTradeDelegationError(
             "execution_authorization_invalid",
-            "Delegated execution summary is missing its request body.",
+            "Delegated execution request is missing its body.",
         )
     body = dict(request_body)
     if operation_key == "spot.order.bulk_order":

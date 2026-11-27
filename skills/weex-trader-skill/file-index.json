@@ -317,15 +317,16 @@
       ]
     },
     "scripts/weex_mcp_auto_trade.py": {
-      "role": "Legacy Auto reservation-binding adapter retained for explicit T13B SQLite migration; MCP Direct submission remains fail-closed until that migration is complete.",
+      "role": "Binds one reserved auto submission group to a prepared, durable SQLite grant and verifies the MCP outcome before per-leg settlement.",
       "when": [
-        "auditing legacy delegated reservation bindings before the explicit SQLite migration",
-        "preserving old Auto state for rollback and migration evidence",
-        "verifying that pre-migration automated MCP writes remain invocation-rejected without a downstream write"
+        "mapping an already-reserved official auto operation to the verified MCP Direct arguments",
+        "issuing one durable grant with the original PreparedMutation",
+        "matching the typed MCP outcome against the persisted grant before projecting individual legs"
       ],
       "depends_on": [
         "scripts/weex_auto_trade_state.py",
         "scripts/weex_mcp_gateway.py",
+        "scripts/weex_mcp_read_compat.py",
         "scripts/weex_mcp_trade_compat.py"
       ],
       "surface": [
@@ -552,13 +553,14 @@
       ]
     },
     "scripts/weex_auto_trade.py": {
-      "role": "Stable saved-profile-only JSON facade for automated strategy registration, authorization lifecycle, guarded submission, recovery, event inspection, and official read-only order reconciliation.",
+      "role": "Stable JSON facade for saved-profile strategy operations, guarded submission, official read-only order reconciliation, and local authorization database maintenance.",
       "when": [
         "registering, listing, or retiring a stable automated strategy identity",
         "requesting, inspecting, granting, listing, or revoking an automated-trading authorization",
         "submitting an authorized order through the official runtime and deterministic guard",
         "resolving uncertain usage or explicitly enabling automatic trading after a safe restore",
-        "inspecting per-order authorization events or refreshing official read-only fill facts"
+        "inspecting per-order authorization events or refreshing official read-only fill facts",
+        "checking the local database version or explicitly migrating an older database"
       ],
       "depends_on": [
         "scripts/weex_auto_trade_state.py",
@@ -583,6 +585,8 @@
         "event-list",
         "snapshot-state",
         "restore-state",
+        "migration-status",
+        "migrate-state",
         "AutoTradeFacade"
       ]
     },
@@ -606,7 +610,7 @@
       ]
     },
     "scripts/weex_auto_trade_state.py": {
-      "role": "Owner-only six-table SQLite state kernel for stable strategies, complete strategy authorization scope, atomic Decimal quota and order-count usage, order ownership, versioned events, schema v5 migrations, managed snapshots, and restore-safe atomic replacement.",
+      "role": "Owner-only SQLite state kernel for strategy authorization, atomic Decimal quota and order-count usage, order ownership, versioned events, explicit schema v6 migration, managed snapshots, and restore-safe atomic replacement.",
       "when": [
         "following automated authorization state transitions behind the facade",
         "auditing submission-group and per-leg quota/order ownership",
@@ -625,6 +629,8 @@
         "record_manual_fallback",
         "record_order",
         "reconcile_order",
+        "migration_status",
+        "migrate_state",
         "snapshot_state",
         "restore_state"
       ]

@@ -17,6 +17,7 @@ from typing import Any, Callable
 from weex_auto_trade_state import (
     AutoTradeState,
     StateConflictError,
+    StateMigrationRequiredError,
     build_verified_usage_evidence,
 )
 from weex_trade_guard import (
@@ -28,6 +29,7 @@ from weex_trade_guard import (
 
 
 STATE_DB_NAME = "authorization-state.sqlite3"
+_STATE_MIGRATION_COMMANDS = ("migration-status", "migrate-state")
 MAX_INPUT_BYTES = 1_048_576
 RAW_CREDENTIAL_KEYS = frozenset(
     {
@@ -173,6 +175,9 @@ class AutoTradeFacade:
             if hasattr(candidate, "__enter__") and hasattr(candidate, "__exit__"):
                 operation_lock = candidate
         with operation_lock:
+            recover = getattr(self.state, "recover_interrupted_grants", None)
+            if callable(recover):
+                recover()
             result = handler(payload, confirm_live=confirm_live)
             self._schedule_accepted_summary_worker(command, payload, result)
         self._dispatch_post_commit_notifications()
@@ -1222,9 +1227,10 @@ def build_parser() -> argparse.ArgumentParser:
             "event-list",
             "snapshot-state",
             "restore-state",
+            *_STATE_MIGRATION_COMMANDS,
         ),
     )
-    parser.add_argument("--input", default="-", help="JSON request path, @path, or - for stdin")
+    parser.add_argument("--input", help="JSON request path, @path, or - for stdin (default for profile commands); omit for state migration commands")
     parser.add_argument(
         "--confirm-live",
         action="store_true",
@@ -1234,56 +1240,84 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_profile_command(args: argparse.Namespace) -> dict[str, Any]:
+    payload = _load_input(args.input if args.input is not None else "-")
+    _reject_raw_credentials(payload)
+    _validate_command_payload(args.command, payload)
+    profile_resolver = _load_profile_resolver()
+    try:
+        resolved_profile = profile_resolver(_required_text(payload.get("profile"), "profile"))
+    except FacadeError:
+        raise
+    except Exception as exc:
+        raise FacadeError(
+            "UNKNOWN_PROFILE",
+            "saved profile was not found",
+            "SELECT_SAVED_PROFILE",
+        ) from exc
+    if resolved_profile is None:
+        raise FacadeError(
+            "UNKNOWN_PROFILE",
+            "saved profile was not found",
+            "SELECT_SAVED_PROFILE",
+        )
+    state = AutoTradeState(state_db_path())
+    notification_adapter = None
+    notification_worker_launcher = None
+    if os.getenv("WEEX_AUTO_TRADE_NOTIFICATION_MODE", "system") == "system":
+        try:
+            from weex_auto_trade_notify import (
+                SystemNotificationAdapter,
+                launch_notification_worker,
+            )
+
+            notification_adapter = SystemNotificationAdapter()
+            notification_worker_launcher = launch_notification_worker
+        except Exception:
+            notification_adapter = None
+            notification_worker_launcher = None
+    facade = AutoTradeFacade(
+        state,
+        profile_resolver=profile_resolver,
+        notification_adapter=notification_adapter,
+        notification_worker_launcher=notification_worker_launcher,
+    )
+    # Input validation and credential rejection have completed before any state file action.
+    state.initialize()
+    return facade.execute(args.command, payload, confirm_live=args.confirm_live)
+
+
+def _run_migration_command(args: argparse.Namespace) -> dict[str, Any]:
+    if args.input is not None or args.confirm_live:
+        raise FacadeError(
+            "INVALID_REQUEST",
+            "State migration commands do not accept --input or --confirm-live.",
+            "FIX_REQUEST",
+        )
+    state = AutoTradeState(state_db_path())
+    if args.command == "migration-status":
+        return state.migration_status()
+    return state.migrate_state()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        payload = _load_input(args.input)
-        _reject_raw_credentials(payload)
-        _validate_command_payload(args.command, payload)
-        profile_resolver = _load_profile_resolver()
-        try:
-            resolved_profile = profile_resolver(_required_text(payload.get("profile"), "profile"))
-        except FacadeError:
-            raise
-        except Exception as exc:
-            raise FacadeError(
-                "UNKNOWN_PROFILE",
-                "saved profile was not found",
-                "SELECT_SAVED_PROFILE",
-            ) from exc
-        if resolved_profile is None:
-            raise FacadeError(
-                "UNKNOWN_PROFILE",
-                "saved profile was not found",
-                "SELECT_SAVED_PROFILE",
-            )
-        state = AutoTradeState(state_db_path())
-        notification_adapter = None
-        notification_worker_launcher = None
-        if os.getenv("WEEX_AUTO_TRADE_NOTIFICATION_MODE", "system") == "system":
-            try:
-                from weex_auto_trade_notify import (
-                    SystemNotificationAdapter,
-                    launch_notification_worker,
-                )
-
-                notification_adapter = SystemNotificationAdapter()
-                notification_worker_launcher = launch_notification_worker
-            except Exception:
-                notification_adapter = None
-                notification_worker_launcher = None
-        facade = AutoTradeFacade(
-            state,
-            profile_resolver=profile_resolver,
-            notification_adapter=notification_adapter,
-            notification_worker_launcher=notification_worker_launcher,
+        response = (
+            _run_migration_command(args)
+            if args.command in _STATE_MIGRATION_COMMANDS
+            else _run_profile_command(args)
         )
-        # Input validation and credential rejection have completed before any state file action.
-        state.initialize()
-        response = facade.execute(args.command, payload, confirm_live=args.confirm_live)
         exit_code = 0
     except FacadeError as exc:
         response = _error_payload(exc.code, str(exc), exc.next_action)
+        exit_code = 2
+    except StateMigrationRequiredError:
+        response = _error_payload(
+            "MIGRATION_REQUIRED",
+            "Automated-trading state requires an explicit migration.",
+            "RUN_MIGRATE_STATE",
+        )
         exit_code = 2
     except StateConflictError:
         response = _error_payload(

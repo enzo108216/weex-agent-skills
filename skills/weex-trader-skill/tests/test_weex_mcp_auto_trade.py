@@ -35,7 +35,7 @@ class AutoTradeDelegationTests(unittest.TestCase):
         self.auto = load_module()
         self.assertIsNotNone(
             self.auto,
-            "weex_mcp_auto_trade.py is missing; expected T8 RED.",
+            "weex_mcp_auto_trade.py is missing",
         )
         self.state = mock.Mock()
         self.state.read_delegated_submission_group.return_value = {
@@ -46,6 +46,8 @@ class AutoTradeDelegationTests(unittest.TestCase):
             "expires_at": 5000,
             "submission_group_id": "group-1",
             "usage_count": 1,
+            "usage_ids": ["usage-1"],
+            "client_order_ids": ["client-1"],
         }
         self.request_orders = [
             {
@@ -71,117 +73,89 @@ class AutoTradeDelegationTests(unittest.TestCase):
             expected_orders=self.request_orders,
             operation_key="spot.order.place_order",
             now_epoch=lambda: 1000,
-            ref_factory=lambda: "opaque-ref",
         )
-        self.preview = {
-            "version": 1,
-            "product": "spot",
-            "legacy_key": "spot.order.place_order",
-            "preview_tool": "trade_preview_order",
-            "confirm_tool": "trade_confirm_order",
-            "arguments": {"client_order_id": "client-1"},
-            "preview_id": "preview-id",
-            "expires_at": 2000,
-            "profile_id": "profile-1",
-            "spot_base_url": "https://api-spot.weex.com",
-            "futures_base_url": "https://api-contract.weex.com",
-        }
-        self.summary = {
-            "action": "order",
-            "market": "spot",
-            "trading_mode": "live",
-            "request_body": dict(self.request_orders[0]),
-        }
-        self.risk = {"level": "high"}
 
-    def test_bound_ref_authorizes_once_after_read_only_state_check(self) -> None:
-        self.delegation.bind_preview(
+        from weex_spot_api import ENDPOINTS
+        from weex_mcp_trade_compat import LocalMcpTradeSettings
+
+        self.settings = LocalMcpTradeSettings(
             profile_id="profile-1",
-            preview=self.preview,
-            summary=self.summary,
-            risk=self.risk,
+            spot_base_url="https://api-spot.weex.com",
+            futures_base_url="https://api-contract.weex.com",
+            timeout_seconds=5,
+            locale="zh-CN",
         )
-        result = self.delegation.authorize(
-            {
-                "context": {"user_id": "profile-1"},
-                "credential_fingerprint": "fp-1",
-                "execution": {
-                    "action": "order",
-                    "market": "spot",
-                    "trading_mode": "live",
-                    "summary": self.summary,
-                    "risk": self.risk,
-                    "risk_signature": "risk-signature",
-                },
-                "delegated_ref": {"ref": "opaque-ref"},
-            }
-        )
+        self.endpoint = ENDPOINTS["spot.order.place_order"]
+        self.arguments = {
+            "market": "spot", "trading_mode": "live", "symbol": "BTCUSDT",
+            "side": "BUY", "order_type": "MARKET", "quantity": "1",
+            "client_order_id": "client-1",
+        }
+        self.prepared = {
+            "tool_name": "trade_place_order", "canonical_arguments": self.arguments,
+            "market": "spot", "trading_mode": "live",
+        }
+        self.response = {
+            "action": "place_order", "ok": True,
+            "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+        }
+        self.gateway = mock.Mock()
+        self.gateway.prepare_mutation.return_value = self.prepared
+        self.gateway.build_execution_grant.return_value = mock.sentinel.generated_grant
+        self.gateway.call_typed_tool.return_value = {
+            "structured_content": self.response, "is_error": False, "transport_meta": None,
+        }
+        self.state.issue_execution_grant.return_value = mock.sentinel.issued_grant
+        self.state.execution_grant_outcome_matches.return_value = True
 
-        self.assertEqual(result["authorization_id"], "auth-1")
-        self.assertEqual(result["expires_at"], 2000)
-        self.assertEqual(result["audit_metadata"]["usage_count"], 1)
-        self.state.read_delegated_submission_group.assert_called_once_with(
-            authorization_id="auth-1",
-            submission_group_id="group-1",
-            request_fingerprint=self.request_fingerprint,
-            usage_ids=["usage-1"],
-            client_order_ids=["client-1"],
-            now=datetime.fromtimestamp(1000, tz=UTC),
-        )
-        with self.assertRaisesRegex(self.auto.AutoTradeDelegationError, "used"):
-            self.delegation.authorize(
-                {
-                    "context": {"user_id": "profile-1"},
-                    "credential_fingerprint": "fp-1",
-                    "execution": {
-                        "action": "order",
-                        "market": "spot",
-                        "trading_mode": "live",
-                        "summary": self.summary,
-                        "risk": self.risk,
-                        "risk_signature": "risk-signature",
-                    },
-                    "delegated_ref": {"ref": "opaque-ref"},
-                }
+    def execute(self, body=None):
+        with mock.patch.object(self.auto, "LocalMcpGateway", return_value=self.gateway) as gateway_factory:
+            result = self.delegation.execute(
+                settings=self.settings, endpoint=self.endpoint,
+                query={}, body=self.request_orders[0] if body is None else body,
             )
+        self.assertIs(gateway_factory.call_args.kwargs["grant_consumer"], self.state)
+        return result
 
-    def test_ref_profile_action_or_preview_mismatch_fails_before_state_read(self) -> None:
-        self.delegation.bind_preview(
-            profile_id="profile-1",
-            preview=self.preview,
-            summary=self.summary,
-            risk=self.risk,
+    def test_executes_durable_grant_after_prepare_and_exposes_only_bound_outcome(self) -> None:
+        calls = mock.Mock()
+        calls.attach_mock(self.gateway, "gateway")
+        calls.attach_mock(self.state, "state")
+        self.assertEqual(self.execute(), self.response)
+        self.assertEqual(
+            [call[0] for call in calls.mock_calls],
+            ["state.read_delegated_submission_group", "gateway.prepare_mutation",
+             "gateway.build_execution_grant", "state.issue_execution_grant",
+             "gateway.call_typed_tool", "state.execution_grant_outcome_matches"],
         )
-        base = {
-            "context": {"user_id": "profile-1"},
-            "credential_fingerprint": "fp-1",
-            "execution": {
-                "action": "order",
-                "market": "spot",
-                "trading_mode": "live",
-                "summary": self.summary,
-                "risk": self.risk,
-                "risk_signature": "risk-signature",
-            },
-            "delegated_ref": {"ref": "opaque-ref"},
-        }
-        mutations = (
-            {**base, "delegated_ref": {"ref": "wrong"}},
-            {**base, "context": {"user_id": "other"}},
-            {
-                **base,
-                "execution": {**base["execution"], "action": "batch_order"},
-            },
-            {
-                **base,
-                "execution": {**base["execution"], "summary": {"action": "other"}},
-            },
+        self.gateway.call_typed_tool.assert_called_once_with(
+            "trade_place_order", self.arguments, execution_grant=mock.sentinel.issued_grant,
         )
-        for payload in mutations:
-            with self.subTest(payload=payload):
-                with self.assertRaises(self.auto.AutoTradeDelegationError):
-                    self.delegation.authorize(payload)
-        self.state.read_delegated_submission_group.assert_not_called()
+        self.assertEqual(self.state.issue_execution_grant.call_args.kwargs["prepared"], self.prepared)
+        self.state.execution_grant_outcome_matches.assert_called_once_with(
+            submission_group_id="group-1", grant=mock.sentinel.issued_grant,
+            outcome=self.response["outcome"],
+        )
+
+    def test_rejects_wrong_body_or_prepared_id_before_issue(self) -> None:
+        for body, prepared in (
+            ({**self.request_orders[0], "quantity": "2"}, self.prepared),
+            (self.request_orders[0], {**self.prepared, "canonical_arguments": {**self.arguments, "client_order_id": "wrong"}}),
+            (self.request_orders[0], {**self.prepared, "canonical_arguments": {**self.arguments, "quantity": "2"}}),
+        ):
+            with self.subTest(body=body, prepared=prepared):
+                self.gateway.prepare_mutation.return_value = prepared
+                with mock.patch.object(self.auto, "LocalMcpGateway", return_value=self.gateway):
+                    with self.assertRaises(self.auto.AutoTradeDelegationError):
+                        self.delegation.execute(settings=self.settings, endpoint=self.endpoint, query={}, body=body)
+        self.state.issue_execution_grant.assert_not_called()
+        self.gateway.call_typed_tool.assert_not_called()
+
+    def test_unmatched_aggregate_digest_never_yields_leg_evidence(self) -> None:
+        self.state.execution_grant_outcome_matches.return_value = False
+        with self.assertRaises(self.auto.AutoTradeDelegationError):
+            self.execute()
+        self.gateway.call_typed_tool.assert_called_once()
 
     def test_t8_auto_delegated_gate_is_frozen_without_monitor_delegation(self) -> None:
         mapping = json.loads(MAPPING_PATH.read_text(encoding="utf-8"))
@@ -199,25 +173,6 @@ class AutoTradeDelegationTests(unittest.TestCase):
                 "monitor_delegated_authorization": False,
             },
         )
-
-    def test_preview_order_fields_must_match_reserved_request_fingerprint(self) -> None:
-        with self.assertRaisesRegex(
-            self.auto.AutoTradeDelegationError,
-            "request",
-        ):
-            self.delegation.bind_preview(
-                profile_id="profile-1",
-                preview=self.preview,
-                summary={
-                    **self.summary,
-                    "request_body": {
-                        **self.summary["request_body"],
-                        "quantity": "2",
-                    },
-                },
-                risk=self.risk,
-            )
-        self.state.read_delegated_submission_group.assert_not_called()
 
     def test_constructor_rejects_orders_not_matching_persisted_fingerprint(self) -> None:
         with self.assertRaisesRegex(ValueError, "reserved request fingerprint"):
@@ -240,338 +195,263 @@ class AutoTradeDelegationTests(unittest.TestCase):
 
 
 class AutoOutcomeMappingTests(unittest.TestCase):
-    def test_single_outcome_classes_map_to_existing_guard_statuses(self) -> None:
+    def test_fixed_mcp_partial_projects_bound_rejection_without_inventing_order_id(self) -> None:
         import weex_auto_trade_runtime as runtime
 
-        prepared = [
-            {
-                "leg_id": "leg-0",
-                "client_order_id": "client-1",
-                "order": {"newClientOrderId": "client-1"},
-            }
-        ]
-        cases = (
-            (
-                {
-                    "ok": True,
-                    "data": {"orderId": "order-1", "clientOrderId": "client-1"},
-                    "outcome": {
-                        "class": "accepted",
-                        "write_attempted": True,
-                        "action": "order",
-                        "client_order_id": "client-1",
-                    },
-                },
-                "ACCEPTED",
-            ),
-            (
-                {
-                    "ok": False,
-                    "error": {"code": "upstream_error", "details": {"upstream_code": "-1001"}},
-                    "outcome": {
-                        "class": "definitive_rejection",
-                        "write_attempted": True,
-                        "action": "order",
-                        "client_order_id": "client-1",
-                    },
-                },
-                "RELEASED",
-            ),
-            (
-                {
-                    "ok": False,
-                    "error": {"code": "approval_mismatch"},
-                    "outcome": {
-                        "class": "not_sent",
-                        "write_attempted": False,
-                        "action": "order",
-                    },
-                },
-                "RELEASED",
-            ),
-            (
-                {
-                    "ok": False,
-                    "error": {"code": "upstream_error"},
-                    "outcome": {
-                        "class": "unknown",
-                        "write_attempted": True,
-                        "action": "order",
-                        "client_order_id": "client-1",
-                    },
-                },
-                "REVIEW_REQUIRED",
-            ),
-        )
-        for response, expected in cases:
-            with self.subTest(expected=expected):
-                result = runtime._normalize_mcp_submission_results(
-                    operation_key="spot.order.place_order",
-                    response=response,
-                    prepared_legs=prepared,
-                )
-                self.assertEqual(result[0]["status"], expected)
-
-    def test_batch_partial_maps_each_leg_by_client_order_id(self) -> None:
-        import weex_auto_trade_runtime as runtime
-
-        prepared = [
-            {"leg_id": "leg-0", "client_order_id": "client-1", "order": {}},
-            {"leg_id": "leg-1", "client_order_id": "client-2", "order": {}},
-        ]
-        response = {
-            "ok": False,
-            "data": [
-                {
-                    "orderId": "order-1",
-                    "clientOrderId": "client-1",
-                    "success": True,
-                },
-                {
-                    "clientOrderId": "client-2",
-                    "success": False,
-                    "errorCode": "-1001",
-                },
-            ],
-            "error": {"code": "upstream_error"},
-            "outcome": {
-                "class": "partial",
-                "write_attempted": True,
-                "action": "batch_order",
-                "items": [
-                    {
-                        "class": "accepted",
-                        "write_attempted": True,
-                        "action": "batch_order",
-                        "client_order_id": "client-1",
-                    },
-                    {
-                        "class": "definitive_rejection",
-                        "write_attempted": True,
-                        "action": "batch_order",
-                        "client_order_id": "client-2",
-                        "error_code": "-1001",
-                    },
-                ],
-            },
-        }
         result = runtime._normalize_mcp_submission_results(
             operation_key="spot.order.bulk_order",
-            response=response,
-            prepared_legs=prepared,
-        )
-        self.assertEqual([item["status"] for item in result], ["ACCEPTED", "RELEASED"])
-        self.assertEqual(result[0]["orderId"], "order-1")
-        self.assertEqual(result[1]["error_code"], "-1001")
-
-    def test_aggregate_not_sent_without_identities_releases_all_prepared_legs(self) -> None:
-        import weex_auto_trade_runtime as runtime
-
-        cases = (
-            (
-                "spot.order.place_order",
-                [{"leg_id": "leg-0", "client_order_id": "client-1", "order": {}}],
-                "order",
-            ),
-            (
-                "spot.order.bulk_order",
-                [
-                    {"leg_id": "leg-0", "client_order_id": "client-1", "order": {}},
-                    {"leg_id": "leg-1", "client_order_id": "client-2", "order": {}},
-                ],
-                "batch_order",
-            ),
-            (
-                "transaction.place_tp_sl_order",
-                [{"leg_id": "leg-0", "client_order_id": "client-1", "order": {}}],
-                "tp_sl",
-            ),
-        )
-        for operation_key, prepared, action in cases:
-            with self.subTest(operation_key=operation_key):
-                result = runtime._normalize_mcp_submission_results(
-                    operation_key=operation_key,
-                    response={
-                        "ok": False,
-                        "error": {"code": "missing_fields"},
-                        "outcome": {
-                            "class": "not_sent",
-                            "write_attempted": False,
-                            "action": action,
-                        },
-                    },
-                    prepared_legs=prepared,
-                )
-                self.assertEqual(
-                    [item["status"] for item in result],
-                    ["RELEASED"] * len(prepared),
-                )
-
-    def test_malformed_outcome_invariants_fail_all_legs_to_review_required(self) -> None:
-        import weex_auto_trade_runtime as runtime
-
-        prepared = [
-            {"leg_id": "leg-0", "client_order_id": "client-1", "order": {}},
-            {"leg_id": "leg-1", "client_order_id": "client-2", "order": {}},
-        ]
-        malformed = (
-            {
-                "ok": False,
-                "outcome": {
-                    "class": "accepted",
-                    "write_attempted": True,
-                    "action": "batch_order",
-                    "items": [
-                        {"class": "accepted", "write_attempted": True, "action": "batch_order", "client_order_id": "client-1"},
-                        {"class": "accepted", "write_attempted": True, "action": "batch_order", "client_order_id": "client-2"},
-                    ],
-                },
-            },
-            {
-                "ok": False,
-                "outcome": {
-                    "class": "not_sent",
-                    "write_attempted": True,
-                    "action": "batch_order",
-                    "items": [
-                        {"class": "not_sent", "write_attempted": False, "action": "batch_order", "client_order_id": "client-1"},
-                        {"class": "not_sent", "write_attempted": False, "action": "batch_order", "client_order_id": "client-2"},
-                    ],
-                },
-            },
-            {
-                "ok": True,
-                "outcome": {
-                    "class": "accepted",
-                    "write_attempted": True,
-                    "action": "batch_order",
-                    "items": [
-                        {"class": "accepted", "write_attempted": True, "action": "batch_order", "client_order_id": "client-1"},
-                        {"class": "definitive_rejection", "write_attempted": True, "action": "batch_order", "client_order_id": "client-2", "error_code": "-1"},
-                    ],
-                },
-            },
-            {
-                "ok": False,
-                "data": {"orderId": "contradictory"},
-                "outcome": {
-                    "class": "not_sent",
-                    "write_attempted": False,
-                    "action": "batch_order",
-                },
-            },
-        )
-        for response in malformed:
-            with self.subTest(response=response):
-                result = runtime._normalize_mcp_submission_results(
-                    operation_key="spot.order.bulk_order",
-                    response=response,
-                    prepared_legs=prepared,
-                )
-                self.assertEqual(
-                    [item["status"] for item in result],
-                    ["REVIEW_REQUIRED", "REVIEW_REQUIRED"],
-                )
-
-    def test_tp_sl_single_item_outcome_maps_algo_identity_to_accepted(self) -> None:
-        import weex_auto_trade_runtime as runtime
-
-        prepared = [
-            {
-                "leg_id": "leg-0",
-                "client_order_id": "client-1",
-                "order": {"clientAlgoId": "client-1"},
-            }
-        ]
-        response = {
-            "ok": True,
-            "outcome": {
-                "class": "accepted",
-                "write_attempted": True,
-                "action": "tp_sl",
-                "items": [
-                    {
-                        "class": "accepted",
-                        "write_attempted": True,
-                        "action": "tp_sl",
-                        "operation_reference": "algo-1",
-                    }
-                ],
-            },
-        }
-        result = runtime._normalize_mcp_submission_results(
-            operation_key="transaction.place_tp_sl_order",
-            response=response,
-            prepared_legs=prepared,
-        )
-        self.assertEqual(result[0]["status"], "ACCEPTED")
-        self.assertEqual(result[0]["weex_order_id"], "algo-1")
-
-        conflicting = runtime._normalize_mcp_submission_results(
-            operation_key="transaction.place_tp_sl_order",
+            prepared_legs=[
+                {"leg_id": "leg-0", "client_order_id": "client-1"},
+                {"leg_id": "leg-1", "client_order_id": "client-2"},
+            ],
             response={
-                **response,
-                "data": [
-                    {
-                        "algoId": "algo-2",
-                        "success": True,
-                    }
-                ],
-            },
-            prepared_legs=prepared,
-        )
-        self.assertEqual(conflicting[0]["status"], "REVIEW_REQUIRED")
-
-        for item_class, expected in (
-            ("definitive_rejection", "RELEASED"),
-            ("unknown", "REVIEW_REQUIRED"),
-        ):
-            with self.subTest(item_class=item_class):
-                item = {
-                    "class": item_class,
-                    "write_attempted": True,
-                    "action": "tp_sl",
-                    "operation_reference": "algo-1",
-                }
-                if item_class == "definitive_rejection":
-                    item["error_code"] = "-1001"
-                mapped = runtime._normalize_mcp_submission_results(
-                    operation_key="transaction.place_tp_sl_order",
-                    response={
-                        "ok": False,
-                        "error": {"code": "upstream_error"},
-                        "outcome": {
-                            "class": item_class,
-                            "write_attempted": True,
-                            "action": "tp_sl",
-                            "items": [item],
-                        },
-                    },
-                    prepared_legs=prepared,
-                )
-                self.assertEqual(mapped[0]["status"], expected)
-
-        malformed = runtime._normalize_mcp_submission_results(
-            operation_key="transaction.place_tp_sl_order",
-            response={
-                "ok": True,
-                "outcome": {
-                    "class": "accepted",
-                    "write_attempted": True,
-                    "action": "tp_sl",
+                "action": "place_batch_orders",
+                "ok": False,
+                "outcome": {"class": "partial", "write_attempted": True, "grant_disposition": "review_required"},
+                "error": {"code": "partial_write", "message": "Partial.", "category": "transport", "retryable": False},
+                "reconciliation": {
+                    "strategy": "per_item",
+                    "completeness": "partial",
                     "items": [
                         {
-                            "class": "accepted",
-                            "write_attempted": True,
-                            "action": "tp_sl",
-                            "operation_reference": {"bad": "identity"},
+                            "index": index,
+                            "identity": {"client_order_id": client_id},
+                            "reconciliation": {
+                                "strategy": "query_exact_identity",
+                                "read_tool": "account_get_orders",
+                                "arguments": {"market": "spot", "trading_mode": "live", "symbol": "BTCUSDT", "client_order_id": client_id},
+                                "expected": {"symbol": "BTCUSDT", "client_order_id": client_id},
+                                "identity": {"client_order_id": client_id},
+                                "completeness": "deterministic",
+                            },
                         }
+                        for index, client_id in enumerate(("client-1", "client-2"))
                     ],
                 },
+                "result": {
+                    "items": [
+                        {
+                            "index": 0,
+                            "request_identity": {"client_order_id": "client-1"},
+                            "outcome": {"class": "accepted", "write_attempted": True},
+                            "status": "accepted",
+                        },
+                        {
+                            "index": 1,
+                            "request_identity": {"client_order_id": "client-2"},
+                            "outcome": {"class": "definitive_rejection", "write_attempted": True},
+                            "status": "definitive_rejection",
+                            "error": {"code": "upstream_rejection", "message": "Rejected.", "category": "upstream_rejection", "retryable": False},
+                        },
+                    ],
+                    "counts": {"accepted": 1, "rejected": 1, "unknown": 0},
+                },
             },
-            prepared_legs=prepared,
         )
-        self.assertEqual(malformed[0]["status"], "REVIEW_REQUIRED")
+        self.assertEqual([leg["status"] for leg in result], ["REVIEW_REQUIRED", "RELEASED"])
+        self.assertNotIn("weex_order_id", result[0])
+        self.assertEqual(result[1]["client_order_id"], "client-2")
+        self.assertEqual(result[1]["error_code"], "upstream_rejection")
+
+    def test_fixed_mcp_not_sent_proof_releases_exact_bound_group(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        result = runtime._normalize_mcp_submission_results(
+            operation_key="transaction.place_orders_batch",
+            prepared_legs=[
+                {"leg_id": "leg-0", "client_order_id": "client-1"},
+                {"leg_id": "leg-1", "client_order_id": "client-2"},
+            ],
+            response={
+                "action": "place_batch_orders",
+                "ok": False,
+                "outcome": {"class": "not_sent", "write_attempted": False, "grant_disposition": "not_sent_terminal"},
+                "error": {"code": "stale_precondition", "message": "Not sent.", "category": "stale_precondition", "retryable": False},
+            },
+        )
+        self.assertEqual([leg["status"] for leg in result], ["RELEASED", "RELEASED"])
+        self.assertEqual([leg["client_order_id"] for leg in result], ["client-1", "client-2"])
+
+    def test_fixed_mcp_issued_invocation_rejected_is_not_a_release_proof(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        response = {
+            "action": "place_order",
+            "ok": False,
+            "outcome": {"class": "invocation_rejected", "write_attempted": False, "grant_disposition": "unchanged"},
+            "error": {"code": "execution_not_authorized", "message": "Rejected.", "category": "authorization", "retryable": False},
+        }
+        malformed = {
+            **response,
+            "outcome": {**response["outcome"], "action": "order"},
+            "review_required": False,
+        }
+        for value in (response, malformed):
+            with self.subTest(response=value):
+                result = runtime._normalize_mcp_submission_results(
+                    operation_key="spot.order.place_order",
+                    prepared_legs=[{"leg_id": "leg-0", "client_order_id": "client-1"}],
+                    response=value,
+                )
+                self.assertEqual(result[0]["status"], "REVIEW_REQUIRED")
+
+    def test_fixed_mcp_boundary_uses_durable_delegate_without_legacy_write(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        endpoint = mock.Mock(mutating=True, key="transaction.place_order")
+        api_module = mock.Mock(ENDPOINTS={endpoint.key: endpoint})
+        client = mock.Mock()
+        settings = client.mcp_trade_settings_factory.return_value
+        body = {"symbol": "BTCUSDT", "newClientOrderId": "client-1"}
+        response = {
+            "action": "place_order",
+            "ok": True,
+            "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+            "result": {"status": "accepted", "request_identity": {"client_order_id": "client-1"}, "symbol": "BTCUSDT", "market": "futures"},
+        }
+        delegate = mock.Mock()
+        delegate.execute.return_value = response
+        boundary = runtime.OfficialApiBoundary(profile_name="strategy-live")
+        with mock.patch.object(boundary, "_client", return_value=(api_module, client)):
+            self.assertEqual(
+                boundary.call(module="FUTURES", endpoint_key=endpoint.key, body=body, mutating=True, delegation=delegate),
+                {"_mcp_mutation": True, "response": response},
+            )
+        delegate.execute.assert_called_once_with(settings=settings, endpoint=endpoint, query={}, body=body)
+        client.read_endpoint.assert_not_called()
+
+    def test_fixed_mcp_single_accepted_requires_exact_client_identity_and_real_order_id(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        for operation_key, action, identity_field, market in (
+            ("spot.order.place_order", "place_order", "client_order_id", "spot"),
+            ("transaction.place_order", "place_order", "client_order_id", "futures"),
+            ("transaction.place_pending_order", "place_conditional_order", "client_algo_id", None),
+        ):
+            payload = {
+                "status": "accepted",
+                "symbol": "BTCUSDT",
+                "request_identity": {identity_field: "client-1"},
+            }
+            if market is not None:
+                payload["market"] = market
+            for overrides, expected in (
+                ({"upstream_order_id": "101"}, "ACCEPTED"),
+                ({}, "REVIEW_REQUIRED"),
+                ({"upstream_order_id": "not-an-id"}, "REVIEW_REQUIRED"),
+                ({"upstream_order_id": "101", "request_identity": {identity_field: "other"}}, "REVIEW_REQUIRED"),
+            ):
+                with self.subTest(operation_key=operation_key, overrides=overrides):
+                    response = {
+                        "ok": True,
+                        "action": action,
+                        "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+                        "result": {**payload, **overrides},
+                    }
+                    normalized = runtime._normalize_mcp_submission_results(
+                        operation_key=operation_key,
+                        response=response,
+                        prepared_legs=[{"leg_id": "leg-0", "client_order_id": "client-1"}],
+                    )
+                    self.assertEqual(normalized[0]["status"], expected)
+                    self.assertEqual(normalized[0].get("weex_order_id"), "101" if expected == "ACCEPTED" else None)
+
+    def test_fixed_mcp_batch_checks_identity_counts_and_mixed_evidence(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        prepared = [
+            {"leg_id": "leg-0", "client_order_id": "client-1"},
+            {"leg_id": "leg-1", "client_order_id": "client-2"},
+        ]
+        first = {
+            "index": 0,
+            "request_identity": {"client_order_id": "client-1"},
+            "outcome": {"class": "accepted", "write_attempted": True},
+            "status": "accepted",
+            "upstream_order_id": "101",
+        }
+        second = {**first, "index": 1, "request_identity": {"client_order_id": "client-2"}, "upstream_order_id": "102"}
+        counts = {"accepted": 2, "rejected": 0, "unknown": 0}
+        for items, item_counts, expected in (
+            ([second, first], counts, ("101", "102")),
+            ([{**second, "request_identity": first["request_identity"]}, first], counts, (None, None)),
+            ([second, {**first, "index": 1}], counts, (None, None)),
+            ([second, first], {**counts, "rejected": 1}, (None, None)),
+            ([second], counts, (None, None)),
+        ):
+            with self.subTest(items=items, counts=item_counts):
+                normalized = runtime._normalize_mcp_submission_results(
+                    operation_key="spot.order.bulk_order",
+                    prepared_legs=prepared,
+                    response={
+                        "ok": True,
+                        "action": "place_batch_orders",
+                        "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+                        "result": {"status": "accepted", "items": items, "counts": item_counts},
+                    },
+                )
+                self.assertEqual(tuple(leg.get("weex_order_id") for leg in normalized), expected)
+                self.assertEqual([leg["status"] for leg in normalized], ["ACCEPTED" if order_id else "REVIEW_REQUIRED" for order_id in expected])
+
+    def test_fixed_mcp_malformed_not_sent_or_definitive_rejection_never_release(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        not_sent = {
+            "ok": False,
+            "action": "place_order",
+            "outcome": {"class": "not_sent", "write_attempted": False, "grant_disposition": "not_sent_terminal"},
+            "error": {"code": "stale_precondition", "message": "Not sent.", "category": "stale_precondition", "retryable": False},
+        }
+        for response in (
+            {**not_sent, "data": {"orderId": "101"}},
+            {**not_sent, "result": {"upstream_order_id": "101"}},
+            {**not_sent, "outcome": {**not_sent["outcome"], "write_attempted": True}},
+            {**not_sent, "outcome": {**not_sent["outcome"], "grant_disposition": "unchanged"}},
+            {**not_sent, "action": "place_tp_sl"},
+            {**not_sent, "error": {"code": "stale_precondition"}},
+        ):
+            with self.subTest(response=response):
+                normalized = runtime._normalize_mcp_submission_results(
+                    operation_key="spot.order.place_order",
+                    response=response,
+                    prepared_legs=[{"leg_id": "leg-0", "client_order_id": "client-1"}],
+                )
+                self.assertEqual(normalized[0]["status"], "REVIEW_REQUIRED")
+
+    def test_fixed_mcp_tp_sl_checks_typed_algo_identity_and_conflicting_exchange_id(self) -> None:
+        import weex_auto_trade_runtime as runtime
+
+        identity = {"client_algo_id": "client-1"}
+        result = {
+            "status": "accepted",
+            "request_identity": identity,
+            "symbol": "BTCUSDT",
+            "plan_type": "TAKE_PROFIT",
+            "quantity_mode": "exact",
+            "items": [
+                {
+                    "index": 0,
+                    "request_identity": identity,
+                    "outcome": {"class": "accepted", "write_attempted": True},
+                    "status": "accepted",
+                    "upstream_order_id": "101",
+                },
+            ],
+            "counts": {"accepted": 1, "rejected": 0, "unknown": 0},
+        }
+        for override, expected in (({}, "ACCEPTED"), ({"upstream_order_id": "102"}, "REVIEW_REQUIRED")):
+            with self.subTest(override=override):
+                normalized = runtime._normalize_mcp_submission_results(
+                    operation_key="transaction.place_tp_sl_order",
+                    prepared_legs=[{"leg_id": "leg-0", "client_order_id": "client-1"}],
+                    response={
+                        "ok": True,
+                        "action": "place_tp_sl",
+                        "outcome": {"class": "accepted", "write_attempted": True, "grant_disposition": "accepted"},
+                        "result": {**result, **override},
+                    },
+                )
+                self.assertEqual(normalized[0]["status"], expected)
 
 
 if __name__ == "__main__":

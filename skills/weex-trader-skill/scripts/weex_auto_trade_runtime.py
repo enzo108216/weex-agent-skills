@@ -162,26 +162,17 @@ class OfficialApiBoundary:
         if mutating:
             if delegation is None:
                 raise ValueError("delegated authorization is required for automated writes")
+            settings_factory = client.mcp_trade_settings_factory
+            if not callable(settings_factory):
+                raise ValueError("saved profile trade settings are required for automated writes")
             return {
                 "_mcp_mutation": True,
-                "response": {
-                    "ok": False,
-                    "status": None,
-                    "error": {
-                        "code": "auto_grant_migration_required",
-                        "message": (
-                            "Automated Trade grants require the approved SQLite migration."
-                        ),
-                    },
-                    "outcome": {
-                        "class": "invocation_rejected",
-                        "write_attempted": False,
-                        "grant_disposition": "unchanged",
-                        "action": _operation_action(endpoint_key),
-                    },
-                    "trade_status": "NOT_SENT",
-                    "review_required": False,
-                },
+                "response": delegation.execute(
+                    settings=settings_factory(),
+                    endpoint=endpoint,
+                    query=query or {},
+                    body=body or {},
+                ),
             }
 
         response = client.read_endpoint(
@@ -190,19 +181,6 @@ class OfficialApiBoundary:
             body=body or {},
         )
         if not response.get("ok"):
-            if mutating:
-                status = response.get("status")
-                error_payload = response.get("error")
-                error_code = _official_error_code(error_payload)
-                if _is_definitive_http_rejection(status, error_code):
-                    raise OfficialRequestRejected(
-                        status=status,
-                        error_code=error_code,
-                        error_message=_official_error_message(error_payload),
-                    )
-                raise OfficialRequestUncertain(
-                    "official WEEX write result is transport or upstream uncertain"
-                )
             error_payload = response.get("error")
             raise OfficialReadRequestFailed(
                 error_code=_official_error_code(error_payload),
@@ -953,338 +931,173 @@ def _query_futures_plan_order(
     return dict(matches[0])
 
 
-def _normalize_submission_results(
-    *,
-    operation_key: str,
-    payload: Any,
-    prepared_legs: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    raw = payload
-    if isinstance(raw, dict) and "data" in raw and not any(
-        key in raw for key in ("orderId", "orderList", "success", "errorCode")
-    ):
-        raw = raw["data"]
-    if operation_key == "spot.order.bulk_order" and isinstance(raw, dict):
-        rows = raw.get("orderList")
-    elif isinstance(raw, list):
-        rows = raw
-    elif isinstance(raw, dict):
-        rows = [raw]
-    else:
-        rows = []
-    normalized: list[dict[str, Any]] = []
-    is_batch = operation_key in {
-        "spot.order.bulk_order",
-        "transaction.place_orders_batch",
-    }
-    for index, row in enumerate(rows or []):
-        if not isinstance(row, dict):
-            continue
-        result = dict(row)
-        client_id = _pick(result, "clientOrderId", "clientAlgoId")
-        if client_id not in (None, ""):
-            result["client_order_id"] = str(client_id)
-        if not is_batch and len(prepared_legs) == 1:
-            result["leg_id"] = prepared_legs[0]["leg_id"]
-        order_id = _pick(result, "orderId", "weex_order_id", "algoId")
-        error_code = _pick(result, "errorCode", "error_code", "rejectionCode")
-        error_message = _pick(
-            result, "errorMessage", "error_message", "rejectionMessage", "message"
-        )
-        if error_code not in (None, ""):
-            result["error_code"] = _sanitized_official_error_text(
-                error_code, max_length=128
-            )
-        if error_message not in (None, ""):
-            result["error_message"] = _sanitized_official_error_text(
-                error_message, max_length=512
-            )
-        if order_id not in (None, "") and result.get("success") is not False:
-            result["weex_order_id"] = str(order_id)
-            result["status"] = "ACCEPTED"
-        elif result.get("success") is False and error_code not in (None, ""):
-            result["status"] = "RELEASED"
-        else:
-            result["status"] = "REVIEW_REQUIRED"
-        normalized.append(result)
-    if not normalized and len(prepared_legs) == 1:
-        return [{"leg_id": prepared_legs[0]["leg_id"], "status": "REVIEW_REQUIRED"}]
-    return normalized
-
-
 def _normalize_mcp_submission_results(
     *,
     operation_key: str,
     response: dict[str, Any],
     prepared_legs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    # The durable delegate has already bound this typed response to the exact
+    # group/grant. Only project the identities and evidence supplied by MCP.
+    held = _review_required_legs(prepared_legs)
     expected_action = _operation_action(operation_key)
     outcome = response.get("outcome")
     if (
-        isinstance(outcome, dict)
-        and outcome.get("class") == "invocation_rejected"
-        and outcome.get("action") == expected_action
-        and outcome.get("write_attempted") is False
-        and outcome.get("grant_disposition") == "unchanged"
-        and response.get("ok") is False
-        and response.get("review_required") is False
-        and "data" not in response
+        response.get("action") != expected_action
+        or not isinstance(outcome, dict)
+        or set(outcome) != {"class", "write_attempted", "grant_disposition"}
     ):
-        error = response.get("error")
-        error_code = (
-            _optional_text(error.get("code"))
-            if isinstance(error, dict)
-            else None
-        ) or "invocation_rejected"
-        return [
-            {
-                "leg_id": leg["leg_id"],
-                "client_order_id": leg["client_order_id"],
-                "status": "RELEASED",
-                "success": False,
-                "error_code": _sanitized_official_error_text(
-                    error_code,
-                    max_length=128,
-                ),
-            }
-            for leg in prepared_legs
-        ]
-    if (
-        not isinstance(outcome, dict)
-        or outcome.get("action") != expected_action
-        or outcome.get("class")
-        not in {"not_sent", "definitive_rejection", "accepted", "unknown", "partial"}
-    ):
-        return _review_required_legs(prepared_legs)
-    is_batch = operation_key in {
-        "spot.order.bulk_order",
-        "transaction.place_orders_batch",
+        return held
+    outcome_class = outcome["class"]
+    if not isinstance(outcome_class, str):
+        return held
+    rules = {
+        "not_sent": (False, "not_sent_terminal"),
+        "definitive_rejection": (True, "definitive_rejection"),
+        "accepted": (True, "accepted"),
+        "partial": (True, "review_required"),
     }
-    itemized_single = operation_key == "transaction.place_tp_sl_order"
-    if not _valid_mcp_outcome(
-        response=response,
-        outcome=outcome,
-        expected_action=expected_action,
-        is_batch=is_batch,
-        itemized_single=itemized_single,
+    if outcome_class not in rules:
+        # Invocation rejection leaves the durable grant unchanged. An unknown
+        # write or an incomplete projection cannot release any held leg.
+        return held
+    attempted, disposition = rules[outcome_class]
+    if (
+        outcome["write_attempted"] is not attempted
+        or outcome["grant_disposition"] != disposition
+        or response.get("ok") is not (outcome_class == "accepted")
     ):
-        return _review_required_legs(prepared_legs)
+        return held
+    clients = [leg["client_order_id"] for leg in held]
+    itemized = expected_action in {"place_batch_orders", "place_tp_sl"}
+    if (
+        not clients
+        or not all(isinstance(client_id, str) and client_id for client_id in clients)
+        or len(set(clients)) != len(clients)
+        or (expected_action != "place_batch_orders" and len(clients) != 1)
+    ):
+        return held
 
-    raw_results = (
-        _normalize_submission_results(
-            operation_key=operation_key,
-            payload=response.get("data"),
-            prepared_legs=prepared_legs,
-        )
-        if "data" in response
-        else []
-    )
-    raw_by_client: dict[str, dict[str, Any]] = {}
-    for result in raw_results:
-        client_id = str(result.get("client_order_id") or "")
-        if not client_id or client_id in raw_by_client:
-            continue
-        raw_by_client[client_id] = result
-
-    if outcome.get("class") == "not_sent" and outcome.get("items") is None:
-        outcomes = [outcome for _leg in prepared_legs]
-    elif is_batch or itemized_single:
-        items = outcome.get("items")
-        if not isinstance(items, list) or len(items) != len(prepared_legs):
-            return _review_required_legs(prepared_legs)
-        if itemized_single:
-            outcomes = [items[0]]
-        else:
-            item_by_client: dict[str, dict[str, Any]] = {}
-            for item in items:
-                if not isinstance(item, dict):
-                    return _review_required_legs(prepared_legs)
-                client_id = str(item.get("client_order_id") or "")
-                if not client_id or client_id in item_by_client:
-                    return _review_required_legs(prepared_legs)
-                item_by_client[client_id] = item
-            if set(item_by_client) != {
-                str(leg.get("client_order_id") or "") for leg in prepared_legs
-            }:
-                return _review_required_legs(prepared_legs)
-            outcomes = [item_by_client[str(leg["client_order_id"])] for leg in prepared_legs]
-    else:
-        if len(prepared_legs) != 1:
-            return _review_required_legs(prepared_legs)
-        outcome_client_id = _safe_outcome_identity(outcome.get("client_order_id"))
-        if outcome_client_id != str(prepared_legs[0].get("client_order_id") or ""):
-            return _review_required_legs(prepared_legs)
-        outcomes = [outcome]
-
-    error = response.get("error")
-    error = error if isinstance(error, dict) else {}
-    error_details = error.get("details")
-    error_details = error_details if isinstance(error_details, dict) else {}
-    fallback_error_code = _optional_text(
-        error_details.get("upstream_code") or error.get("code")
-    )
-    results: list[dict[str, Any]] = []
-    for leg, item in zip(prepared_legs, outcomes):
-        item_class = item.get("class")
-        result: dict[str, Any] = {
-            "leg_id": leg["leg_id"],
-            "client_order_id": leg["client_order_id"],
-        }
-        if item_class == "accepted":
-            if itemized_single:
-                operation_reference = _safe_outcome_identity(
-                    item.get("operation_reference")
-                )
-                if operation_reference is None or len(raw_results) > 1:
-                    result["status"] = "REVIEW_REQUIRED"
-                    results.append(result)
-                    continue
-                accepted = raw_results[0] if raw_results else None
-                raw_client_id = _safe_outcome_identity(
-                    (accepted or {}).get("client_order_id")
-                )
-                raw_order_id = _safe_outcome_identity(
-                    _pick(
-                        accepted or {},
-                        "orderId",
-                        "weex_order_id",
-                        "order_id",
-                        "algoId",
-                    )
-                )
-                if (
-                    raw_client_id is not None
-                    and raw_client_id != str(leg["client_order_id"])
-                ) or (
-                    raw_order_id is not None
-                    and raw_order_id != operation_reference
-                ):
-                    result["status"] = "REVIEW_REQUIRED"
-                else:
-                    if accepted is not None:
-                        result.update(accepted)
-                    result.update(
-                        {
-                            "leg_id": leg["leg_id"],
-                            "client_order_id": leg["client_order_id"],
-                            "weex_order_id": operation_reference,
-                            "status": "ACCEPTED",
-                            "success": True,
-                        }
-                    )
-                results.append(result)
-                continue
-            accepted = raw_by_client.get(str(leg["client_order_id"]))
-            order_id = _pick(accepted or {}, "orderId", "weex_order_id", "order_id")
-            if accepted is None or order_id in (None, ""):
-                result["status"] = "REVIEW_REQUIRED"
-            else:
-                result.update(accepted)
-                result["leg_id"] = leg["leg_id"]
-                result["client_order_id"] = leg["client_order_id"]
-                result["status"] = "ACCEPTED"
-                result["success"] = True
-        elif item_class == "definitive_rejection":
-            error_code = _optional_text(item.get("error_code")) or fallback_error_code
-            if error_code is None:
-                result["status"] = "REVIEW_REQUIRED"
-            else:
-                result.update(
-                    {
-                        "status": "RELEASED",
-                        "success": False,
-                        "error_code": _sanitized_official_error_text(
-                            error_code,
-                            max_length=128,
-                        ),
-                    }
-                )
-        elif item_class == "not_sent":
-            result.update(
-                {
-                    "status": "RELEASED",
-                    "success": False,
-                    "error_code": "not_sent",
-                }
-            )
-        else:
-            result["status"] = "REVIEW_REQUIRED"
-        results.append(result)
-    return results
-
-
-def _valid_mcp_outcome(
-    *,
-    response: dict[str, Any],
-    outcome: dict[str, Any],
-    expected_action: str,
-    is_batch: bool,
-    itemized_single: bool,
-) -> bool:
-    outcome_class = outcome.get("class")
-    attempted = outcome.get("write_attempted")
-    if not isinstance(attempted, bool):
-        return False
-    if (outcome_class == "not_sent") != (attempted is False):
-        return False
-    if (outcome_class == "accepted") != (response.get("ok") is True):
-        return False
-    items = outcome.get("items")
-    if outcome_class == "not_sent" and items is None:
-        return "data" not in response or response.get("data") is None
-    if not is_batch and not itemized_single:
-        return items is None and outcome_class != "partial"
-    if not isinstance(items, list) or not items:
-        return False
-    if itemized_single and len(items) != 1:
-        return False
-    classes: set[str] = set()
-    for item in items:
-        if not isinstance(item, dict) or item.get("action") != expected_action:
-            return False
-        item_class = item.get("class")
-        item_attempted = item.get("write_attempted")
-        if item_class not in {
-            "not_sent",
-            "definitive_rejection",
-            "accepted",
-            "unknown",
-        } or not isinstance(item_attempted, bool):
-            return False
-        if (item_class == "not_sent") != (item_attempted is False):
-            return False
-        if not any(
-            _safe_outcome_identity(item.get(field)) is not None
-            for field in (
-                "client_order_id",
-                "operation_reference",
-                "reconcile_identity",
-            )
+    base_fields = {"ok", "action", "outcome"}
+    if outcome_class == "not_sent":
+        if (
+            set(response) != base_fields | {"error"}
+            or not _has_direct_error(response.get("error"), "stale_precondition")
         ):
-            return False
-        classes.add(str(item_class))
-    if "unknown" in classes:
-        aggregate = "unknown"
-    elif classes == {"accepted"}:
-        aggregate = "accepted"
-    elif classes == {"definitive_rejection"}:
-        aggregate = "definitive_rejection"
-    elif classes == {"not_sent"}:
-        aggregate = "not_sent"
-    elif classes == {"accepted", "definitive_rejection"}:
-        aggregate = "partial"
+            return held
+        return [{**leg, "status": "RELEASED", "error_code": "not_sent"} for leg in held]
+
+    if outcome_class == "accepted":
+        if set(response) - {"warning"} != base_fields | {"result"}:
+            return held
     else:
-        return False
-    return aggregate == outcome_class
+        result_fields = {"result"} if itemized else set()
+        if outcome_class == "partial":
+            if not itemized or not isinstance(response.get("reconciliation"), dict):
+                return held
+            result_fields.add("reconciliation")
+        expected_error = "partial_write" if outcome_class == "partial" else "upstream_rejection"
+        if (
+            set(response) != base_fields | {"error"} | result_fields
+            or not _has_direct_error(response.get("error"), expected_error)
+        ):
+            return held
+        if not itemized:
+            # A single-operation definitive rejection has no result body. It
+            # is unambiguous for the sole leg of the exact claimed invocation.
+            return [{**held[0], "status": "RELEASED", "error_code": expected_error}]
+
+    result = response.get("result")
+    if not isinstance(result, dict) or (
+        result.get("status") != "accepted" if outcome_class == "accepted" else "status" in result
+    ):
+        return held
+    identity_field = (
+        "client_algo_id" if expected_action in {"place_conditional_order", "place_tp_sl"} else "client_order_id"
+    )
+    if expected_action != "place_batch_orders":
+        if result.get("request_identity") != {identity_field: clients[0]}:
+            return held
+        if expected_action == "place_order" and result.get("market") != _operation_module(operation_key).lower():
+            return held
+        if not isinstance(result.get("symbol"), str) or not result["symbol"]:
+            return held
+    if not itemized:
+        _project_accepted_leg(held[0], result.get("upstream_order_id"))
+        return held
+
+    items = result.get("items")
+    counts = result.get("counts")
+    if not isinstance(items, list) or len(items) != len(clients) or not isinstance(counts, dict):
+        return held
+    observed = {"accepted": 0, "rejected": 0, "unknown": 0}
+    projected = [dict(leg) for leg in held]
+    indexes: set[int] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            return held
+        index = item.get("index")
+        if (
+            type(index) is not int
+            or not 0 <= index < len(clients)
+            or index in indexes
+            or item.get("request_identity") != {identity_field: clients[index]}
+        ):
+            return held
+        indexes.add(index)
+        item_status = item.get("status")
+        item_outcome = item.get("outcome")
+        if (
+            not isinstance(item_outcome, dict)
+            or set(item_outcome) != {"class", "write_attempted"}
+            or item_outcome["class"] != item_status
+            or item_outcome["write_attempted"] is not True
+        ):
+            return held
+        if item_status == "accepted" and "error" not in item:
+            observed["accepted"] += 1
+            order_id = item.get("upstream_order_id")
+            if expected_action == "place_tp_sl" and "upstream_order_id" in result:
+                if order_id is not None and order_id != result["upstream_order_id"]:
+                    return held
+                order_id = result["upstream_order_id"]
+            _project_accepted_leg(projected[index], order_id)
+        elif (
+            item_status == "definitive_rejection"
+            and "upstream_order_id" not in item
+            and _has_direct_error(item.get("error"), "upstream_rejection")
+        ):
+            observed["rejected"] += 1
+            projected[index].update(status="RELEASED", error_code="upstream_rejection")
+        else:
+            return held
+    actual_class = (
+        "partial" if observed["accepted"] and observed["rejected"] else
+        "accepted" if observed["accepted"] else "definitive_rejection"
+    )
+    if (
+        actual_class != outcome_class
+        or any(type(count) is not int for count in counts.values())
+        or counts != observed
+    ):
+        return held
+    return projected
 
 
-def _safe_outcome_identity(value: Any) -> str | None:
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
-        return None
-    normalized = str(value).strip()
-    if not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", normalized):
-        return None
-    return normalized
+def _has_direct_error(value: Any, code: str) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("code") == code
+        and value.get("retryable") is False
+        and isinstance(value.get("message"), str)
+        and bool(value["message"])
+        and isinstance(value.get("category"), str)
+    )
+
+
+def _project_accepted_leg(leg: dict[str, Any], order_id: Any) -> None:
+    if isinstance(order_id, str) and re.fullmatch(r"0|[1-9][0-9]*", order_id):
+        leg.update(status="ACCEPTED", weex_order_id=order_id)
 
 
 def _review_required_legs(
@@ -1488,12 +1301,12 @@ def _operation_module(operation_key: str) -> str:
 
 def _operation_action(operation_key: str) -> str:
     actions = {
-        "spot.order.place_order": "order",
-        "spot.order.bulk_order": "batch_order",
-        "transaction.place_order": "order",
-        "transaction.place_orders_batch": "batch_order",
-        "transaction.place_pending_order": "conditional_order",
-        "transaction.place_tp_sl_order": "tp_sl",
+        "spot.order.place_order": "place_order",
+        "spot.order.bulk_order": "place_batch_orders",
+        "transaction.place_order": "place_order",
+        "transaction.place_orders_batch": "place_batch_orders",
+        "transaction.place_pending_order": "place_conditional_order",
+        "transaction.place_tp_sl_order": "place_tp_sl",
     }
     try:
         return actions[operation_key]
@@ -1583,12 +1396,6 @@ def _official_error_message(payload: Any) -> str | None:
 def _sanitized_official_error_text(value: Any, *, max_length: int) -> str:
     text = " ".join(str(value).split())
     return text[:max_length]
-
-
-def _is_definitive_http_rejection(status: Any, error_code: str | None) -> bool:
-    if isinstance(status, bool) or not isinstance(status, int) or error_code is None:
-        return False
-    return 400 <= status < 500 and status not in {408, 409, 425, 429}
 
 
 def _now_ms() -> int:

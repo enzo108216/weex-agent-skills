@@ -155,10 +155,12 @@
           "reconcile-auto-order",
           "event-list",
           "snapshot-state",
-          "restore-state"
+          "restore-state",
+          "migration-status",
+          "migrate-state"
         ],
         "trading_mode": "real trading only",
-        "profile_policy": "saved profiles only",
+        "profile_policy": "saved profiles for strategy commands; no profile for migration-status or migrate-state",
         "state_owner": "scripts/weex_auto_trade_state.py behind the stable facade and guard"
       },
       "profile_management": {
@@ -267,6 +269,11 @@
       "inspect automated authorization events or reconcile an order": [
         "scripts/weex_auto_trade.py",
         "scripts/weex_auto_trade_state.py"
+      ],
+      "inspect or migrate automated authorization state": [
+        "scripts/weex_auto_trade.py",
+        "scripts/weex_auto_trade_state.py",
+        "references/script-operations.md"
       ],
       "snapshot or restore automated authorization state": [
         "scripts/weex_auto_trade.py",
