@@ -225,18 +225,19 @@
       ]
     },
     "scripts/weex_mcp_gateway.py": {
-      "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare, Direct grant context, and strict wrapper transport metadata.",
+      "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare, pure ExecutionGrant construction, Direct grant context, and strict wrapper transport metadata.",
       "when": [
         "constructing a Local User MCP service for one profile, effective Spot/Futures route pair, and Trade mode",
         "validating the verified MCP artifact, active manifest, boundary static manifest, and dynamic availability before a business request",
         "preparing one typed mutation without exposing a public preview tool or consuming a grant",
+        "building one issued execution grant from a verified PreparedMutation and the current trusted Gateway context without persisting or claiming it",
         "calling an allowlisted typed MCP tool with credentials and grants supplied only through trusted context",
         "describing one typed request without constructing a service, loading credentials, signing, or sending network traffic",
         "probing package and manifest readiness without loading credentials or sending a business request"
       ],
       "depends_on": [
         "references/mcp-capability-mapping.json",
-        "references/mcp-boundary-contract-v1.json",
+        "references/mcp-boundary-contract-v2.json",
         "scripts/weex_profile_store.py"
       ],
       "surface": [
@@ -245,6 +246,7 @@
         "McpGatewayError and fixed structured_content/is_error/transport_meta wrapper",
         "describe_local_mcp_request",
         "prepare_mutation",
+        "build_execution_grant",
         "runtime_status",
         "probe_local_mcp_runtime"
       ]

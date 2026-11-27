@@ -29,14 +29,14 @@ SOURCE_CATALOG_DIGESTS = {
     "partner": "sha256:" + "8" * 64,
 }
 VERSIONS = {
-    "package": "0.3.0",
+    "package": "0.3.1",
     "tool_contract": "2",
     "manifest": "2",
     "output": "1",
     "prepare": "1",
     "request_description": "2",
     "transport_meta": "1",
-    "grant": "1",
+    "grant": "2",
 }
 
 
@@ -137,7 +137,7 @@ def build_manifest(tools: list[dict[str, object]], *, trade_enabled: bool) -> di
     )
     manifest: dict[str, object] = {
         "manifest_version": 2,
-        "package_version": "0.3.0",
+        "package_version": "0.3.1",
         "tool_contract_version": "2",
         "runtime_profile": "local_user",
         "trade_enabled": trade_enabled,
@@ -157,7 +157,7 @@ def build_static_manifest(tools: list[dict[str, object]]) -> dict[str, object]:
     manifest: dict[str, object] = {
         "status": "CANDIDATE_NEEDS_RELEASE_OWNER",
         "versions": dict(VERSIONS),
-        "package_version": "0.3.0",
+        "package_version": "0.3.1",
         "composition_kind": "local_user",
         "tools": [item["name"] for item in projections],
         "input_schema_digest": canonical_digest(
@@ -177,7 +177,7 @@ def build_static_manifest(tools: list[dict[str, object]]) -> dict[str, object]:
         "matrix_digest": MATRIX_DIGEST,
         "source_catalog_digests": dict(SOURCE_CATALOG_DIGESTS),
         "credential_binding_version": 1,
-        "grant_consumer_version": 1,
+        "grant_consumer_version": 2,
     }
     manifest["manifest_digest"] = canonical_digest(manifest)
     return manifest
@@ -218,10 +218,10 @@ def mapping_for(
         "mapping_version": "trader-mcp-capability-v2",
         "verified_mcp_candidate": {
             "official_repository": "https://github.com/weex-labs/weex-mcp",
-            "package_version": "0.3.0",
+            "package_version": "0.3.1",
             "tool_contract_version": "2",
             "manifest_version": 2,
-            "source_commit": "5c2a439b916b3095974fa0b94a425fb7c77d93ec",
+            "source_commit": "e684b575bb7b7c44edd4f2a897137d020a79b4fb",
             "publication_status": "unpublished",
             "distribution_sha256": {"wheel": "a" * 64, "sdist": "b" * 64},
             "versions": dict(VERSIONS),
@@ -313,6 +313,15 @@ class FakeCorrelation:
 @dataclass(frozen=True)
 class FakeExecutionGrant:
     grant_id: str
+    state: str = "ISSUED"
+    principal_id: str = "profile-a"
+    account_binding_id: str = "account-binding"
+    credential_fingerprint: str = "credential-fingerprint"
+    tool_name: str = "trade_place_order"
+    prepared_artifact_digest: str = "sha256:" + "d" * 64
+    execution_binding_digest: str = "sha256:" + "e" * 64
+    issued_at: int = 100
+    expires_at: int = 1_000
 
 
 @dataclass(frozen=True)
@@ -341,8 +350,16 @@ class FakeSettings:
 
 
 class FakePrepared:
-    def __init__(self, *, tool_name: str):
+    def __init__(
+        self,
+        *,
+        tool_name: str,
+        route_fingerprint: str,
+        credential_fingerprint: str,
+    ):
         self.tool_name = tool_name
+        self.route_fingerprint = route_fingerprint
+        self.credential_fingerprint = credential_fingerprint
 
     def to_dict(self):
         return {
@@ -350,6 +367,9 @@ class FakePrepared:
             "tool_name": self.tool_name,
             "prepared_artifact_digest": "sha256:" + "d" * 64,
             "execution_binding_digest": "sha256:" + "e" * 64,
+            "route_fingerprint": self.route_fingerprint,
+            "credential_fingerprint": self.credential_fingerprint,
+            "expires_at": 1_000,
         }
 
 
@@ -372,7 +392,11 @@ class FakeService:
 
     def prepare_mutation(self, *, tool_name, arguments, invocation_context):
         self.prepares.append((tool_name, copy.deepcopy(arguments), invocation_context))
-        return FakePrepared(tool_name=tool_name)
+        return FakePrepared(
+            tool_name=tool_name,
+            route_fingerprint=invocation_context.account_binding.route_fingerprint,
+            credential_fingerprint=invocation_context.credential_binding.credential_fingerprint,
+        )
 
     def handle_jsonrpc(self, request, *, context=None):
         method = request.get("method")
@@ -417,7 +441,21 @@ class FakeService:
         raise AssertionError(method)
 
 
-def fake_runtime(service: FakeService, *, package_version: str = "0.3.0"):
+class GrantConsumerSpy:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        if name in {"load", "claim", "finalize", "recover"}:
+            def fail(**_kwargs):
+                self.calls.append(name)
+                raise AssertionError(f"grant builder must not call {name}")
+
+            return fail
+        raise AttributeError(name)
+
+
+def fake_runtime(service: FakeService, *, package_version: str = "0.3.1"):
     def build_local_user_service(**kwargs):
         service.settings = kwargs["settings"]
         service.secret_provider = kwargs["secret_provider"]
@@ -692,7 +730,7 @@ class LocalMcpGatewayTests(GatewayFixture):
             timeout_seconds=7.5,
             request_locale="zh-CN",
         )
-        self.assertEqual(gateway.runtime_status()["version"], "0.3.0")
+        self.assertEqual(gateway.runtime_status()["version"], "0.3.1")
         self.assertEqual(
             service.settings.spot_base_url,
             "https://stg-spotpro-openapi.weex.tech",
@@ -785,6 +823,94 @@ class LocalMcpGatewayTests(GatewayFixture):
         _name, arguments, context = service.prepares[-1]
         self.assertEqual(arguments["client_order_id"], "client-1")
         self.assertIsNone(context.execution_grant)
+
+    def test_build_execution_grant_uses_trusted_context_without_claim_or_persist(self) -> None:
+        consumer = GrantConsumerSpy()
+        gateway, service = self.make_gateway(
+            trade_enabled=True,
+            grant_consumer=consumer,
+        )
+        prepared = gateway.prepare_mutation(
+            "trade_place_order",
+            {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"},
+        )
+        trusted_context = service.prepares[-1][2]
+        before_calls = len(service.calls)
+        before_prepares = len(service.prepares)
+
+        grant = gateway.build_execution_grant(
+            prepared,
+            grant_id="grant-1",
+            issued_at=100,
+        )
+
+        self.assertEqual(
+            grant,
+            FakeExecutionGrant(
+                grant_id="grant-1",
+                principal_id=trusted_context.principal.principal_id,
+                account_binding_id=trusted_context.account_binding.account_binding_id,
+                credential_fingerprint=trusted_context.credential_binding.credential_fingerprint,
+            ),
+        )
+        self.assertEqual(len(service.calls), before_calls)
+        self.assertEqual(len(service.prepares), before_prepares)
+        self.assertEqual(consumer.calls, [])
+
+    def test_build_execution_grant_rejects_untrusted_or_invalid_prepared_input(self) -> None:
+        gateway, _service = self.make_gateway(trade_enabled=True)
+        prepared = gateway.prepare_mutation(
+            "trade_place_order",
+            {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"},
+        )
+        cases = (
+            ({**prepared, "route_fingerprint": "sha256:" + "0" * 64}, "grant-1", 100, "invalid_arguments"),
+            ({**prepared, "credential_fingerprint": "stale"}, "grant-1", 100, "invalid_arguments"),
+            ({**prepared, "tool_name": "account_get_balance"}, "grant-1", 100, "unsupported_tool"),
+            ({**prepared, "prepared_artifact_digest": "invalid"}, "grant-1", 100, "mcp_protocol_error"),
+            ({**prepared, "expires_at": 100}, "grant-1", 100, "invalid_arguments"),
+            (prepared, "", 100, "invalid_arguments"),
+            (prepared, "grant-1", True, "invalid_arguments"),
+        )
+        for candidate, grant_id, issued_at, error_code in cases:
+            with self.subTest(candidate=candidate, grant_id=grant_id, issued_at=issued_at):
+                with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+                    gateway.build_execution_grant(
+                        candidate,
+                        grant_id=grant_id,
+                        issued_at=issued_at,
+                    )
+                self.assertEqual(caught.exception.code, error_code)
+
+    def test_build_execution_grant_rejects_post_prepare_binding_drift(self) -> None:
+        consumer = GrantConsumerSpy()
+        gateway, service = self.make_gateway(
+            trade_enabled=True,
+            grant_consumer=consumer,
+        )
+        prepared = gateway.prepare_mutation(
+            "trade_place_order",
+            {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"},
+        )
+        before_calls = len(service.calls)
+        before_prepares = len(service.prepares)
+        self.credentials = SimpleNamespace(
+            api_key="AK_ROTATED",
+            api_secret="SK_ROTATED",
+            api_passphrase="PP_ROTATED",
+        )
+
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+            gateway.build_execution_grant(
+                prepared,
+                grant_id="grant-1",
+                issued_at=100,
+            )
+
+        self.assertEqual(caught.exception.code, "invalid_arguments")
+        self.assertEqual(len(service.calls), before_calls)
+        self.assertEqual(len(service.prepares), before_prepares)
+        self.assertEqual(consumer.calls, [])
 
     def test_direct_call_requires_execution_grant_only_in_context(self) -> None:
         gateway, service = self.make_gateway(
@@ -1096,16 +1222,16 @@ class LocalMcpGatewayTests(GatewayFixture):
             side_effect=module.metadata.PackageNotFoundError,
         ):
             with self.assertRaises(module.McpGatewayError) as missing:
-                module._load_default_runtime("0.3.0")
+                module._load_default_runtime("0.3.1")
         self.assertEqual(missing.exception.code, "mcp_package_missing")
 
         with mock.patch.object(module.metadata, "version", return_value="0.2.0"):
             with self.assertRaises(module.McpGatewayError) as mismatch:
-                module._load_default_runtime("0.3.0")
+                module._load_default_runtime("0.3.1")
         self.assertEqual(mismatch.exception.code, "mcp_version_mismatch")
 
         with (
-            mock.patch.object(module.metadata, "version", return_value="0.3.0"),
+            mock.patch.object(module.metadata, "version", return_value="0.3.1"),
             mock.patch.object(
                 module.importlib,
                 "import_module",
@@ -1128,7 +1254,7 @@ class LocalMcpGatewayTests(GatewayFixture):
                 "weex_mcp.execution_authorization": SimpleNamespace(ExecutionGrant=object()),
             }
             importer.side_effect = lambda name: modules[name]
-            runtime = module._load_default_runtime("0.3.0")
+            runtime = module._load_default_runtime("0.3.1")
         self.assertIs(
             runtime.AuthenticatedInvocationContext,
             modules["weex_mcp.invocation_context"].AuthenticatedInvocationContext,

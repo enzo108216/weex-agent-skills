@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 MAPPING_PATH = SKILL_ROOT / "references" / "mcp-capability-mapping.json"
-BOUNDARY_CONTRACT_PATH = SKILL_ROOT / "references" / "mcp-boundary-contract-v1.json"
+BOUNDARY_CONTRACT_PATH = SKILL_ROOT / "references" / "mcp-boundary-contract-v2.json"
 EXPECTED_MAPPING_VERSION = "trader-mcp-capability-v2"
 LOCAL_RUNTIME_PROFILE = "local_user"
 DEFAULT_SPOT_BASE_URL = "https://api-spot.weex.com"
@@ -473,7 +473,7 @@ def _validate_static_manifest(
         "matrix_digest": candidate["matrix_digest"],
         "source_catalog_digests": candidate["source_catalog_digests"],
         "credential_binding_version": 1,
-        "grant_consumer_version": 1,
+        "grant_consumer_version": 2,
     }
     if stored != _canonical_digest(payload) or any(manifest.get(field) != value for field, value in expected.items()):
         raise McpGatewayError("mcp_contract_mismatch", "The WEEX MCP static boundary contract does not match Trader.")
@@ -1263,6 +1263,107 @@ class LocalMcpGateway:
         ):
             raise McpGatewayError("mcp_protocol_error", "WEEX MCP returned an invalid prepared mutation.")
         return _copy_json_object(payload)
+
+    def build_execution_grant(
+        self,
+        prepared_mutation: Mapping[str, Any],
+        *,
+        grant_id: str,
+        issued_at: int,
+    ) -> Any:
+        if (
+            not isinstance(prepared_mutation, Mapping)
+            or not isinstance(grant_id, str)
+            or not grant_id
+            or isinstance(issued_at, bool)
+            or not isinstance(issued_at, int)
+            or issued_at < 0
+        ):
+            raise McpGatewayError(
+                "invalid_arguments",
+                "A verified prepared mutation, grant ID, and issue time are required.",
+            )
+        tool_name = prepared_mutation.get("tool_name")
+        prepared_artifact_digest = _safe_digest(
+            prepared_mutation.get("prepared_artifact_digest")
+        )
+        execution_binding_digest = _safe_digest(
+            prepared_mutation.get("execution_binding_digest")
+        )
+        route_fingerprint = _safe_digest(
+            prepared_mutation.get("route_fingerprint")
+        )
+        credential_fingerprint = prepared_mutation.get(
+            "credential_fingerprint"
+        )
+        expires_at = prepared_mutation.get("expires_at")
+        if (
+            not isinstance(tool_name, str)
+            or not tool_name
+            or prepared_artifact_digest is None
+            or execution_binding_digest is None
+            or route_fingerprint is None
+            or not isinstance(credential_fingerprint, str)
+            or not credential_fingerprint
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, int)
+            or expires_at < 0
+        ):
+            raise McpGatewayError(
+                "mcp_protocol_error",
+                "WEEX MCP returned an invalid prepared mutation.",
+            )
+        tool = self._tools.get(tool_name)
+        if tool is None or self._tool_module(tool) != "trade":
+            raise McpGatewayError(
+                "unsupported_tool",
+                "The prepared mutation tool is not in the verified Local Trade catalog.",
+            )
+        if issued_at >= expires_at:
+            raise McpGatewayError(
+                "invalid_arguments",
+                "The prepared mutation is expired at the requested issue time.",
+            )
+        context = self._context(
+            execution_grant=None,
+            request_id=self._next_id("grant"),
+        )
+        account = context.account_binding
+        credential = context.credential_binding
+        if (
+            account is None
+            or credential is None
+            or not hmac.compare_digest(
+                route_fingerprint,
+                account.route_fingerprint,
+            )
+            or not hmac.compare_digest(
+                credential_fingerprint,
+                credential.credential_fingerprint,
+            )
+        ):
+            raise McpGatewayError(
+                "invalid_arguments",
+                "The prepared mutation is not bound to the current trusted Gateway context.",
+            )
+        try:
+            return self._runtime.ExecutionGrant(
+                grant_id=grant_id,
+                state="ISSUED",
+                principal_id=context.principal.principal_id,
+                account_binding_id=account.account_binding_id,
+                credential_fingerprint=credential.credential_fingerprint,
+                tool_name=tool_name,
+                prepared_artifact_digest=prepared_artifact_digest,
+                execution_binding_digest=execution_binding_digest,
+                issued_at=issued_at,
+                expires_at=expires_at,
+            )
+        except Exception as exc:
+            raise McpGatewayError(
+                "mcp_protocol_error",
+                "WEEX MCP rejected the verified execution grant.",
+            ) from exc
 
     def call_typed_tool(
         self,

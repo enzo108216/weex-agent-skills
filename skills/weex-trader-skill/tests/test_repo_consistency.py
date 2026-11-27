@@ -372,8 +372,9 @@ class RepoConsistencyTests(unittest.TestCase):
         self.assertIn("runtime_status", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn("probe_local_mcp_runtime", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn("prepare_mutation", file_index["file_guide"][gateway_path]["surface"])
+        self.assertIn("build_execution_grant", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn(
-            "references/mcp-boundary-contract-v1.json",
+            "references/mcp-boundary-contract-v2.json",
             file_index["file_guide"][gateway_path]["depends_on"],
         )
         gateway_role = file_index["file_guide"][gateway_path]["role"]
