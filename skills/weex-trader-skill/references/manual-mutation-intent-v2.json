@@ -1,0 +1,2385 @@
+{
+  "$defs": {
+    "terminal_audit_record": {
+      "additionalProperties": false,
+      "properties": {
+        "archived_at": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "audit_version": {
+          "const": 1
+        },
+        "intent": {
+          "allOf": [
+            {
+              "$ref": "#"
+            },
+            {
+              "oneOf": [
+                {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "NOT_SENT_TERMINAL",
+                        "DEFINITIVE_REJECTION",
+                        "ACCEPTED",
+                        "LEGACY_INVALIDATED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                },
+                {
+                  "properties": {
+                    "reconciliation": {
+                      "properties": {
+                        "status": {
+                          "enum": [
+                            "RESOLVED_ACCEPTED",
+                            "RESOLVED_REJECTED",
+                            "RESOLVED_NOT_SENT"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ]
+                    },
+                    "state": {
+                      "const": "REVIEW_REQUIRED"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "reconciliation"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "record_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "audit_version",
+        "archived_at",
+        "intent",
+        "record_digest"
+      ],
+      "type": "object",
+      "x-invariants": [
+        "intent is terminal or has resolved reconciliation before archival.",
+        "the audit journal is owner-only, append-only, fsynced, and contains no credentials."
+      ],
+      "x-record-digest": {
+        "algorithm": "sha256",
+        "canonicalization": "UTF-8 JSON with ensure_ascii=false, sort_keys=true, separators=(',', ':'), and allow_nan=false",
+        "excludes": [
+          "record_digest"
+        ]
+      }
+    }
+  },
+  "$id": "https://github.com/weex-labs/weex-agent-skills/blob/main/skills/weex-trader-skill/references/manual-mutation-intent-v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_place_order"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "place_order"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/0/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "place_order"
+                  },
+                  "tool_name": {
+                    "const": "trade_place_order"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/0/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_cancel_order"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "cancel_order"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/1/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "cancel_order"
+                  },
+                  "tool_name": {
+                    "const": "trade_cancel_order"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/1/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_update_leverage"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "update_leverage"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/2/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "update_leverage"
+                  },
+                  "tool_name": {
+                    "const": "trade_update_leverage"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/2/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_set_margin_mode"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "set_margin_mode"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/3/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "set_margin_mode"
+                  },
+                  "tool_name": {
+                    "const": "trade_set_margin_mode"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/3/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_place_batch_orders"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "place_batch_orders"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/4/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "place_batch_orders"
+                  },
+                  "tool_name": {
+                    "const": "trade_place_batch_orders"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/4/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_cancel_batch_orders"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "cancel_batch_orders"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/5/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "cancel_batch_orders"
+                  },
+                  "tool_name": {
+                    "const": "trade_cancel_batch_orders"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/5/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_cancel_open_orders"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "cancel_open_orders"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/6/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "cancel_open_orders"
+                  },
+                  "tool_name": {
+                    "const": "trade_cancel_open_orders"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/6/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_place_conditional_order"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "place_conditional_order"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/7/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "place_conditional_order"
+                  },
+                  "tool_name": {
+                    "const": "trade_place_conditional_order"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/7/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_cancel_conditional_order"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "cancel_conditional_order"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/8/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "cancel_conditional_order"
+                  },
+                  "tool_name": {
+                    "const": "trade_cancel_conditional_order"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/8/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_place_tp_sl"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "place_tp_sl"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/9/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "place_tp_sl"
+                  },
+                  "tool_name": {
+                    "const": "trade_place_tp_sl"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/9/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_modify_tp_sl"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "modify_tp_sl"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/10/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "modify_tp_sl"
+                  },
+                  "tool_name": {
+                    "const": "trade_modify_tp_sl"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/10/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_close_positions"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "close_positions"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/11/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "close_positions"
+                  },
+                  "tool_name": {
+                    "const": "trade_close_positions"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/11/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_adjust_position_margin"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "adjust_position_margin"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/12/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "adjust_position_margin"
+                  },
+                  "tool_name": {
+                    "const": "trade_adjust_position_margin"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/12/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tool_name": {
+            "const": "trade_set_auto_append_margin"
+          }
+        },
+        "required": [
+          "tool_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "action": {
+            "const": "set_auto_append_margin"
+          },
+          "direct_arguments": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/13/input_schema"
+          },
+          "prepared_mutation": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+              },
+              {
+                "properties": {
+                  "action": {
+                    "const": "set_auto_append_margin"
+                  },
+                  "tool_name": {
+                    "const": "trade_set_auto_append_margin"
+                  }
+                },
+                "required": [
+                  "tool_name",
+                  "action"
+                ]
+              }
+            ]
+          },
+          "risk_facts": {
+            "$ref": "mcp-boundary-contract-v2.json#/direct_tools/13/prepare_contract/risk_facts_schema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "UNCLAIMED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "confirmed_at": {
+            "type": "null"
+          },
+          "grant": {
+            "type": "null"
+          },
+          "legacy": {
+            "type": "null"
+          },
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "NOT_REQUIRED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "CONFIRMED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "confirmed_at": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+              },
+              {
+                "properties": {
+                  "state": {
+                    "const": "ISSUED"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              }
+            ]
+          },
+          "legacy": {
+            "type": "null"
+          },
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "NOT_REQUIRED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "CLAIMED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "confirmed_at": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+              },
+              {
+                "properties": {
+                  "state": {
+                    "const": "CLAIMED"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              }
+            ]
+          },
+          "legacy": {
+            "type": "null"
+          },
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "NOT_REQUIRED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "NOT_SENT_TERMINAL"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "confirmed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "grant": {
+                "allOf": [
+                  {
+                    "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+                  },
+                  {
+                    "properties": {
+                      "state": {
+                        "const": "NOT_SENT_TERMINAL"
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ]
+                  }
+                ]
+              },
+              "legacy": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "confirmed_at": {
+                "oneOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "grant": {
+                "type": "null"
+              },
+              "legacy": {
+                "allOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "migrated_at": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "migration": {
+                        "enum": [
+                          "LEGACY_INVALIDATED",
+                          "NOT_SENT_TERMINAL",
+                          "DEFINITIVE_REJECTION",
+                          "ACCEPTED",
+                          "REVIEW_REQUIRED"
+                        ],
+                        "type": "string"
+                      },
+                      "source_record_digest": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "source_started": {
+                        "type": "boolean"
+                      },
+                      "source_state": {
+                        "oneOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "source_version": {
+                        "oneOf": [
+                          {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "source_version",
+                      "source_record_digest",
+                      "source_state",
+                      "source_started",
+                      "migration",
+                      "migrated_at"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "migration": {
+                        "const": "NOT_SENT_TERMINAL"
+                      }
+                    },
+                    "required": [
+                      "migration"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "properties": {
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "const": "NOT_REQUIRED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "DEFINITIVE_REJECTION"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "confirmed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "grant": {
+                "allOf": [
+                  {
+                    "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+                  },
+                  {
+                    "properties": {
+                      "state": {
+                        "const": "DEFINITIVE_REJECTION"
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ]
+                  }
+                ]
+              },
+              "legacy": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "confirmed_at": {
+                "oneOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "grant": {
+                "type": "null"
+              },
+              "legacy": {
+                "allOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "migrated_at": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "migration": {
+                        "enum": [
+                          "LEGACY_INVALIDATED",
+                          "NOT_SENT_TERMINAL",
+                          "DEFINITIVE_REJECTION",
+                          "ACCEPTED",
+                          "REVIEW_REQUIRED"
+                        ],
+                        "type": "string"
+                      },
+                      "source_record_digest": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "source_started": {
+                        "type": "boolean"
+                      },
+                      "source_state": {
+                        "oneOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "source_version": {
+                        "oneOf": [
+                          {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "source_version",
+                      "source_record_digest",
+                      "source_state",
+                      "source_started",
+                      "migration",
+                      "migrated_at"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "migration": {
+                        "const": "DEFINITIVE_REJECTION"
+                      }
+                    },
+                    "required": [
+                      "migration"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "properties": {
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "const": "NOT_REQUIRED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "ACCEPTED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "confirmed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "grant": {
+                "allOf": [
+                  {
+                    "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+                  },
+                  {
+                    "properties": {
+                      "state": {
+                        "const": "ACCEPTED"
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ]
+                  }
+                ]
+              },
+              "legacy": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "confirmed_at": {
+                "oneOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "grant": {
+                "type": "null"
+              },
+              "legacy": {
+                "allOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "migrated_at": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "migration": {
+                        "enum": [
+                          "LEGACY_INVALIDATED",
+                          "NOT_SENT_TERMINAL",
+                          "DEFINITIVE_REJECTION",
+                          "ACCEPTED",
+                          "REVIEW_REQUIRED"
+                        ],
+                        "type": "string"
+                      },
+                      "source_record_digest": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "source_started": {
+                        "type": "boolean"
+                      },
+                      "source_state": {
+                        "oneOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "source_version": {
+                        "oneOf": [
+                          {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "source_version",
+                      "source_record_digest",
+                      "source_state",
+                      "source_started",
+                      "migration",
+                      "migrated_at"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "migration": {
+                        "const": "ACCEPTED"
+                      }
+                    },
+                    "required": [
+                      "migration"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "properties": {
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "const": "NOT_REQUIRED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "REVIEW_REQUIRED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "confirmed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "grant": {
+                "allOf": [
+                  {
+                    "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+                  },
+                  {
+                    "properties": {
+                      "state": {
+                        "const": "REVIEW_REQUIRED"
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ]
+                  }
+                ]
+              },
+              "legacy": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "confirmed_at": {
+                "oneOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "grant": {
+                "type": "null"
+              },
+              "legacy": {
+                "allOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "migrated_at": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "migration": {
+                        "enum": [
+                          "LEGACY_INVALIDATED",
+                          "NOT_SENT_TERMINAL",
+                          "DEFINITIVE_REJECTION",
+                          "ACCEPTED",
+                          "REVIEW_REQUIRED"
+                        ],
+                        "type": "string"
+                      },
+                      "source_record_digest": {
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      "source_started": {
+                        "type": "boolean"
+                      },
+                      "source_state": {
+                        "oneOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "source_version": {
+                        "oneOf": [
+                          {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "source_version",
+                      "source_record_digest",
+                      "source_state",
+                      "source_started",
+                      "migration",
+                      "migrated_at"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "migration": {
+                        "const": "REVIEW_REQUIRED"
+                      }
+                    },
+                    "required": [
+                      "migration"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "properties": {
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "PENDING",
+                  "RESOLVED_ACCEPTED",
+                  "RESOLVED_REJECTED",
+                  "RESOLVED_NOT_SENT",
+                  "UNRESOLVED",
+                  "MANUAL_REVIEW_REQUIRED"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "LEGACY_INVALIDATED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "confirmed_at": {
+            "type": "null"
+          },
+          "grant": {
+            "type": "null"
+          },
+          "legacy": {
+            "allOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "migrated_at": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "migration": {
+                    "enum": [
+                      "LEGACY_INVALIDATED",
+                      "NOT_SENT_TERMINAL",
+                      "DEFINITIVE_REJECTION",
+                      "ACCEPTED",
+                      "REVIEW_REQUIRED"
+                    ],
+                    "type": "string"
+                  },
+                  "source_record_digest": {
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "source_started": {
+                    "type": "boolean"
+                  },
+                  "source_state": {
+                    "oneOf": [
+                      {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "source_version": {
+                    "oneOf": [
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "source_version",
+                  "source_record_digest",
+                  "source_state",
+                  "source_started",
+                  "migration",
+                  "migrated_at"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "migration": {
+                    "const": "LEGACY_INVALIDATED"
+                  }
+                },
+                "required": [
+                  "migration"
+                ]
+              }
+            ]
+          },
+          "reconciliation": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "NOT_REQUIRED"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "intent_version": 2,
+  "oneOf": [
+    {
+      "properties": {
+        "legacy": {
+          "type": "null"
+        },
+        "reconciliation": {
+          "properties": {
+            "template": {
+              "$ref": "mcp-boundary-contract-v2.json#/schema_components/reconciliation"
+            }
+          },
+          "required": [
+            "template"
+          ]
+        },
+        "state": {
+          "enum": [
+            "UNCLAIMED",
+            "CONFIRMED",
+            "CLAIMED",
+            "NOT_SENT_TERMINAL",
+            "DEFINITIVE_REJECTION",
+            "ACCEPTED",
+            "REVIEW_REQUIRED"
+          ]
+        }
+      },
+      "required": [
+        "intent_version",
+        "intent_id",
+        "state",
+        "tool_name",
+        "action",
+        "market",
+        "trading_mode",
+        "direct_arguments",
+        "prepared_mutation",
+        "prepared_artifact_digest",
+        "execution_binding_digest",
+        "risk_facts",
+        "profile_binding",
+        "contract_versions",
+        "created_at",
+        "expires_at",
+        "confirmed_at",
+        "grant",
+        "request_identity",
+        "reconciliation",
+        "legacy"
+      ]
+    },
+    {
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "tool_name"
+            ]
+          },
+          {
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "required": [
+              "market"
+            ]
+          },
+          {
+            "required": [
+              "trading_mode"
+            ]
+          },
+          {
+            "required": [
+              "direct_arguments"
+            ]
+          },
+          {
+            "required": [
+              "prepared_mutation"
+            ]
+          },
+          {
+            "required": [
+              "prepared_artifact_digest"
+            ]
+          },
+          {
+            "required": [
+              "execution_binding_digest"
+            ]
+          },
+          {
+            "required": [
+              "risk_facts"
+            ]
+          },
+          {
+            "required": [
+              "profile_binding"
+            ]
+          },
+          {
+            "required": [
+              "contract_versions"
+            ]
+          },
+          {
+            "required": [
+              "created_at"
+            ]
+          },
+          {
+            "required": [
+              "expires_at"
+            ]
+          },
+          {
+            "required": [
+              "confirmed_at"
+            ]
+          },
+          {
+            "required": [
+              "grant"
+            ]
+          },
+          {
+            "required": [
+              "request_identity"
+            ]
+          }
+        ]
+      },
+      "properties": {
+        "legacy": {
+          "additionalProperties": false,
+          "properties": {
+            "migrated_at": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "migration": {
+              "enum": [
+                "LEGACY_INVALIDATED",
+                "NOT_SENT_TERMINAL",
+                "DEFINITIVE_REJECTION",
+                "ACCEPTED",
+                "REVIEW_REQUIRED"
+              ],
+              "type": "string"
+            },
+            "source_record_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "source_started": {
+              "type": "boolean"
+            },
+            "source_state": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "source_version": {
+              "oneOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "source_version",
+            "source_record_digest",
+            "source_state",
+            "source_started",
+            "migration",
+            "migrated_at"
+          ],
+          "type": "object"
+        },
+        "reconciliation": {
+          "properties": {
+            "status": {
+              "enum": [
+                "NOT_REQUIRED",
+                "RESOLVED_ACCEPTED",
+                "RESOLVED_REJECTED",
+                "RESOLVED_NOT_SENT",
+                "MANUAL_REVIEW_REQUIRED"
+              ]
+            },
+            "template": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "status",
+            "template"
+          ]
+        },
+        "state": {
+          "enum": [
+            "NOT_SENT_TERMINAL",
+            "DEFINITIVE_REJECTION",
+            "ACCEPTED",
+            "REVIEW_REQUIRED",
+            "LEGACY_INVALIDATED"
+          ]
+        }
+      },
+      "required": [
+        "intent_version",
+        "intent_id",
+        "state",
+        "reconciliation",
+        "legacy"
+      ]
+    }
+  ],
+  "properties": {
+    "action": {
+      "enum": [
+        "place_order",
+        "cancel_order",
+        "update_leverage",
+        "set_margin_mode",
+        "place_batch_orders",
+        "cancel_batch_orders",
+        "cancel_open_orders",
+        "place_conditional_order",
+        "cancel_conditional_order",
+        "place_tp_sl",
+        "modify_tp_sl",
+        "close_positions",
+        "adjust_position_margin",
+        "set_auto_append_margin"
+      ],
+      "type": "string"
+    },
+    "confirmed_at": {
+      "oneOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "contract_versions": {
+      "additionalProperties": false,
+      "properties": {
+        "boundary_contract_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "grant": {
+          "const": "2"
+        },
+        "intent": {
+          "const": "2"
+        },
+        "package": {
+          "const": "0.3.1"
+        },
+        "prepare": {
+          "const": "1"
+        },
+        "tool_contract": {
+          "const": "2"
+        }
+      },
+      "required": [
+        "package",
+        "tool_contract",
+        "prepare",
+        "intent",
+        "grant",
+        "boundary_contract_digest"
+      ],
+      "type": "object"
+    },
+    "created_at": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "direct_arguments": {
+      "type": "object"
+    },
+    "execution_binding_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "expires_at": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "grant": {
+      "oneOf": [
+        {
+          "$ref": "mcp-boundary-contract-v2.json#/schema_components/execution_grant"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "intent_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "intent_version": {
+      "const": 2
+    },
+    "legacy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "migrated_at": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "migration": {
+              "enum": [
+                "LEGACY_INVALIDATED",
+                "NOT_SENT_TERMINAL",
+                "DEFINITIVE_REJECTION",
+                "ACCEPTED",
+                "REVIEW_REQUIRED"
+              ],
+              "type": "string"
+            },
+            "source_record_digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "source_started": {
+              "type": "boolean"
+            },
+            "source_state": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "source_version": {
+              "oneOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "source_version",
+            "source_record_digest",
+            "source_state",
+            "source_started",
+            "migration",
+            "migrated_at"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "market": {
+      "enum": [
+        "spot",
+        "futures"
+      ],
+      "type": "string"
+    },
+    "prepared_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "prepared_mutation": {
+      "$ref": "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+    },
+    "profile_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "account_binding_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "credential_fingerprint": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "futures_base_url": {
+          "pattern": "^https://",
+          "type": "string"
+        },
+        "principal_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "route_fingerprint": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "spot_base_url": {
+          "pattern": "^https://",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "profile_name",
+        "principal_id",
+        "account_binding_id",
+        "spot_base_url",
+        "futures_base_url",
+        "route_fingerprint",
+        "credential_fingerprint"
+      ],
+      "type": "object"
+    },
+    "reconciliation": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "NOT_REQUIRED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "type": "null"
+              },
+              "observed_at": {
+                "type": "null"
+              },
+              "result": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "PENDING"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "type": "null"
+              },
+              "observed_at": {
+                "type": "null"
+              },
+              "result": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "RESOLVED_ACCEPTED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "observed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "result": {
+                "const": "ACCEPTED"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "RESOLVED_REJECTED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "observed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "result": {
+                "const": "DEFINITIVE_REJECTION"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "RESOLVED_NOT_SENT"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "observed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "result": {
+                "const": "NOT_SENT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNRESOLVED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "observed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "result": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "MANUAL_REVIEW_REQUIRED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "observed_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "result": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "evidence_digest": {
+          "oneOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "oneOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "oneOf": [
+            {
+              "enum": [
+                "ACCEPTED",
+                "DEFINITIVE_REJECTION",
+                "NOT_SENT"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "NOT_REQUIRED",
+            "PENDING",
+            "RESOLVED_ACCEPTED",
+            "RESOLVED_REJECTED",
+            "RESOLVED_NOT_SENT",
+            "UNRESOLVED",
+            "MANUAL_REVIEW_REQUIRED"
+          ],
+          "type": "string"
+        },
+        "template": {
+          "oneOf": [
+            {
+              "$ref": "mcp-boundary-contract-v2.json#/schema_components/reconciliation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "template",
+        "result",
+        "observed_at",
+        "evidence_digest"
+      ],
+      "type": "object"
+    },
+    "request_identity": {
+      "oneOf": [
+        {
+          "$ref": "mcp-boundary-contract-v2.json#/schema_components/request_identity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "risk_facts": {
+      "type": "object"
+    },
+    "state": {
+      "enum": [
+        "UNCLAIMED",
+        "CONFIRMED",
+        "CLAIMED",
+        "NOT_SENT_TERMINAL",
+        "DEFINITIVE_REJECTION",
+        "ACCEPTED",
+        "REVIEW_REQUIRED",
+        "LEGACY_INVALIDATED"
+      ],
+      "type": "string"
+    },
+    "tool_name": {
+      "enum": [
+        "trade_place_order",
+        "trade_cancel_order",
+        "trade_update_leverage",
+        "trade_set_margin_mode",
+        "trade_place_batch_orders",
+        "trade_cancel_batch_orders",
+        "trade_cancel_open_orders",
+        "trade_place_conditional_order",
+        "trade_cancel_conditional_order",
+        "trade_place_tp_sl",
+        "trade_modify_tp_sl",
+        "trade_close_positions",
+        "trade_adjust_position_margin",
+        "trade_set_auto_append_margin"
+      ],
+      "type": "string"
+    },
+    "trading_mode": {
+      "enum": [
+        "live",
+        "demo"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "intent_version",
+    "intent_id",
+    "state",
+    "reconciliation",
+    "legacy"
+  ],
+  "schema_digest": "sha256:9c01e56f5c83c864c4c4211bcd79af60c3c9b61fee609a5c2f6c8e3c902653a7",
+  "type": "object",
+  "x-invariants": [
+    "PreparedMutation is persisted byte-for-byte and is never reconstructed by the Skill.",
+    "For the complete v2 branch, tool_name/action equal PreparedMutation.tool_name/action; direct_arguments equal PreparedMutation.canonical_arguments; risk_facts and both digests/expires_at equal their same-named PreparedMutation fields; market/trading_mode equal PreparedMutation.canonical_arguments; request_identity is derived only from PreparedMutation.reconciliation_template.",
+    "For the complete v2 branch, profile_binding principal_id/account_binding_id/credential_fingerprint equal the grant fields; profile_binding route_fingerprint/credential_fingerprint equal PreparedMutation.route_fingerprint/credential_fingerprint.",
+    "contract_versions.boundary_contract_digest equals the boundary contract selected by the Gateway for this intent.",
+    "CONFIRMED intent and ISSUED grant are written in one file-lock transaction.",
+    "Skill code issues grants but never calls claim, finalize, or recover.",
+    "reconcile accepts only intent_id and consumes the stored reconciliation template.",
+    "legacy previews are never converted into v2 grants.",
+    "The legacy migration envelope stores only source metadata and reconciliation evidence; it never fabricates PreparedMutation, grant, binding, argument, digest, or request identity fields.",
+    "PreparedMutation expires_at is Unix milliseconds and is never multiplied by 1000."
+  ],
+  "x-single-slot": {
+    "blocking_states": [
+      "UNCLAIMED",
+      "CONFIRMED",
+      "CLAIMED",
+      "REVIEW_REQUIRED"
+    ],
+    "replaceable_states": [
+      "NOT_SENT_TERMINAL",
+      "DEFINITIVE_REJECTION",
+      "ACCEPTED",
+      "LEGACY_INVALIDATED"
+    ],
+    "review_required_replaceable_after": [
+      "RESOLVED_ACCEPTED",
+      "RESOLVED_REJECTED",
+      "RESOLVED_NOT_SENT"
+    ],
+    "unclaimed_expiry_policy": "expired_unclaimed_is_archivable_and_replaceable"
+  }
+}

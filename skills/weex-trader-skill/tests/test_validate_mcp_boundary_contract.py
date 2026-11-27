@@ -11,7 +11,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = ROOT / "scripts" / "validate_mcp_boundary_contract.py"
 PAIR_VALIDATOR_PATH = ROOT / "scripts" / "verify_mcp_boundary_pair.py"
-CONTRACT_PATH = ROOT / "references" / "mcp-boundary-contract-v1.json"
+CONTRACT_V1_PATH = ROOT / "references" / "mcp-boundary-contract-v1.json"
+CONTRACT_PATH = ROOT / "references" / "mcp-boundary-contract-v2.json"
+MANUAL_INTENT_PATH = ROOT / "references" / "manual-mutation-intent-v2.json"
 INVENTORY_PATH = ROOT / "references" / "mcp-compat-field-inventory-v1.json"
 MATRIX_PATH = ROOT / "references" / "mcp-compat-field-source-matrix-v1.json"
 
@@ -45,8 +47,30 @@ def load_pair_validator():
 
 
 class McpBoundaryContractTests(unittest.TestCase):
+    def test_v1_contract_remains_immutable_historical_evidence(self) -> None:
+        validator = load_validator()
+        contract = json.loads(CONTRACT_V1_PATH.read_text(encoding="utf-8"))
+        body = dict(contract)
+        stored = body.pop("boundary_contract_digest")
+        self.assertEqual(
+            stored,
+            "sha256:07d3e11874c1f8956680b87e725061f486c9a001236bbf105b12be8dce2322a1",
+        )
+        self.assertEqual(stored, validator.canonical_digest(body))
+        self.assertEqual(contract["schema_version"], 1)
+        self.assertEqual(contract["candidate_versions"]["package"], "0.3.0")
+        self.assertEqual(contract["candidate_versions"]["grant"], "1")
+
     def test_machine_contract_contains_implementation_complete_models(self) -> None:
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+
+        self.assertEqual(contract["schema_version"], 2)
+        self.assertEqual(contract["candidate_versions"]["package"], "0.3.1")
+        self.assertEqual(contract["candidate_versions"]["grant"], "2")
+        self.assertEqual(
+            contract["supersedes"]["boundary_contract_digest"],
+            "sha256:07d3e11874c1f8956680b87e725061f486c9a001236bbf105b12be8dce2322a1",
+        )
 
         self.assertEqual(
             set(contract["schema_components"]),
@@ -65,7 +89,40 @@ class McpBoundaryContractTests(unittest.TestCase):
         self.assertEqual(contract["schema_resolution"]["root"], "document")
         self.assertEqual(
             set(contract["schema_components"]["execution_grant"]["$defs"]),
-            {"issued_grant", "grant_claim", "grant_recovery"},
+            {
+                "issued_grant",
+                "grant_claim",
+                "grant_terminal_receipt",
+                "grant_recovery",
+            },
+        )
+        receipt = contract["schema_components"]["execution_grant"]["$defs"][
+            "grant_terminal_receipt"
+        ]
+        self.assertEqual(
+            receipt["properties"]["reason"]["enum"],
+            ["grant_expired", "prepared_expired", "revoked"],
+        )
+        self.assertEqual(
+            receipt["properties"]["outcome_digest"]["const"],
+            "sha256:8f587cdbad0e314e82c20fefe6edf4379243e56eb154cb8ca47b198db2198027",
+        )
+        self.assertEqual(
+            contract["grant_consumer_api"]["claim"]["return_schema"]["oneOf"],
+            [
+                {"$ref": "#/schema_components/execution_grant/$defs/grant_claim"},
+                {
+                    "$ref": "#/schema_components/execution_grant/$defs/grant_terminal_receipt"
+                },
+            ],
+        )
+        self.assertEqual(
+            contract["mcp_host_private_api"]["recover_mutation"]["returns"],
+            "GrantRecovery",
+        )
+        self.assertEqual(
+            contract["gateway_host_api"]["build_execution_grant"]["returns"],
+            "ExecutionGrant",
         )
         self.assertIn(
             "resolved_weex_credential",
@@ -111,6 +168,7 @@ class McpBoundaryContractTests(unittest.TestCase):
             contract["grant_consumer_api"]["claim"]["strong_failure_guarantee"],
             {
                 "durable_claim": "must_return_valid_grant_claim",
+                "durable_terminal": "must_return_valid_grant_terminal_receipt",
                 "invalid_return": "grant_state_unchanged",
                 "process_termination": "recover_unfinalized_claim_to_review_required",
                 "raised_exception": "grant_state_unchanged",
@@ -182,10 +240,203 @@ class McpBoundaryContractTests(unittest.TestCase):
         self.assertEqual(report["auto_operations"], 6)
         self.assertEqual(report["removed_breaking"], 0)
         self.assertEqual(report["narrowed_replacements"], 151)
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(
+            report["manual_intent_schema_digest"],
+            json.loads(MANUAL_INTENT_PATH.read_text(encoding="utf-8"))[
+                "schema_digest"
+            ],
+        )
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         self.assertEqual(contract["approval"]["status"], "USER_CONFIRMED_CANDIDATE")
-        self.assertEqual(contract["approval"]["approved_at"], "2026-11-26")
-        self.assertIn("T5 business implementation", contract["approval"]["excluded"])
+        self.assertEqual(contract["approval"]["approved_at"], "2026-11-27")
+        self.assertIn("production", contract["approval"]["excluded"])
+
+    def test_manual_intent_v2_schema_binds_fsm_reconcile_and_terminal_audit(self) -> None:
+        validator = load_validator()
+        schema = json.loads(MANUAL_INTENT_PATH.read_text(encoding="utf-8"))
+        body = dict(schema)
+        stored = body.pop("schema_digest")
+        self.assertEqual(stored, validator.canonical_digest(body))
+        self.assertEqual(schema["intent_version"], 2)
+        self.assertEqual(
+            schema["properties"]["state"]["enum"],
+            [
+                "UNCLAIMED",
+                "CONFIRMED",
+                "CLAIMED",
+                "NOT_SENT_TERMINAL",
+                "DEFINITIVE_REJECTION",
+                "ACCEPTED",
+                "REVIEW_REQUIRED",
+                "LEGACY_INVALIDATED",
+            ],
+        )
+        self.assertIn("terminal_audit_record", schema["$defs"])
+        self.assertEqual(
+            schema["properties"]["reconciliation"]["properties"]["status"][
+                "enum"
+            ],
+            [
+                "NOT_REQUIRED",
+                "PENDING",
+                "RESOLVED_ACCEPTED",
+                "RESOLVED_REJECTED",
+                "RESOLVED_NOT_SENT",
+                "UNRESOLVED",
+                "MANUAL_REVIEW_REQUIRED",
+            ],
+        )
+        self.assertEqual(
+            schema["x-single-slot"]["blocking_states"],
+            ["UNCLAIMED", "CONFIRMED", "CLAIMED", "REVIEW_REQUIRED"],
+        )
+        self.assertEqual(
+            schema["x-single-slot"]["unclaimed_expiry_policy"],
+            "expired_unclaimed_is_archivable_and_replaceable",
+        )
+        self.assertEqual(
+            set(schema["properties"]["tool_name"]["enum"]),
+            {
+                "trade_place_order",
+                "trade_cancel_order",
+                "trade_update_leverage",
+                "trade_set_margin_mode",
+                "trade_place_batch_orders",
+                "trade_cancel_batch_orders",
+                "trade_cancel_open_orders",
+                "trade_place_conditional_order",
+                "trade_cancel_conditional_order",
+                "trade_place_tp_sl",
+                "trade_modify_tp_sl",
+                "trade_close_positions",
+                "trade_adjust_position_margin",
+                "trade_set_auto_append_margin",
+            },
+        )
+        self.assertEqual(len(schema["oneOf"]), 2)
+        complete_v2, legacy_envelope = schema["oneOf"]
+        self.assertIn("prepared_mutation", complete_v2["required"])
+        self.assertNotIn("prepared_mutation", legacy_envelope["required"])
+        legacy_forbidden = {
+            rule["required"][0]
+            for rule in legacy_envelope["not"]["anyOf"]
+        }
+        self.assertIn("prepared_mutation", legacy_forbidden)
+        self.assertIn("grant", legacy_forbidden)
+        self.assertEqual(
+            legacy_envelope["properties"]["reconciliation"]["properties"][
+                "template"
+            ],
+            {"type": "null"},
+        )
+        state_conditions = validator._conditional_map(schema["allOf"], "state")
+        self.assertEqual(set(state_conditions), set(schema["properties"]["state"]["enum"]))
+        reconciliation = schema["properties"]["reconciliation"]
+        reconcile_conditions = validator._conditional_map(
+            reconciliation["allOf"],
+            "status",
+        )
+        self.assertEqual(
+            set(reconcile_conditions),
+            set(reconciliation["properties"]["status"]["enum"]),
+        )
+        self.assertEqual(
+            reconcile_conditions["RESOLVED_ACCEPTED"]["then"]["properties"][
+                "result"
+            ],
+            {"const": "ACCEPTED"},
+        )
+        audit_intent = schema["$defs"]["terminal_audit_record"]["properties"][
+            "intent"
+        ]
+        self.assertEqual(len(audit_intent["allOf"][1]["oneOf"]), 2)
+
+    def test_validator_rejects_manual_intent_terminal_grant_drift(self) -> None:
+        validator = load_validator()
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        manual_intent = json.loads(MANUAL_INTENT_PATH.read_text(encoding="utf-8"))
+        inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        states = validator._conditional_map(manual_intent["allOf"], "state")
+        grant = states["ACCEPTED"]["then"]["oneOf"][0]["properties"]["grant"]
+        grant["allOf"][1]["properties"]["state"] = {"const": "ISSUED"}
+        manual_body = dict(manual_intent)
+        manual_body.pop("schema_digest")
+        manual_intent["schema_digest"] = validator.canonical_digest(manual_body)
+        contract["manual_intent_contract"]["schema_digest"] = manual_intent[
+            "schema_digest"
+        ]
+        contract_body = dict(contract)
+        contract_body.pop("boundary_contract_digest")
+        contract["boundary_contract_digest"] = validator.canonical_digest(contract_body)
+
+        with self.assertRaisesRegex(ValueError, "terminal grant"):
+            validator.validate_documents(
+                skill_root=ROOT,
+                contract=contract,
+                manual_intent=manual_intent,
+                inventory=inventory,
+                matrix=matrix,
+            )
+
+    def test_validator_rejects_manual_intent_reconciliation_result_drift(self) -> None:
+        validator = load_validator()
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        manual_intent = json.loads(MANUAL_INTENT_PATH.read_text(encoding="utf-8"))
+        inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        reconciliation = manual_intent["properties"]["reconciliation"]
+        statuses = validator._conditional_map(reconciliation["allOf"], "status")
+        statuses["RESOLVED_ACCEPTED"]["then"]["properties"]["result"] = {
+            "const": "NOT_SENT"
+        }
+        manual_body = dict(manual_intent)
+        manual_body.pop("schema_digest")
+        manual_intent["schema_digest"] = validator.canonical_digest(manual_body)
+        contract["manual_intent_contract"]["schema_digest"] = manual_intent[
+            "schema_digest"
+        ]
+        contract_body = dict(contract)
+        contract_body.pop("boundary_contract_digest")
+        contract["boundary_contract_digest"] = validator.canonical_digest(contract_body)
+
+        with self.assertRaisesRegex(ValueError, "reconciliation result"):
+            validator.validate_documents(
+                skill_root=ROOT,
+                contract=contract,
+                manual_intent=manual_intent,
+                inventory=inventory,
+                matrix=matrix,
+            )
+
+    def test_validator_rejects_unresolved_manual_intent_reference(self) -> None:
+        validator = load_validator()
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        manual_intent = json.loads(MANUAL_INTENT_PATH.read_text(encoding="utf-8"))
+        inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        manual_intent["properties"]["prepared_mutation"]["$ref"] = (
+            "mcp-boundary-contract-v2.json#/schema_components/missing"
+        )
+        manual_body = dict(manual_intent)
+        manual_body.pop("schema_digest")
+        manual_intent["schema_digest"] = validator.canonical_digest(manual_body)
+        contract["manual_intent_contract"]["schema_digest"] = manual_intent[
+            "schema_digest"
+        ]
+        contract_body = dict(contract)
+        contract_body.pop("boundary_contract_digest")
+        contract["boundary_contract_digest"] = validator.canonical_digest(contract_body)
+
+        with self.assertRaisesRegex(ValueError, "unresolved JSON Schema reference"):
+            validator.validate_documents(
+                skill_root=ROOT,
+                contract=contract,
+                manual_intent=manual_intent,
+                inventory=inventory,
+                matrix=matrix,
+            )
 
     def test_historical_source_evidence_is_bound_and_current_audit_detects_drift(self) -> None:
         validator = load_validator()

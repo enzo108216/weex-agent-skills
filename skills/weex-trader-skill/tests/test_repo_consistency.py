@@ -271,7 +271,9 @@ class RepoConsistencyTests(unittest.TestCase):
         file_index = json.loads(FILE_INDEX.read_text(encoding="utf-8"))
         skill_text = SKILL.read_text(encoding="utf-8")
         expected = {
-            "mcp_boundary_contract": "references/mcp-boundary-contract-v1.json",
+            "mcp_boundary_contract": "references/mcp-boundary-contract-v2.json",
+            "mcp_boundary_contract_v1": "references/mcp-boundary-contract-v1.json",
+            "manual_mutation_intent_contract": "references/manual-mutation-intent-v2.json",
             "mcp_compat_field_inventory": "references/mcp-compat-field-inventory-v1.json",
             "mcp_compat_field_source_matrix": "references/mcp-compat-field-source-matrix-v1.json",
             "mcp_boundary_contract_validator": "scripts/validate_mcp_boundary_contract.py",
@@ -296,6 +298,16 @@ class RepoConsistencyTests(unittest.TestCase):
             expected["mcp_boundary_contract"],
         )
         self.assertEqual(
+            manifest["read_order"]["open_if_needed"]["mcp_boundary_contract_v1"],
+            expected["mcp_boundary_contract_v1"],
+        )
+        self.assertEqual(
+            manifest["read_order"]["open_if_needed"][
+                "manual_mutation_intent_contract"
+            ],
+            expected["manual_mutation_intent_contract"],
+        )
+        self.assertEqual(
             manifest["read_order"]["open_if_needed"]["mcp_boundary_validator"],
             expected["mcp_boundary_contract_validator"],
         )
@@ -303,7 +315,11 @@ class RepoConsistencyTests(unittest.TestCase):
             manifest["read_order"]["open_if_needed"]["mcp_boundary_pair_validator"],
             expected["mcp_boundary_pair_validator"],
         )
-        self.assertIn("candidate implementation contract", skill_text)
+        self.assertIn("references/mcp-boundary-contract-v2.json", skill_text)
+        self.assertIn("references/manual-mutation-intent-v2.json", skill_text)
+        self.assertIn("references/mcp-boundary-contract-v1.json", skill_text)
+        self.assertIn("immutable historical and superseded evidence", skill_text)
+        self.assertIn("current non-active candidate implementation contract", skill_text)
         self.assertIn("validate_mcp_boundary_contract.py", skill_text)
         self.assertIn("verify_mcp_boundary_pair.py", skill_text)
 

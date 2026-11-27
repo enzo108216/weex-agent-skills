@@ -11,7 +11,9 @@ from typing import Any
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_REL = Path("references/mcp-boundary-contract-v1.json")
+CONTRACT_V1_REL = Path("references/mcp-boundary-contract-v1.json")
+CONTRACT_REL = Path("references/mcp-boundary-contract-v2.json")
+MANUAL_INTENT_REL = Path("references/manual-mutation-intent-v2.json")
 INVENTORY_REL = Path("references/mcp-compat-field-inventory-v1.json")
 MATRIX_REL = Path("references/mcp-compat-field-source-matrix-v1.json")
 MAPPING_REL = Path("references/mcp-capability-mapping.json")
@@ -207,6 +209,68 @@ EXPECTED_RISK_FIELDS = {
 }
 REQUIRED_SCENARIOS = {"success", "business_rejection", "transport_error", "schema_error"}
 ALLOWED_SOURCES = {"typed_result", "transport_meta", "static_mapping", "removed_breaking"}
+HISTORICAL_V1_DIGEST = (
+    "sha256:07d3e11874c1f8956680b87e725061f486c9a001236bbf105b12be8dce2322a1"
+)
+NOT_SENT_TERMINAL_OUTCOME = {
+    "class": "not_sent",
+    "grant_disposition": "not_sent_terminal",
+    "write_attempted": False,
+}
+NOT_SENT_TERMINAL_OUTCOME_DIGEST = (
+    "sha256:8f587cdbad0e314e82c20fefe6edf4379243e56eb154cb8ca47b198db2198027"
+)
+EXPECTED_INTENT_STATES = [
+    "UNCLAIMED",
+    "CONFIRMED",
+    "CLAIMED",
+    "NOT_SENT_TERMINAL",
+    "DEFINITIVE_REJECTION",
+    "ACCEPTED",
+    "REVIEW_REQUIRED",
+    "LEGACY_INVALIDATED",
+]
+EXPECTED_RECONCILIATION_STATUSES = [
+    "NOT_REQUIRED",
+    "PENDING",
+    "RESOLVED_ACCEPTED",
+    "RESOLVED_REJECTED",
+    "RESOLVED_NOT_SENT",
+    "UNRESOLVED",
+    "MANUAL_REVIEW_REQUIRED",
+]
+EXPECTED_INTENT_PROPERTIES = {
+    "intent_version",
+    "intent_id",
+    "state",
+    "tool_name",
+    "action",
+    "market",
+    "trading_mode",
+    "direct_arguments",
+    "prepared_mutation",
+    "prepared_artifact_digest",
+    "execution_binding_digest",
+    "risk_facts",
+    "profile_binding",
+    "contract_versions",
+    "created_at",
+    "expires_at",
+    "confirmed_at",
+    "grant",
+    "request_identity",
+    "reconciliation",
+    "legacy",
+}
+EXPECTED_INTENT_REQUIRED = {
+    "intent_version",
+    "intent_id",
+    "state",
+    "reconciliation",
+    "legacy",
+}
+EXPECTED_V2_INTENT_REQUIRED = EXPECTED_INTENT_PROPERTIES
+EXPECTED_LEGACY_FORBIDDEN_FIELDS = EXPECTED_INTENT_PROPERTIES - EXPECTED_INTENT_REQUIRED
 
 
 def canonical_digest(value: Any) -> str:
@@ -244,6 +308,116 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain an object")
     return value
+
+
+def _iter_schema_refs(value: Any):
+    if isinstance(value, dict):
+        reference = value.get("$ref")
+        if isinstance(reference, str):
+            yield reference
+        for child in value.values():
+            yield from _iter_schema_refs(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_schema_refs(child)
+
+
+def _resolve_json_pointer(document: Any, fragment: str) -> Any:
+    if fragment in ("", "#"):
+        return document
+    if not fragment.startswith("#/"):
+        raise ValueError(f"unsupported JSON Schema reference fragment: {fragment}")
+    current = document
+    for raw_token in fragment[2:].split("/"):
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            if token not in current:
+                raise ValueError(f"unresolved JSON Schema reference: {fragment}")
+            current = current[token]
+        elif isinstance(current, list):
+            try:
+                index = int(token)
+                current = current[index]
+            except (ValueError, IndexError) as exc:
+                raise ValueError(
+                    f"unresolved JSON Schema reference: {fragment}"
+                ) from exc
+        else:
+            raise ValueError(f"unresolved JSON Schema reference: {fragment}")
+    return current
+
+
+def validate_schema_references(
+    document: dict[str, Any],
+    *,
+    document_name: str,
+    resources: dict[str, dict[str, Any]],
+) -> None:
+    for reference in _iter_schema_refs(document):
+        if reference.startswith("#"):
+            target = document
+            fragment = reference
+        else:
+            if "#" not in reference:
+                raise ValueError(
+                    f"external JSON Schema reference lacks fragment: {reference}"
+                )
+            resource_name, raw_fragment = reference.split("#", 1)
+            if resource_name not in resources:
+                raise ValueError(
+                    f"unsupported external JSON Schema reference: {reference}"
+                )
+            target = resources[resource_name]
+            fragment = f"#{raw_fragment}"
+        _resolve_json_pointer(target, fragment)
+    if document_name not in resources or resources[document_name] is not document:
+        raise ValueError("JSON Schema resource registration mismatch")
+
+
+def _conditional_map(
+    conditions: Any,
+    discriminator: str,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(conditions, list):
+        raise ValueError("schema conditional rules must be an array")
+    result: dict[str, dict[str, Any]] = {}
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        if_schema = condition.get("if")
+        if not isinstance(if_schema, dict):
+            continue
+        discriminator_schema = (
+            if_schema.get("properties", {}).get(discriminator, {})
+            if isinstance(if_schema.get("properties"), dict)
+            else {}
+        )
+        value = discriminator_schema.get("const")
+        if isinstance(value, str):
+            if value in result:
+                raise ValueError(
+                    f"duplicate schema conditional for {discriminator}={value}"
+                )
+            result[value] = condition
+    return result
+
+
+def _second_all_of_property_const(schema: Any, property_name: str) -> Any:
+    if not isinstance(schema, dict):
+        raise ValueError("schema allOf binding must be an object")
+    all_of = schema.get("allOf")
+    if not isinstance(all_of, list) or len(all_of) != 2:
+        raise ValueError("schema allOf binding must contain two branches")
+    second = all_of[1]
+    if not isinstance(second, dict):
+        raise ValueError("schema allOf binding branch must be an object")
+    properties = second.get("properties")
+    if not isinstance(properties, dict):
+        raise ValueError("schema allOf binding properties are missing")
+    property_schema = properties.get(property_name)
+    if not isinstance(property_schema, dict):
+        raise ValueError(f"schema allOf binding lacks {property_name}")
+    return property_schema.get("const")
 
 
 def classify(item: dict[str, Any]) -> str:
@@ -400,6 +574,492 @@ def property_schema_occurrences(schema: Any, property_name: str) -> list[dict[st
     return matches
 
 
+def validate_historical_v1(contract_v1: dict[str, Any]) -> None:
+    body = dict(contract_v1)
+    stored_digest = body.pop("boundary_contract_digest", None)
+    if stored_digest != HISTORICAL_V1_DIGEST:
+        raise ValueError("historical boundary v1 digest changed")
+    if stored_digest != canonical_digest(body):
+        raise ValueError("historical boundary v1 canonical digest mismatch")
+    if contract_v1.get("schema_version") != 1:
+        raise ValueError("historical boundary v1 schema version changed")
+    versions = contract_v1.get("candidate_versions")
+    if not isinstance(versions, dict):
+        raise ValueError("historical boundary v1 versions are missing")
+    if versions.get("package") != "0.3.0" or versions.get("grant") != "1":
+        raise ValueError("historical boundary v1 versions changed")
+
+
+def validate_manual_intent_contract(
+    manual_intent: dict[str, Any],
+    boundary_contract: dict[str, Any],
+) -> str:
+    body = dict(manual_intent)
+    stored_digest = body.pop("schema_digest", None)
+    if stored_digest != canonical_digest(body):
+        raise ValueError("manual intent schema digest mismatch")
+    if manual_intent.get("$schema") != (
+        "https://json-schema.org/draft/2020-12/schema"
+    ):
+        raise ValueError("manual intent schema dialect mismatch")
+    if manual_intent.get("$id") != (
+        "https://github.com/weex-labs/weex-agent-skills/blob/main/"
+        "skills/weex-trader-skill/references/manual-mutation-intent-v2.json"
+    ):
+        raise ValueError("manual intent schema id mismatch")
+    if manual_intent.get("intent_version") != 2:
+        raise ValueError("manual intent schema version mismatch")
+    if manual_intent.get("type") != "object" or (
+        manual_intent.get("additionalProperties") is not False
+    ):
+        raise ValueError("manual intent root must be a closed object")
+    if set(manual_intent.get("required", [])) != EXPECTED_INTENT_REQUIRED:
+        raise ValueError("manual intent required field set mismatch")
+    properties = manual_intent.get("properties")
+    if not isinstance(properties, dict) or set(properties) != EXPECTED_INTENT_PROPERTIES:
+        raise ValueError("manual intent property set mismatch")
+    if properties["state"].get("enum") != EXPECTED_INTENT_STATES:
+        raise ValueError("manual intent state machine mismatch")
+    if set(properties["tool_name"].get("enum", [])) != EXPECTED_DIRECT_TOOLS:
+        raise ValueError("manual intent Direct tool allowlist mismatch")
+    expected_actions = {
+        name.removeprefix("trade_") for name in EXPECTED_DIRECT_TOOLS
+    }
+    if set(properties["action"].get("enum", [])) != expected_actions:
+        raise ValueError("manual intent action allowlist mismatch")
+
+    root_branches = manual_intent.get("oneOf")
+    if not isinstance(root_branches, list) or len(root_branches) != 2:
+        raise ValueError("manual intent v2/legacy root branches mismatch")
+    v2_branch, legacy_branch = root_branches
+    if set(v2_branch.get("required", [])) != EXPECTED_V2_INTENT_REQUIRED:
+        raise ValueError("manual intent complete v2 branch mismatch")
+    if v2_branch.get("properties", {}).get("legacy") != {"type": "null"}:
+        raise ValueError("manual intent complete v2 legacy isolation mismatch")
+    if (
+        v2_branch.get("properties", {})
+        .get("reconciliation", {})
+        .get("properties", {})
+        .get("template", {})
+        .get("$ref")
+        != "mcp-boundary-contract-v2.json#/schema_components/reconciliation"
+    ):
+        raise ValueError("manual intent complete v2 reconciliation binding mismatch")
+    if set(legacy_branch.get("required", [])) != EXPECTED_INTENT_REQUIRED:
+        raise ValueError("manual intent legacy envelope required fields mismatch")
+    legacy_forbidden = {
+        tuple(rule.get("required", []))
+        for rule in legacy_branch.get("not", {}).get("anyOf", [])
+        if isinstance(rule, dict)
+    }
+    if legacy_forbidden != {
+        (field,) for field in EXPECTED_LEGACY_FORBIDDEN_FIELDS
+    }:
+        raise ValueError("manual intent legacy envelope permits fabricated v2 fields")
+    legacy_schema = legacy_branch.get("properties", {}).get("legacy")
+    if not isinstance(legacy_schema, dict) or set(legacy_schema.get("required", [])) != {
+        "source_version",
+        "source_record_digest",
+        "source_state",
+        "source_started",
+        "migration",
+        "migrated_at",
+    }:
+        raise ValueError("manual intent legacy source metadata mismatch")
+    if (
+        legacy_branch.get("properties", {})
+        .get("reconciliation", {})
+        .get("properties", {})
+        .get("template")
+        != {"type": "null"}
+    ):
+        raise ValueError("manual intent legacy reconciliation must not fabricate a template")
+
+    resources = {
+        "manual-mutation-intent-v2.json": manual_intent,
+        "mcp-boundary-contract-v2.json": boundary_contract,
+    }
+    validate_schema_references(
+        boundary_contract,
+        document_name="mcp-boundary-contract-v2.json",
+        resources=resources,
+    )
+    validate_schema_references(
+        manual_intent,
+        document_name="manual-mutation-intent-v2.json",
+        resources=resources,
+    )
+
+    reconciliation = properties.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise ValueError("manual intent reconciliation schema is missing")
+    reconciliation_properties = reconciliation.get("properties")
+    if not isinstance(reconciliation_properties, dict):
+        raise ValueError("manual intent reconciliation properties are missing")
+    if reconciliation_properties["status"].get("enum") != (
+        EXPECTED_RECONCILIATION_STATUSES
+    ):
+        raise ValueError("manual intent reconciliation states mismatch")
+    reconcile_conditions = _conditional_map(
+        reconciliation.get("allOf"),
+        "status",
+    )
+    if set(reconcile_conditions) != set(EXPECTED_RECONCILIATION_STATUSES):
+        raise ValueError("manual intent reconciliation FSM coverage mismatch")
+    expected_results = {
+        "NOT_REQUIRED": None,
+        "PENDING": None,
+        "RESOLVED_ACCEPTED": "ACCEPTED",
+        "RESOLVED_REJECTED": "DEFINITIVE_REJECTION",
+        "RESOLVED_NOT_SENT": "NOT_SENT",
+        "UNRESOLVED": None,
+        "MANUAL_REVIEW_REQUIRED": None,
+    }
+    evidence_required = {
+        "RESOLVED_ACCEPTED",
+        "RESOLVED_REJECTED",
+        "RESOLVED_NOT_SENT",
+        "UNRESOLVED",
+        "MANUAL_REVIEW_REQUIRED",
+    }
+    for status, expected_result in expected_results.items():
+        then_properties = reconcile_conditions[status].get("then", {}).get(
+            "properties", {}
+        )
+        result_schema = then_properties.get("result", {})
+        if expected_result is None:
+            if result_schema != {"type": "null"}:
+                raise ValueError(
+                    f"manual intent reconciliation result mismatch: {status}"
+                )
+        elif result_schema.get("const") != expected_result:
+            raise ValueError(
+                f"manual intent reconciliation result mismatch: {status}"
+            )
+        observed_schema = then_properties.get("observed_at", {})
+        evidence_schema = then_properties.get("evidence_digest", {})
+        if status in evidence_required:
+            if observed_schema.get("type") != "integer" or (
+                evidence_schema.get("pattern") != "^sha256:[0-9a-f]{64}$"
+            ):
+                raise ValueError(
+                    f"manual intent reconciliation evidence mismatch: {status}"
+                )
+        elif observed_schema != {"type": "null"} or evidence_schema != {
+            "type": "null"
+        }:
+            raise ValueError(
+                f"manual intent reconciliation pending evidence mismatch: {status}"
+            )
+
+    all_conditions = manual_intent.get("allOf")
+    tool_conditions = _conditional_map(all_conditions, "tool_name")
+    if set(tool_conditions) != EXPECTED_DIRECT_TOOLS:
+        raise ValueError("manual intent per-tool binding coverage mismatch")
+    tools = boundary_contract.get("direct_tools")
+    if not isinstance(tools, list) or len(tools) != 14:
+        raise ValueError("manual intent boundary Direct tools are missing")
+    for index, tool in enumerate(tools):
+        name = tool.get("name")
+        if name not in EXPECTED_DIRECT_TOOLS:
+            raise ValueError("manual intent boundary Direct tool mismatch")
+        action = name.removeprefix("trade_")
+        then_properties = tool_conditions[name].get("then", {}).get(
+            "properties", {}
+        )
+        if then_properties.get("action") != {"const": action}:
+            raise ValueError(f"manual intent action binding mismatch: {name}")
+        if then_properties.get("direct_arguments", {}).get("$ref") != (
+            f"mcp-boundary-contract-v2.json#/direct_tools/{index}/input_schema"
+        ):
+            raise ValueError(f"manual intent argument binding mismatch: {name}")
+        if then_properties.get("risk_facts", {}).get("$ref") != (
+            "mcp-boundary-contract-v2.json#/direct_tools/"
+            f"{index}/prepare_contract/risk_facts_schema"
+        ):
+            raise ValueError(f"manual intent risk binding mismatch: {name}")
+        prepared_binding = then_properties.get("prepared_mutation", {}).get(
+            "allOf", []
+        )
+        if len(prepared_binding) != 2 or prepared_binding[0].get("$ref") != (
+            "mcp-boundary-contract-v2.json#/schema_components/prepared_mutation"
+        ):
+            raise ValueError(f"manual intent PreparedMutation binding mismatch: {name}")
+        prepared_properties = prepared_binding[1].get("properties", {})
+        if prepared_properties.get("tool_name") != {"const": name} or (
+            prepared_properties.get("action") != {"const": action}
+        ):
+            raise ValueError(f"manual intent discriminator binding mismatch: {name}")
+
+    state_conditions = _conditional_map(all_conditions, "state")
+    if set(state_conditions) != set(EXPECTED_INTENT_STATES):
+        raise ValueError("manual intent state constraint coverage mismatch")
+    unclaimed_properties = state_conditions["UNCLAIMED"]["then"]["properties"]
+    if (
+        unclaimed_properties.get("grant") != {"type": "null"}
+        or unclaimed_properties.get("confirmed_at") != {"type": "null"}
+        or unclaimed_properties.get("legacy") != {"type": "null"}
+        or unclaimed_properties.get("reconciliation", {})
+        .get("properties", {})
+        .get("status", {})
+        .get("enum")
+        != ["NOT_REQUIRED"]
+    ):
+        raise ValueError("manual intent UNCLAIMED state mismatch")
+    for state in ("CONFIRMED", "CLAIMED"):
+        expected_grant_state = "ISSUED" if state == "CONFIRMED" else "CLAIMED"
+        state_properties = state_conditions[state]["then"]["properties"]
+        grant_schema = state_properties["grant"]
+        if _second_all_of_property_const(grant_schema, "state") != (
+            expected_grant_state
+        ):
+            raise ValueError(f"manual intent grant state mismatch: {state}")
+        if (
+            state_properties.get("confirmed_at", {}).get("type") != "integer"
+            or state_properties.get("legacy") != {"type": "null"}
+            or state_properties.get("reconciliation", {})
+            .get("properties", {})
+            .get("status", {})
+            .get("enum")
+            != ["NOT_REQUIRED"]
+        ):
+            raise ValueError(f"manual intent state metadata mismatch: {state}")
+    for state in ("NOT_SENT_TERMINAL", "DEFINITIVE_REJECTION", "ACCEPTED"):
+        terminal_then = state_conditions[state].get("then", {})
+        terminal_branches = terminal_then.get("oneOf", [])
+        if len(terminal_branches) != 2:
+            raise ValueError(f"manual intent terminal branch mismatch: {state}")
+        if (
+            terminal_then.get("properties", {})
+            .get("reconciliation", {})
+            .get("properties", {})
+            .get("status")
+            != {"const": "NOT_REQUIRED"}
+        ):
+            raise ValueError(f"manual intent terminal reconciliation mismatch: {state}")
+        grant_schema = terminal_branches[0].get("properties", {}).get("grant", {})
+        legacy_schema = terminal_branches[1].get("properties", {}).get("legacy", {})
+        if _second_all_of_property_const(grant_schema, "state") != state:
+            raise ValueError(f"manual intent terminal grant mismatch: {state}")
+        if _second_all_of_property_const(legacy_schema, "migration") != state:
+            raise ValueError(f"manual intent terminal legacy mismatch: {state}")
+        if (
+            terminal_branches[0].get("properties", {}).get("confirmed_at", {}).get(
+                "type"
+            )
+            != "integer"
+            or terminal_branches[1].get("properties", {}).get("grant")
+            != {"type": "null"}
+        ):
+            raise ValueError(f"manual intent terminal timestamp mismatch: {state}")
+    review_branches = state_conditions["REVIEW_REQUIRED"].get("then", {}).get(
+        "oneOf", []
+    )
+    if len(review_branches) != 2:
+        raise ValueError("manual intent review branch mismatch")
+    if _second_all_of_property_const(
+        review_branches[0].get("properties", {}).get("grant"),
+        "state",
+    ) != "REVIEW_REQUIRED" or _second_all_of_property_const(
+        review_branches[1].get("properties", {}).get("legacy"),
+        "migration",
+    ) != "REVIEW_REQUIRED":
+        raise ValueError("manual intent review grant/legacy mismatch")
+    review_statuses = (
+        state_conditions["REVIEW_REQUIRED"]
+        .get("then", {})
+        .get("properties", {})
+        .get("reconciliation", {})
+        .get("properties", {})
+        .get("status", {})
+        .get("enum")
+    )
+    if review_statuses != EXPECTED_RECONCILIATION_STATUSES[1:]:
+        raise ValueError("manual intent review reconciliation mismatch")
+    invalidated_properties = state_conditions["LEGACY_INVALIDATED"]["then"][
+        "properties"
+    ]
+    invalidated_legacy = invalidated_properties["legacy"]
+    if _second_all_of_property_const(
+        invalidated_legacy,
+        "migration",
+    ) != "LEGACY_INVALIDATED":
+        raise ValueError("manual intent legacy invalidation mismatch")
+    if (
+        invalidated_properties.get("grant") != {"type": "null"}
+        or invalidated_properties.get("confirmed_at") != {"type": "null"}
+        or invalidated_properties.get("reconciliation", {})
+        .get("properties", {})
+        .get("status", {})
+        .get("enum")
+        != ["NOT_REQUIRED"]
+    ):
+        raise ValueError("manual intent LEGACY_INVALIDATED state mismatch")
+
+    single_slot = manual_intent.get("x-single-slot")
+    if not isinstance(single_slot, dict) or single_slot.get(
+        "unclaimed_expiry_policy"
+    ) != "expired_unclaimed_is_archivable_and_replaceable":
+        raise ValueError("manual intent single-slot expiry policy mismatch")
+    if single_slot.get("blocking_states") != [
+        "UNCLAIMED",
+        "CONFIRMED",
+        "CLAIMED",
+        "REVIEW_REQUIRED",
+    ]:
+        raise ValueError("manual intent single-slot blockers mismatch")
+    if single_slot.get("review_required_replaceable_after") != [
+        "RESOLVED_ACCEPTED",
+        "RESOLVED_REJECTED",
+        "RESOLVED_NOT_SENT",
+    ]:
+        raise ValueError("manual intent resolved review policy mismatch")
+    if single_slot.get("replaceable_states") != [
+        "NOT_SENT_TERMINAL",
+        "DEFINITIVE_REJECTION",
+        "ACCEPTED",
+        "LEGACY_INVALIDATED",
+    ]:
+        raise ValueError("manual intent single-slot terminal policy mismatch")
+
+    invariants = manual_intent.get("x-invariants")
+    if invariants != [
+        "PreparedMutation is persisted byte-for-byte and is never reconstructed by the Skill.",
+        "For the complete v2 branch, tool_name/action equal PreparedMutation.tool_name/action; direct_arguments equal PreparedMutation.canonical_arguments; risk_facts and both digests/expires_at equal their same-named PreparedMutation fields; market/trading_mode equal PreparedMutation.canonical_arguments; request_identity is derived only from PreparedMutation.reconciliation_template.",
+        "For the complete v2 branch, profile_binding principal_id/account_binding_id/credential_fingerprint equal the grant fields; profile_binding route_fingerprint/credential_fingerprint equal PreparedMutation.route_fingerprint/credential_fingerprint.",
+        "contract_versions.boundary_contract_digest equals the boundary contract selected by the Gateway for this intent.",
+        "CONFIRMED intent and ISSUED grant are written in one file-lock transaction.",
+        "Skill code issues grants but never calls claim, finalize, or recover.",
+        "reconcile accepts only intent_id and consumes the stored reconciliation template.",
+        "legacy previews are never converted into v2 grants.",
+        "The legacy migration envelope stores only source metadata and reconciliation evidence; it never fabricates PreparedMutation, grant, binding, argument, digest, or request identity fields.",
+        "PreparedMutation expires_at is Unix milliseconds and is never multiplied by 1000.",
+    ]:
+        raise ValueError("manual intent binding invariants are missing")
+    audit = manual_intent.get("$defs", {}).get("terminal_audit_record")
+    if not isinstance(audit, dict):
+        raise ValueError("manual intent terminal audit schema is missing")
+    digest_contract = audit.get("x-record-digest")
+    if digest_contract != {
+        "algorithm": "sha256",
+        "canonicalization": (
+            "UTF-8 JSON with ensure_ascii=false, sort_keys=true, "
+            "separators=(',', ':'), and allow_nan=false"
+        ),
+        "excludes": ["record_digest"],
+    }:
+        raise ValueError("manual intent audit digest contract mismatch")
+    archivable = audit.get("properties", {}).get("intent", {}).get("allOf", [])
+    if len(archivable) != 2 or len(archivable[1].get("oneOf", [])) != 2:
+        raise ValueError("manual intent terminal audit archivable states mismatch")
+    archivable_branches = archivable[1]["oneOf"]
+    if archivable_branches[0].get("properties", {}).get("state", {}).get(
+        "enum"
+    ) != [
+        "NOT_SENT_TERMINAL",
+        "DEFINITIVE_REJECTION",
+        "ACCEPTED",
+        "LEGACY_INVALIDATED",
+    ] or (
+        archivable_branches[1]
+        .get("properties", {})
+        .get("reconciliation", {})
+        .get("properties", {})
+        .get("status", {})
+        .get("enum")
+        != ["RESOLVED_ACCEPTED", "RESOLVED_REJECTED", "RESOLVED_NOT_SENT"]
+    ):
+        raise ValueError("manual intent terminal audit state binding mismatch")
+    return stored_digest
+
+
+def validate_v2_revision(
+    contract: dict[str, Any],
+    contract_v1: dict[str, Any],
+    manual_intent_digest: str,
+) -> None:
+    if contract.get("schema_version") != 2:
+        raise ValueError("boundary v2 schema version mismatch")
+    expected_versions = dict(contract_v1.get("candidate_versions", {}))
+    expected_versions.update({"package": "0.3.1", "grant": "2"})
+    if contract.get("candidate_versions") != expected_versions:
+        raise ValueError("boundary v2 candidate versions mismatch")
+    if contract.get("supersedes") != {
+        "schema_version": 1,
+        "package": "0.3.0",
+        "boundary_contract_digest": HISTORICAL_V1_DIGEST,
+        "status": "SUPERSEDED",
+    }:
+        raise ValueError("boundary v2 supersedes binding mismatch")
+    if contract.get("manual_intent_contract") != {
+        "path": str(MANUAL_INTENT_REL),
+        "schema_version": 2,
+        "schema_digest": manual_intent_digest,
+    }:
+        raise ValueError("boundary v2 manual intent binding mismatch")
+    if contract.get("direct_tools_digest") != contract_v1.get("direct_tools_digest"):
+        raise ValueError("boundary v2 Direct tool contract unexpectedly changed")
+    if contract.get("legacy_write_mapping_digest") != contract_v1.get(
+        "legacy_write_mapping_digest"
+    ):
+        raise ValueError("boundary v2 legacy write mapping unexpectedly changed")
+
+    host_api = contract.get("mcp_host_private_api")
+    if host_api != {
+        "prepare_mutation": {
+            "parameters": ["tool_name", "arguments", "invocation_context", "now_ms"],
+            "returns": "PreparedMutation",
+            "network": "prepare_reads_only",
+        },
+        "recover_mutation": {
+            "parameters": ["tool_name", "invocation_context", "now_ms"],
+            "returns": "GrantRecovery",
+            "network": "none",
+            "allowed_caller": "trusted_host_via_mcp_service",
+        },
+    }:
+        raise ValueError("boundary v2 MCP Host-private API mismatch")
+    builder = contract.get("gateway_host_api", {}).get("build_execution_grant")
+    if builder != {
+        "parameters": ["prepared_mutation", "grant_id", "issued_at"],
+        "returns": "ExecutionGrant",
+        "persists": False,
+        "claims": False,
+        "trusted_binding_source": (
+            "Gateway-owned invocation context supplies principal_id, "
+            "account_binding_id, route_fingerprint, and credential_fingerprint."
+        ),
+        "copies_from_prepared_mutation": [
+            "tool_name",
+            "prepared_artifact_digest",
+            "execution_binding_digest",
+            "expires_at",
+        ],
+        "expires_at_source": "PreparedMutation.expires_at",
+    }:
+        raise ValueError("boundary v2 Gateway grant builder mismatch")
+    grant_protocol = contract.get("grant_protocol")
+    if not isinstance(grant_protocol, dict):
+        raise ValueError("boundary v2 grant protocol is missing")
+    outcome = grant_protocol.get("not_sent_terminal_outcome")
+    if outcome != NOT_SENT_TERMINAL_OUTCOME or canonical_digest(outcome) != (
+        NOT_SENT_TERMINAL_OUTCOME_DIGEST
+    ):
+        raise ValueError("boundary v2 terminal outcome digest mismatch")
+    if grant_protocol.get("not_sent_terminal_outcome_digest") != (
+        NOT_SENT_TERMINAL_OUTCOME_DIGEST
+    ):
+        raise ValueError("boundary v2 terminal outcome binding mismatch")
+    if grant_protocol.get("terminal_receipt_reasons") != [
+        "grant_expired",
+        "prepared_expired",
+        "revoked",
+    ]:
+        raise ValueError("boundary v2 terminal receipt reasons mismatch")
+    if grant_protocol.get("restart_recovery") != "McpService.recover_mutation":
+        raise ValueError("boundary v2 restart recovery mismatch")
+
+
 def validate_implementation_contract(contract: dict[str, Any]) -> None:
     if contract.get("schema_dialect") != "https://json-schema.org/draft/2020-12/schema":
         raise ValueError("boundary contract schema dialect mismatch")
@@ -432,9 +1092,35 @@ def validate_implementation_contract(contract: dict[str, Any]) -> None:
     if set(components["execution_grant"].get("$defs", {})) != {
         "issued_grant",
         "grant_claim",
+        "grant_terminal_receipt",
         "grant_recovery",
     }:
         raise ValueError("execution grant return models mismatch")
+    receipt = components["execution_grant"]["$defs"]["grant_terminal_receipt"]
+    if receipt != {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "grant_id": {"type": "string", "minLength": 1},
+            "state": {"const": "NOT_SENT_TERMINAL"},
+            "terminal_state": {"const": "NOT_SENT_TERMINAL"},
+            "resolved_at": {"type": "integer", "minimum": 0},
+            "reason": {
+                "type": "string",
+                "enum": ["grant_expired", "prepared_expired", "revoked"],
+            },
+            "outcome_digest": {"const": NOT_SENT_TERMINAL_OUTCOME_DIGEST},
+        },
+        "required": [
+            "grant_id",
+            "state",
+            "terminal_state",
+            "resolved_at",
+            "reason",
+            "outcome_digest",
+        ],
+    }:
+        raise ValueError("grant terminal receipt schema mismatch")
     if "resolved_weex_credential" not in components["credential_binding"].get("$defs", {}):
         raise ValueError("resolved credential model is missing")
     prepared_branches = (
@@ -479,6 +1165,7 @@ def validate_implementation_contract(contract: dict[str, Any]) -> None:
             raise ValueError(f"grant consumer API caller mismatch: {operation}")
     if grant_api["claim"].get("strong_failure_guarantee") != {
         "durable_claim": "must_return_valid_grant_claim",
+        "durable_terminal": "must_return_valid_grant_terminal_receipt",
         "invalid_return": "grant_state_unchanged",
         "process_termination": "recover_unfinalized_claim_to_review_required",
         "raised_exception": "grant_state_unchanged",
@@ -486,12 +1173,25 @@ def validate_implementation_contract(contract: dict[str, Any]) -> None:
         raise ValueError("grant consumer claim failure guarantee mismatch")
     expected_return_refs = {
         "load": "#/schema_components/execution_grant/$defs/issued_grant",
-        "claim": "#/schema_components/execution_grant/$defs/grant_claim",
         "recover": "#/schema_components/execution_grant/$defs/grant_recovery",
     }
     for operation, expected_ref in expected_return_refs.items():
         if grant_api[operation]["return_schema"].get("$ref") != expected_ref:
             raise ValueError(f"grant consumer API return reference mismatch: {operation}")
+    if grant_api["claim"]["return_schema"] != {
+        "oneOf": [
+            {"$ref": "#/schema_components/execution_grant/$defs/grant_claim"},
+            {
+                "$ref": (
+                    "#/schema_components/execution_grant/$defs/"
+                    "grant_terminal_receipt"
+                )
+            },
+        ]
+    }:
+        raise ValueError("grant consumer API claim return union mismatch")
+    if grant_api["claim"].get("returns") != "GrantClaim | GrantTerminalReceipt":
+        raise ValueError("grant consumer API claim return name mismatch")
     if grant_api["finalize"]["return_schema"] != {"type": "null"}:
         raise ValueError("grant consumer API finalize return schema mismatch")
 
@@ -676,8 +1376,15 @@ def validate_documents(
     contract: dict[str, Any],
     inventory: dict[str, Any],
     matrix: dict[str, Any],
+    contract_v1: dict[str, Any] | None = None,
+    manual_intent: dict[str, Any] | None = None,
     verify_current_source_evidence: bool = False,
 ) -> dict[str, Any]:
+    if contract_v1 is None:
+        contract_v1 = load_json(skill_root / CONTRACT_V1_REL)
+    if manual_intent is None:
+        manual_intent = load_json(skill_root / MANUAL_INTENT_REL)
+    validate_historical_v1(contract_v1)
     contract_body = dict(contract)
     stored_contract_digest = contract_body.pop("boundary_contract_digest", None)
     if stored_contract_digest != canonical_digest(contract_body):
@@ -692,9 +1399,32 @@ def validate_documents(
     for field in ("approved_by", "approved_at", "authorization_source"):
         if not isinstance(approval.get(field), str) or not approval[field]:
             raise ValueError(f"boundary contract approval lacks {field}")
-    if "T5 business implementation" not in approval.get("excluded", []):
-        raise ValueError("boundary approval must exclude T5 implementation")
+    if approval.get("approved_by") != "user" or approval.get("approved_at") != (
+        "2026-11-27"
+    ):
+        raise ValueError("boundary v2 approval identity or date mismatch")
+    if set(approval.get("excluded", [])) != {
+        "production",
+        "T18",
+        "push",
+        "pull request",
+        "tag",
+        "publish",
+    }:
+        raise ValueError("boundary v2 approval exclusions mismatch")
+    if approval.get("scope") != [
+        "grant terminal receipt",
+        "restart recovery",
+        "Gateway grant builder",
+        "manual intent v2 and reconciliation contract",
+    ]:
+        raise ValueError("boundary v2 approval scope mismatch")
     validate_implementation_contract(contract)
+    manual_intent_digest = validate_manual_intent_contract(
+        manual_intent,
+        contract,
+    )
+    validate_v2_revision(contract, contract_v1, manual_intent_digest)
 
     mapping = load_json(skill_root / MAPPING_REL)
     mapping_by_key, legacy_mapping_digest = mapping_identity(mapping)
@@ -866,6 +1596,7 @@ def validate_documents(
             raise ValueError(f"boundary compatibility binding mismatch: {key}")
     return {
         "ok": True,
+        "schema_version": contract["schema_version"],
         "capabilities": len(mapping_by_key),
         "field_decisions": field_decisions,
         "direct_tools": len(direct_tools),
@@ -874,6 +1605,8 @@ def validate_documents(
         "removed_breaking": removed_breaking,
         "narrowed_replacements": replacements,
         "boundary_contract_digest": stored_contract_digest,
+        "historical_boundary_contract_digest": HISTORICAL_V1_DIGEST,
+        "manual_intent_schema_digest": manual_intent_digest,
         "inventory_digest": actual_inventory_digest,
         "matrix_digest": actual_matrix_digest,
         "source_evidence_mode": (
@@ -890,6 +1623,8 @@ def validate_bundle(
     return validate_documents(
         skill_root=skill_root,
         contract=load_json(skill_root / CONTRACT_REL),
+        contract_v1=load_json(skill_root / CONTRACT_V1_REL),
+        manual_intent=load_json(skill_root / MANUAL_INTENT_REL),
         inventory=load_json(skill_root / INVENTORY_REL),
         matrix=load_json(skill_root / MATRIX_REL),
         verify_current_source_evidence=verify_current_source_evidence,
@@ -898,7 +1633,9 @@ def validate_bundle(
 
 def copy_validation_fixture(source_root: Path, target_root: Path) -> None:
     required = {
+        CONTRACT_V1_REL,
         CONTRACT_REL,
+        MANUAL_INTENT_REL,
         INVENTORY_REL,
         MATRIX_REL,
         MAPPING_REL,

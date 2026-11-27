@@ -12,7 +12,7 @@ from typing import Any
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_REL = Path("references/mcp-boundary-contract-v1.json")
+CONTRACT_REL = Path("references/mcp-boundary-contract-v2.json")
 BOUNDARY_VALIDATOR_REL = Path("scripts/validate_mcp_boundary_contract.py")
 MCP_METADATA_REL = Path("src/weex_mcp/compatibility.py")
 

@@ -26,7 +26,9 @@
       "profile_onboarding": "references/profile-onboarding.md",
       "linux_vault": "references/linux-vault.md",
       "troubleshooting": "references/troubleshooting.md",
-      "mcp_boundary_contract": "references/mcp-boundary-contract-v1.json",
+      "mcp_boundary_contract": "references/mcp-boundary-contract-v2.json",
+      "mcp_boundary_contract_v1": "references/mcp-boundary-contract-v1.json",
+      "manual_mutation_intent_contract": "references/manual-mutation-intent-v2.json",
       "mcp_boundary_validator": "scripts/validate_mcp_boundary_contract.py",
       "mcp_boundary_pair_validator": "scripts/verify_mcp_boundary_pair.py"
     }
@@ -294,7 +296,9 @@
     },
     "compatibility": {
       "mcp_capability_mapping": "references/mcp-capability-mapping.json",
-      "mcp_boundary_contract": "references/mcp-boundary-contract-v1.json",
+      "mcp_boundary_contract": "references/mcp-boundary-contract-v2.json",
+      "mcp_boundary_contract_v1": "references/mcp-boundary-contract-v1.json",
+      "manual_mutation_intent_contract": "references/manual-mutation-intent-v2.json",
       "mcp_compat_field_inventory": "references/mcp-compat-field-inventory-v1.json",
       "mcp_compat_field_source_matrix": "references/mcp-compat-field-source-matrix-v1.json",
       "mcp_boundary_contract_validator": "scripts/validate_mcp_boundary_contract.py",

@@ -132,17 +132,35 @@
         "references/partner-api-definitions.json"
       ]
     },
-    "references/mcp-boundary-contract-v1.json": {
-      "role": "Self-contained candidate implementation contract for the MCP/Trader boundary, 14 Direct mutation tools, ownership, grant protocol, compatibility digests, and approved narrowing policies.",
+    "references/mcp-boundary-contract-v2.json": {
+      "role": "Current user-confirmed but non-active MCP/Trader candidate contract for package 0.3.1 and grant v2, including terminal receipts, restart recovery, Gateway grant construction, manual intent binding, and the unchanged 14 Direct mutation tools and compatibility digests.",
       "when": [
         "implementing or reviewing the coordinated MCP and Trader boundary migration",
-        "checking the exact candidate Direct tool, owner, grant, outcome, and permission contracts",
+        "checking the exact candidate Direct tool, owner, grant terminal, recovery, outcome, and permission contracts",
         "verifying that the candidate is not treated as active runtime behavior before migration"
       ],
       "depends_on": [
+        "references/manual-mutation-intent-v2.json",
         "references/mcp-compat-field-inventory-v1.json",
         "references/mcp-compat-field-source-matrix-v1.json",
         "references/mcp-capability-mapping.json"
+      ]
+    },
+    "references/mcp-boundary-contract-v1.json": {
+      "role": "Immutable historical and superseded package 0.3.0/grant-v1 boundary evidence retained for digest verification, old/new compatibility, and the v2 supersedes binding.",
+      "when": [
+        "verifying that the historical v1 bytes and digest remain unchanged",
+        "checking the v2 supersedes relationship or an old/new contract matrix"
+      ]
+    },
+    "references/manual-mutation-intent-v2.json": {
+      "role": "Tracked T12 target schema for the universal manual mutation intent, complete PreparedMutation, two digests, stable identity bindings, state and reconciliation machines, single-slot policy, legacy migration, and terminal audit records; it is not yet active runtime behavior.",
+      "when": [
+        "implementing or reviewing T12 manual intent persistence and reconciliation",
+        "checking exact state, grant, legacy, single-slot, and audit-journal constraints"
+      ],
+      "depends_on": [
+        "references/mcp-boundary-contract-v2.json"
       ]
     },
     "references/mcp-compat-field-inventory-v1.json": {
@@ -169,14 +187,16 @@
       ]
     },
     "scripts/validate_mcp_boundary_contract.py": {
-      "role": "Offline standard-library validator for the tracked MCP boundary contract, exact compatibility inventory and matrix, approved historical source-evidence bindings, capability-specific target paths, and clean-bundle independence.",
+      "role": "Offline standard-library validator for current boundary v2, immutable historical v1, manual intent v2, exact compatibility inventory and matrix, approved historical source-evidence bindings, capability-specific target paths, and clean-bundle independence.",
       "when": [
         "reviewing or changing any MCP boundary contract artifact",
         "running repository consistency and candidate preflight checks",
         "using --verify-current-source-evidence for an explicit drift audit against all ten current Trader and Partner source-evidence files"
       ],
       "depends_on": [
+        "references/mcp-boundary-contract-v2.json",
         "references/mcp-boundary-contract-v1.json",
+        "references/manual-mutation-intent-v2.json",
         "references/mcp-compat-field-inventory-v1.json",
         "references/mcp-compat-field-source-matrix-v1.json",
         "references/mcp-capability-mapping.json"
@@ -189,13 +209,13 @@
       ]
     },
     "scripts/verify_mcp_boundary_pair.py": {
-      "role": "Offline standard-library verifier that binds the tracked Trader boundary contract to the matching non-active WEEX MCP candidate metadata without executing MCP code.",
+      "role": "Offline standard-library verifier that binds the current tracked boundary v2 candidate to matching non-active WEEX MCP candidate metadata without executing MCP code.",
       "when": [
         "reviewing or changing the coordinated MCP and Trader boundary candidate",
         "checking that one explicit MCP checkout matches the tracked contract digests and source baselines"
       ],
       "depends_on": [
-        "references/mcp-boundary-contract-v1.json",
+        "references/mcp-boundary-contract-v2.json",
         "scripts/validate_mcp_boundary_contract.py",
         "the selected MCP checkout src/weex_mcp/compatibility.py"
       ],
