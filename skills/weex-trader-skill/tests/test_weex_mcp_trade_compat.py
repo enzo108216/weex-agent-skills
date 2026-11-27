@@ -178,14 +178,27 @@ class TradeMappingContractTests(unittest.TestCase):
 
 
 class FakeGateway:
-    def __init__(self, responses: list[dict[str, object]], **kwargs: object):
+    def __init__(
+        self,
+        responses: list[dict[str, object]],
+        *,
+        transport_metas: list[dict[str, object] | None] | None = None,
+        **kwargs: object,
+    ):
         self.responses = list(responses)
+        self.transport_metas = list(transport_metas or [None] * len(responses))
         self.init_kwargs = kwargs
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def call_typed_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, copy.deepcopy(arguments)))
-        return copy.deepcopy(self.responses.pop(0))
+        payload = copy.deepcopy(self.responses.pop(0))
+        ok = payload.get("ok") if isinstance(payload, dict) else None
+        return {
+            "structured_content": payload,
+            "is_error": isinstance(ok, bool) and not ok,
+            "transport_meta": copy.deepcopy(self.transport_metas.pop(0)),
+        }
 
 
 class McpTradeCompatTests(unittest.TestCase):
@@ -223,11 +236,20 @@ class McpTradeCompatTests(unittest.TestCase):
             ),
             request_describer=lambda **kwargs: calls.append(kwargs)
             or {
-                "method": "POST",
-                "url": "https://api-spot.weex.com/api/v3/order",
-                "headers": {},
-                "query": {},
-                "body": {"symbol": "BTCUSDT"},
+                "structured_content": {
+                    "ok": True,
+                    "result": {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://api-spot.weex.com/api/v3/order",
+                            "headers": {},
+                            "query": {},
+                            "body": {"symbol": "BTCUSDT"},
+                        }
+                    },
+                },
+                "is_error": False,
+                "transport_meta": None,
             },
             mapping_loader=lambda: copy.deepcopy(self.mapping),
             client_id_factory=lambda: "stable-dry-run-id",
@@ -479,7 +501,21 @@ class McpTradeCompatTests(unittest.TestCase):
                         "client_order_id": "stable-id-1",
                     },
                 },
-            ]
+            ],
+            transport_metas=[
+                {
+                    "version": 1,
+                    "request_id": "preview",
+                    "attempt_count": 1,
+                    "http_status": 200,
+                },
+                {
+                    "version": 1,
+                    "request_id": "confirm",
+                    "attempt_count": 1,
+                    "http_status": 202,
+                },
+            ],
         )
         facade = self.facade(gateway)
         preview = facade.preview(
@@ -504,8 +540,40 @@ class McpTradeCompatTests(unittest.TestCase):
             },
         )
         self.assertEqual(confirmed["ok"], True)
+        self.assertEqual(preview["status"], 200)
+        self.assertEqual(confirmed["status"], 202)
         self.assertEqual(confirmed["data"], {"orderId": "o-1"})
         self.assertEqual(confirmed["outcome"]["class"], "accepted")
+
+    def test_preview_error_preserves_transport_status(self) -> None:
+        entry = mapping_entry(self.mapping, "spot.order.place_order")
+        gateway = FakeGateway(
+            [{"ok": False, "error": {"code": "rejected", "message": "Rejected."}}],
+            transport_metas=[
+                {
+                    "version": 1,
+                    "request_id": "preview-error",
+                    "attempt_count": 1,
+                    "http_status": 400,
+                }
+            ],
+        )
+
+        result = self.facade(gateway).preview(
+            product="spot",
+            endpoint=endpoint_from_mapping(entry),
+            query={},
+            body={
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "type": "MARKET",
+                "quantity": "1",
+            },
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], 400)
+        self.assertEqual(result["error"]["code"], "rejected")
 
     def test_unknown_and_partial_are_review_required_and_binding_mismatch_is_not_called(self) -> None:
         entry = mapping_entry(self.mapping, "transaction.place_orders_batch")
@@ -524,7 +592,16 @@ class McpTradeCompatTests(unittest.TestCase):
                                 "items": [],
                             },
                         },
-                    ]
+                    ],
+                    transport_metas=[
+                        None,
+                        {
+                            "version": 1,
+                            "request_id": f"{outcome_class}-confirm",
+                            "attempt_count": 1,
+                            "http_status": 504 if outcome_class == "unknown" else 207,
+                        },
+                    ],
                 )
                 facade = self.facade(gateway)
                 preview = facade.preview(
@@ -546,7 +623,10 @@ class McpTradeCompatTests(unittest.TestCase):
                 confirmed = facade.confirm(preview["preview"])
                 self.assertFalse(confirmed["ok"])
                 self.assertTrue(confirmed["review_required"])
-                self.assertIsNone(confirmed["status"])
+                self.assertEqual(
+                    confirmed["status"],
+                    504 if outcome_class == "unknown" else 207,
+                )
                 self.assertEqual(confirmed["trade_status"], "REVIEW_REQUIRED")
 
         gateway = FakeGateway([])
@@ -641,7 +721,7 @@ class McpTradeCompatTests(unittest.TestCase):
                 self.assertEqual(symbol_gateway.calls[0][1]["symbol"], "BTCUSDT")
                 self.assertNotIn("acknowledge_all_symbols", symbol_gateway.calls[0][1])
 
-    def test_delegated_confirm_injects_authorizer_and_never_sets_manual_confirmation(self) -> None:
+    def test_delegated_confirm_does_not_inject_authorizer_into_v2_gateway(self) -> None:
         entry = mapping_entry(self.mapping, "spot.order.place_order")
         gateway = FakeGateway(
             [
@@ -690,7 +770,7 @@ class McpTradeCompatTests(unittest.TestCase):
         )
 
         self.assertTrue(confirmed["ok"])
-        self.assertIs(captured["delegated_authorizer"], authorizer)
+        self.assertNotIn("delegated_authorizer", captured)
         confirm_arguments = gateway.calls[1][1]
         self.assertEqual(
             confirm_arguments["delegated_authorization"],
@@ -718,7 +798,16 @@ class McpTradeCompatTests(unittest.TestCase):
                                 "action": "cancel_order",
                             },
                         },
-                    ]
+                    ],
+                    transport_metas=[
+                        None,
+                        {
+                            "version": 1,
+                            "request_id": f"{outcome_class}-confirm",
+                            "attempt_count": 1,
+                            "http_status": 409 if outcome_class == "definitive_rejection" else 400,
+                        },
+                    ],
                 )
                 facade = self.facade(gateway)
                 preview = facade.preview(
@@ -731,6 +820,10 @@ class McpTradeCompatTests(unittest.TestCase):
                 self.assertFalse(confirmed["ok"])
                 self.assertFalse(confirmed["review_required"])
                 self.assertEqual(confirmed["trade_status"], expected_status)
+                self.assertEqual(
+                    confirmed["status"],
+                    409 if outcome_class == "definitive_rejection" else 400,
+                )
 
 
 if __name__ == "__main__":

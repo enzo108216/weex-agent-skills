@@ -57,8 +57,33 @@ def endpoint_from_mapping(entry: dict[str, object]) -> SimpleNamespace:
     )
 
 
+def gateway_wrapper(
+    payload: object,
+    *,
+    transport_meta: dict[str, object] | None = None,
+) -> dict[str, object]:
+    ok = payload.get("ok") if isinstance(payload, dict) else None
+    return {
+        "structured_content": copy.deepcopy(payload),
+        "is_error": isinstance(ok, bool) and not ok,
+        "transport_meta": copy.deepcopy(transport_meta),
+    }
+
+
+def request_wrapper(description: object) -> dict[str, object]:
+    return gateway_wrapper(
+        {"ok": True, "result": {"request": copy.deepcopy(description)}}
+    )
+
+
 class FakeGateway:
-    def __init__(self, payload: dict[str, object] | None = None, **kwargs: object):
+    def __init__(
+        self,
+        payload: dict[str, object] | None = None,
+        *,
+        transport_meta: dict[str, object] | None = None,
+        **kwargs: object,
+    ):
         self.init_kwargs = kwargs
         self.payload = payload or {
             "ok": True,
@@ -67,11 +92,12 @@ class FakeGateway:
                 "transport": {"http_status": 200},
             },
         }
+        self.transport_meta = transport_meta
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def call_typed_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, copy.deepcopy(arguments)))
-        return copy.deepcopy(self.payload)
+        return gateway_wrapper(self.payload, transport_meta=self.transport_meta)
 
 
 class McpReadCompatTests(unittest.TestCase):
@@ -259,13 +285,13 @@ class McpReadCompatTests(unittest.TestCase):
                 "request description must not construct a gateway"
             ),
             request_describer=lambda **kwargs: calls.append(kwargs)
-            or {
+            or request_wrapper({
                 "method": "GET",
                 "url": "https://api-spot.weex.com/api/v3/market/ticker/price?symbol=BTCUSDT",
                 "headers": {},
                 "query": {"symbol": "BTCUSDT"},
                 "body": {},
-            },
+            }),
             mapping_loader=lambda: copy.deepcopy(self.mapping),
         )
 
@@ -303,7 +329,7 @@ class McpReadCompatTests(unittest.TestCase):
             with self.subTest(description=description):
                 facade = self.compat.McpReadFacade(
                     settings=self.settings(profile_id=None),
-                    request_describer=lambda **_kwargs: copy.deepcopy(description),
+                    request_describer=lambda **_kwargs: request_wrapper(description),
                     mapping_loader=lambda: copy.deepcopy(self.mapping),
                 )
                 with self.assertRaises(self.compat.McpReadCompatibilityError) as exc_info:
@@ -376,7 +402,8 @@ class McpReadCompatTests(unittest.TestCase):
                     "raw": [{"billId": "b-1"}],
                     "http_status": 200,
                 },
-            }
+            },
+            transport_meta={"version": 1, "request_id": "read", "attempt_count": 1, "http_status": 206},
         )
         response = self.facade(gateway).execute(
             product="spot",
@@ -411,8 +438,26 @@ class McpReadCompatTests(unittest.TestCase):
         )
         self.assertEqual(
             response,
-            {"ok": True, "status": 200, "data": [{"billId": "b-1"}]},
+            {"ok": True, "status": 206, "data": [{"billId": "b-1"}]},
         )
+
+    def test_invalid_gateway_wrapper_fails_closed(self) -> None:
+        entry = mapping_entry(self.mapping, "account.get_account_balance")
+        gateway = FakeGateway()
+        gateway.call_typed_tool = lambda *_args, **_kwargs: {
+            "structured_content": {"ok": True, "data": {"raw": []}},
+            "transport_meta": None,
+        }
+
+        response = self.facade(gateway).execute(
+            product="contract",
+            endpoint=endpoint_from_mapping(entry),
+            query={},
+            body={},
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "compat_response_invalid")
 
     def test_multi_symbol_is_identity_and_does_not_fan_out(self) -> None:
         entry = mapping_entry(self.mapping, "spot.market.get_book_ticker")

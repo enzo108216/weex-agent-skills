@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -350,7 +351,7 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(payload["mapping_version"], "trader-mcp-capability-v2")
 
         candidate = payload["verified_mcp_candidate"]
-        source_commit = "02d51ddfebf51e96d3f7c2631e3d14712ac213a0"
+        source_commit = "5c2a439b916b3095974fa0b94a425fb7c77d93ec"
         self.assertEqual(
             {
                 key: candidate[key]
@@ -358,14 +359,16 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
                     "official_repository",
                     "package_version",
                     "tool_contract_version",
+                    "manifest_version",
                     "source_commit",
                     "publication_status",
                 )
             },
             {
                 "official_repository": "https://github.com/weex-labs/weex-mcp",
-                "package_version": "0.2.0",
-                "tool_contract_version": "1",
+                "package_version": "0.3.0",
+                "tool_contract_version": "2",
+                "manifest_version": 2,
                 "source_commit": source_commit,
                 "publication_status": "unpublished",
             },
@@ -374,55 +377,93 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
         self.assertEqual(
             candidate["distribution_sha256"],
             {
-                "wheel": "25caee15e33bde271778afdcbd10cbb46ce81b072d6413eefc3070dbd497ab39",
-                "sdist": "f6248161eea5f8f44ec4a1717d016dbe27879cc63811418daf41f63ad39658a0",
+                "wheel": "d805de74a1adbbed61da3b3e8931e5c42807eb0727f2fe2c2c6ee7114b57113b",
+                "sdist": "fdbd84bfe2acea8d9c9d49f2a1e3d8aadeccb5ea1eb672fdccc21c7b7d689458",
             },
         )
         for digest in candidate["distribution_sha256"].values():
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
         self.assertNotIn("/Users/", json.dumps(candidate, ensure_ascii=False))
+        self.assertEqual(
+            candidate["versions"],
+            {
+                "package": "0.3.0",
+                "tool_contract": "2",
+                "manifest": "2",
+                "output": "1",
+                "prepare": "1",
+                "request_description": "2",
+                "transport_meta": "1",
+                "grant": "1",
+            },
+        )
+        self.assertEqual(
+            {
+                key: candidate[key]
+                for key in (
+                    "boundary_contract_digest",
+                    "direct_tools_digest",
+                    "legacy_mapping_digest",
+                    "inventory_digest",
+                    "matrix_digest",
+                )
+            },
+            {
+                "boundary_contract_digest": "sha256:07d3e11874c1f8956680b87e725061f486c9a001236bbf105b12be8dce2322a1",
+                "direct_tools_digest": "sha256:7a25945e4f879fa21d5442fd8741c1d0331d510b1f2b7a38a204cb36eee2831f",
+                "legacy_mapping_digest": "sha256:1ad4fede4ae9211dcd9e1e6d87ccffbe09b77eb183d71cadeb8cf0c63f9c1821",
+                "inventory_digest": "sha256:95737d9647cdecd8eae2d67a9fbb823cc9b56753522459fa55603cfea73fddc1",
+                "matrix_digest": "sha256:cf98b6645eb3712522d08af1871b50ab5803e18b5b4eea586c691eca50a865b8",
+            },
+        )
+        self.assertEqual(
+            candidate["source_catalog_digests"],
+            {
+                "contract": "sha256:7bb353ef83f9fcdf6edcc9e25078b1fad1896e1c207bc60bf86935cec52a732e",
+                "partner": "sha256:7b8d50443adbf5992587f827d0f99515810b3ef4a6d829cf4e1b81021c321082",
+                "spot": "sha256:e6835a8bdd983115c68e8a8afddf8e99461f7eb33a29bd15bd0a72e7712c516f",
+            },
+        )
 
         expected_profiles = {
-            ("broker_server", False): {
-                "tool_count": 26,
-                "tool_set_digest": "sha256:1abdc9a2ad78310de4c450f32310c9f985004733ba094c7370a28afc024d767f",
-                "schema_digest": "sha256:45146531a09ffa99fa5e57b696341d90541274660e5689fe9aaecced06cd3ed5",
-                "manifest_digest": "sha256:91c5e6049046ebe8ac0000f278d922af2dfaa1e337e19e435c943883ae9497af",
-            },
-            ("broker_server", True): {
-                "tool_count": 52,
-                "tool_set_digest": "sha256:e4b7b026283486499cc4ced31c1abdf29a703f910936b0be26158e492e42d9cf",
-                "schema_digest": "sha256:19c71d4571a568dacd09006670caec2bc50a8c24081687fd2c020813855fa2eb",
-                "manifest_digest": "sha256:4a12b6cbbb15e953cc3ad8c0566be0ca8e9c46bfad27f8674bb57731dbc287d6",
-            },
             ("local_user", False): {
                 "tool_count": 31,
                 "tool_set_digest": "sha256:5243852221e5444f54531937befec646116795794cf6875ba3166cddd5b424e6",
-                "schema_digest": "sha256:10fa8579693a221251874fd65145a3d49f50d76ceb31516ce5f2a16cd7a6d50d",
-                "manifest_digest": "sha256:a30ddae053088dff1d462f4a2d2c3914790548b8d7dba4ac6f75f1e81d9c1c74",
+                "schema_digest": "sha256:1e7f69c100341709a06ef6a8e2e3636c5b1082404b6b30248d5cc9b0c872026a",
+                "manifest_digest": "sha256:bed6313b4859c4b368b250333b433d238bfc25582ae9afffe4bc45a4d80915ba",
+                "boundary_static_manifest_digest": "sha256:4d329b5db41942b1fd201ac9d32bf99e714a76aab0d5b9168abd590bf0c17112",
             },
             ("local_user", True): {
-                "tool_count": 57,
-                "tool_set_digest": "sha256:6479ec2cb74a21a45266dd44455b4a44610dc5d9c8bc3d98e1df6d8e37ce8728",
-                "schema_digest": "sha256:97001218c9d4e003f82eeea49ddc6b1feebdb951dc5f175904a0ced463a9cacf",
-                "manifest_digest": "sha256:65b9011963f842433654c747dfa19ffe8be977f8716d9b16c0409b884febc6fc",
+                "tool_count": 45,
+                "tool_set_digest": "sha256:246242baa02e371244c55fa3bb94747f2df3222d189796b29a1ec0280c4f2b59",
+                "schema_digest": "sha256:648d1b903432905e77e90e63ffb2271a05284bdbb6568d4b8edeeeca0fe61ecd",
+                "manifest_digest": "sha256:c566f98da3e84dbdfaf123b6afa476adfb75c3cfe66dfd5fcb0e5a863978dddf",
+                "boundary_static_manifest_digest": "sha256:3012a9508408e2d8e28c5f464fd64fe0a0c8ade853c5bb3b52b99dd53877baf8",
             },
         }
         profiles = candidate["compatibility_profiles"]
-        self.assertEqual(len(profiles), 4)
+        self.assertEqual(len(profiles), 2)
         actual_profiles = {
             (item["runtime_profile"], item["trade_enabled"]): {
                 "tool_count": item["tool_count"],
                 "tool_set_digest": item["tool_set_digest"],
                 "schema_digest": item["schema_digest"],
                 "manifest_digest": item["manifest_digest"],
+                "boundary_static_manifest_digest": item[
+                    "boundary_static_manifest_digest"
+                ],
             }
             for item in profiles
         }
         self.assertEqual(actual_profiles, expected_profiles)
-        for field in ("tool_set_digest", "schema_digest", "manifest_digest"):
+        for field in (
+            "tool_set_digest",
+            "schema_digest",
+            "manifest_digest",
+            "boundary_static_manifest_digest",
+        ):
             values = {item[field] for item in profiles}
-            self.assertEqual(len(values), 4)
+            self.assertEqual(len(values), 2)
             for value in values:
                 self.assertRegex(value, r"^sha256:[0-9a-f]{64}$")
 
@@ -436,9 +477,25 @@ class CheckedInDefinitionRegressionTests(unittest.TestCase):
             with self.subTest(key=item["legacy_key"]):
                 evidence = item["evidence"]
                 self.assertEqual(evidence["implementation_status"], "implemented_in_candidate")
-                self.assertEqual(evidence["source_commit"], source_commit)
-                self.assertEqual(evidence["package_version"], candidate["package_version"])
-                self.assertEqual(evidence["tool_contract_version"], candidate["tool_contract_version"])
+                self.assertEqual(
+                    evidence["source_commit"],
+                    "02d51ddfebf51e96d3f7c2631e3d14712ac213a0",
+                )
+                self.assertEqual(evidence["package_version"], "0.2.0")
+                self.assertEqual(evidence["tool_contract_version"], "1")
+
+        self.assertEqual(
+            hashlib.sha256(
+                json.dumps(
+                    payload["capabilities"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "3d5b9c2ad3bdd3f85f3c64524b551512a0986284b5bee07b9b4d4e075a2381a8",
+        )
 
         pending = [
             item

@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,6 +186,69 @@ class McpBoundaryContractTests(unittest.TestCase):
         self.assertEqual(contract["approval"]["status"], "USER_CONFIRMED_CANDIDATE")
         self.assertEqual(contract["approval"]["approved_at"], "2026-11-26")
         self.assertIn("T5 business implementation", contract["approval"]["excluded"])
+
+    def test_historical_source_evidence_is_bound_and_current_audit_detects_drift(self) -> None:
+        validator = load_validator()
+        self.assertIsNotNone(validator, "MCP boundary validator is missing")
+
+        report = validator.validate_bundle(ROOT)
+        self.assertEqual(report["source_evidence_mode"], "historical")
+
+        with self.assertRaisesRegex(ValueError, "source evidence digest mismatch: gateway"):
+            validator.validate_bundle(
+                ROOT,
+                verify_current_source_evidence=True,
+            )
+
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        inventory = json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        contract["compatibility"]["source_evidence_digests"]["gateway"] = (
+            "sha256:" + "0" * 64
+        )
+        contract_body = dict(contract)
+        contract_body.pop("boundary_contract_digest")
+        contract["boundary_contract_digest"] = validator.canonical_digest(
+            contract_body
+        )
+        with self.assertRaisesRegex(ValueError, "historical source evidence"):
+            validator.validate_documents(
+                skill_root=ROOT,
+                contract=contract,
+                inventory=inventory,
+                matrix=matrix,
+            )
+
+        source_paths = validator._source_evidence_paths(ROOT)
+        expected = inventory["source_evidence_digests"]
+        original_file_digest = validator.file_digest
+
+        def controlled_digest(path: Path) -> str:
+            for name, source_path in source_paths.items():
+                if path == source_path:
+                    return (
+                        "sha256:" + "f" * 64
+                        if name == "partner_field_catalog"
+                        else expected[name]
+                    )
+            return original_file_digest(path)
+
+        with mock.patch.object(
+            validator,
+            "file_digest",
+            side_effect=controlled_digest,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "source evidence digest mismatch: partner_field_catalog",
+            ):
+                validator.validate_documents(
+                    skill_root=ROOT,
+                    contract=json.loads(CONTRACT_PATH.read_text(encoding="utf-8")),
+                    inventory=inventory,
+                    matrix=matrix,
+                    verify_current_source_evidence=True,
+                )
 
     def test_narrowed_replacements_are_explicit(self) -> None:
         validator = load_validator()

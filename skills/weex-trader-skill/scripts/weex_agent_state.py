@@ -59,6 +59,12 @@ MCP_ACTIONS = frozenset(
         "repair_mcp_gateway",
     }
 )
+MCP_RUNTIME_ACTIONS = frozenset(
+    {
+        "configure_trade_adapter",
+        "configure_execution_grant_consumer",
+    }
+)
 _MCP_PACKAGE_VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})"
     r"(?:(?:a|b|rc)(?:0|[1-9][0-9]{0,8}))?"
@@ -385,8 +391,14 @@ def _unavailable_mcp_status() -> dict[str, Any]:
         "manifest_ok": False,
         "runtime_profile": MCP_RUNTIME_PROFILE,
         "trade_enabled": False,
+        "manifest_version": None,
         "tool_contract_version": None,
         "manifest_digest": None,
+        "boundary_manifest_digest": None,
+        "boundary_contract_digest": None,
+        "private_read_ready": False,
+        "mutation_ready": False,
+        "runtime_action_required": [],
         "action_required": "repair_mcp_gateway",
     }
 
@@ -398,12 +410,27 @@ def project_mcp_status(raw: object) -> dict[str, Any]:
     version = _safe_mcp_package_version(raw.get("version"))
     expected_version = _safe_mcp_package_version(raw.get("expected_version"))
     tool_contract_version = _safe_mcp_contract_version(raw.get("tool_contract_version"))
-    digest_value = raw.get("manifest_digest")
-    manifest_digest = (
-        digest_value
-        if isinstance(digest_value, str) and _MCP_DIGEST_PATTERN.fullmatch(digest_value) is not None
+    manifest_version_value = raw.get("manifest_version")
+    manifest_version = (
+        manifest_version_value
+        if isinstance(manifest_version_value, int)
+        and not isinstance(manifest_version_value, bool)
+        and manifest_version_value == 2
         else None
     )
+
+    def safe_digest(field: str) -> Optional[str]:
+        value = raw.get(field)
+        return (
+            value
+            if isinstance(value, str)
+            and _MCP_DIGEST_PATTERN.fullmatch(value) is not None
+            else None
+        )
+
+    manifest_digest = safe_digest("manifest_digest")
+    boundary_manifest_digest = safe_digest("boundary_manifest_digest")
+    boundary_contract_digest = safe_digest("boundary_contract_digest")
     installed = raw.get("installed") is True
     package_ok = (
         raw.get("package_ok") is True
@@ -419,13 +446,41 @@ def project_mcp_status(raw: object) -> dict[str, Any]:
     raw_action = raw.get("action_required")
     action_allowed = isinstance(raw_action, str) and raw_action in MCP_ACTIONS
     action_ok = raw_action is None or action_allowed
+    private_read_value = raw.get("private_read_ready")
+    mutation_value = raw.get("mutation_ready")
+    private_read_ok = isinstance(private_read_value, bool)
+    mutation_ok = isinstance(mutation_value, bool)
+    private_read_ready = private_read_value if private_read_ok else False
+    mutation_ready = mutation_value if mutation_ok else False
+    raw_runtime_actions = raw.get("runtime_action_required")
+    runtime_actions_ok = (
+        isinstance(raw_runtime_actions, list)
+        and all(
+            isinstance(item, str) and item in MCP_RUNTIME_ACTIONS
+            for item in raw_runtime_actions
+        )
+        and len(raw_runtime_actions) == len(set(raw_runtime_actions))
+    )
+    runtime_action_required = list(raw_runtime_actions) if runtime_actions_ok else []
+    readiness_ok = bool(
+        private_read_ok
+        and mutation_ok
+        and runtime_actions_ok
+        and (not mutation_ready or private_read_ready)
+        and (not mutation_ready or (trade_enabled and not runtime_action_required))
+        and (trade_enabled or (not mutation_ready and not runtime_action_required))
+    )
     manifest_ok = (
         raw.get("manifest_ok") is True
         and package_ok
         and profile_ok
         and trade_ok
-        and tool_contract_version is not None
+        and manifest_version == 2
+        and tool_contract_version == "2"
         and manifest_digest is not None
+        and boundary_manifest_digest is not None
+        and boundary_contract_digest is not None
+        and readiness_ok
         and action_ok
         and raw_action is None
     )
@@ -434,7 +489,7 @@ def project_mcp_status(raw: object) -> dict[str, Any]:
         action_required = None
     elif action_required is None:
         action_required = "repair_mcp_gateway"
-    if not profile_ok or not trade_ok or not action_ok:
+    if not profile_ok or not trade_ok or not action_ok or not readiness_ok:
         action_required = "repair_mcp_gateway"
 
     return {
@@ -445,8 +500,14 @@ def project_mcp_status(raw: object) -> dict[str, Any]:
         "manifest_ok": manifest_ok,
         "runtime_profile": MCP_RUNTIME_PROFILE,
         "trade_enabled": trade_enabled,
+        "manifest_version": manifest_version,
         "tool_contract_version": tool_contract_version,
         "manifest_digest": manifest_digest,
+        "boundary_manifest_digest": boundary_manifest_digest,
+        "boundary_contract_digest": boundary_contract_digest,
+        "private_read_ready": private_read_ready,
+        "mutation_ready": mutation_ready,
+        "runtime_action_required": runtime_action_required,
         "action_required": action_required,
     }
 

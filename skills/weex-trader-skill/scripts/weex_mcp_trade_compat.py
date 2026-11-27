@@ -19,8 +19,11 @@ from weex_mcp_gateway import (
 from weex_mcp_read_compat import (
     EXPECTED_MAPPING_VERSION,
     LocalMcpReadSettings,
+    _http_status,
     _load_default_mapping,
     _request_description_contract_error,
+    _unwrap_gateway_result,
+    _unwrap_request_description,
     resolve_local_mcp_read_settings,
 )
 
@@ -142,7 +145,6 @@ class McpTradeFacade:
                 trade_enabled=True,
                 timeout_seconds=self.settings.timeout_seconds,
                 request_locale=self.settings.locale,
-                delegated_authorizer=self._delegated_authorizer,
             )
         return self._gateway
 
@@ -163,11 +165,18 @@ class McpTradeFacade:
         )
         preview_tool = str(operation["target"]["tool"])
         try:
-            payload = self._get_gateway().call_typed_tool(preview_tool, arguments)
+            wrapped = self._get_gateway().call_typed_tool(preview_tool, arguments)
         except McpGatewayError as exc:
             return _gateway_error(exc)
+        unwrapped = _unwrap_gateway_result(wrapped)
+        if unwrapped is None:
+            return _compat_error("The WEEX MCP Trade preview wrapper is invalid.")
+        payload, transport_meta = unwrapped
         if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return _project_prewrite_error(payload)
+            return _project_prewrite_error(
+                payload,
+                transport_meta=transport_meta,
+            )
         preview_id = payload.get("preview_id")
         expires_at = payload.get("expires_at")
         if (
@@ -195,7 +204,7 @@ class McpTradeFacade:
         }
         return {
             "ok": True,
-            "status": None,
+            "status": _http_status(transport_meta),
             "preview": record,
             "summary": dict(payload["summary"]),
             "risk": dict(payload["risk"]),
@@ -218,7 +227,7 @@ class McpTradeFacade:
             client_id_factory=self._client_id_factory,
         )
         try:
-            description = self._request_describer(
+            wrapped = self._request_describer(
                 name=str(operation["target"]["tool"]),
                 arguments=arguments,
                 effective_spot_base_url=self.settings.spot_base_url,
@@ -229,6 +238,7 @@ class McpTradeFacade:
             )
         except McpGatewayError as exc:
             raise McpTradeCompatibilityError(exc.code, exc.message) from exc
+        description = _unwrap_request_description(wrapped)
         if _request_description_contract_error(
             operation,
             description,
@@ -278,7 +288,7 @@ class McpTradeFacade:
         else:
             confirm_arguments["delegated_authorization"] = {"ref": delegated_ref}
         try:
-            payload = self._get_gateway().call_typed_tool(
+            wrapped = self._get_gateway().call_typed_tool(
                 str(operation["target"]["confirm_tool"]),
                 confirm_arguments,
             )
@@ -288,7 +298,19 @@ class McpTradeFacade:
                 code=exc.code,
                 message=exc.message,
             )
-        return _project_confirm_result(operation, payload)
+        unwrapped = _unwrap_gateway_result(wrapped)
+        if unwrapped is None:
+            return _confirm_uncertain(
+                operation,
+                code="compat_response_invalid",
+                message="The WEEX MCP Trade confirmation wrapper is invalid.",
+            )
+        payload, transport_meta = unwrapped
+        return _project_confirm_result(
+            operation,
+            payload,
+            transport_meta=transport_meta,
+        )
 
     def preview_and_confirm(
         self,
@@ -650,21 +672,33 @@ def _new_client_id(factory: Callable[[], str]) -> str:
     return value
 
 
-def _project_prewrite_error(payload: Any) -> dict[str, Any]:
+def _project_prewrite_error(
+    payload: Any,
+    *,
+    transport_meta: dict[str, Any] | None,
+) -> dict[str, Any]:
     if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
-        return {"ok": False, "status": None, "error": dict(payload["error"])}
+        return {
+            "ok": False,
+            "status": _http_status(transport_meta),
+            "error": dict(payload["error"]),
+        }
     return _compat_error("The WEEX MCP Trade preview error envelope is invalid.")
 
 
 def _project_confirm_result(
     operation: dict[str, Any],
     payload: Any,
+    *,
+    transport_meta: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    status = _http_status(transport_meta)
     if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
         return _confirm_uncertain(
             operation,
             code="compat_response_invalid",
             message="The WEEX MCP Trade confirmation envelope is invalid.",
+            status=status,
         )
     outcome = payload.get("outcome")
     if not isinstance(outcome, dict) or outcome.get("class") not in _OUTCOME_CLASSES:
@@ -672,6 +706,7 @@ def _project_confirm_result(
             operation,
             code="compat_response_invalid",
             message="The WEEX MCP Trade confirmation outcome is invalid.",
+            status=status,
         )
     outcome_class = str(outcome["class"])
     raw: Any = None
@@ -684,10 +719,11 @@ def _project_confirm_result(
                 operation,
                 code="compat_response_invalid",
                 message="The WEEX MCP Trade result did not preserve the legacy payload.",
+                status=status,
             )
         return {
             "ok": True,
-            "status": None,
+            "status": status,
             "data": raw,
             "outcome": outcome,
             "review_required": False,
@@ -702,7 +738,7 @@ def _project_confirm_result(
     review_required = outcome_class in {"unknown", "partial"}
     return {
         "ok": False,
-        "status": None,
+        "status": status,
         "error": error,
         "outcome": outcome,
         "review_required": review_required,
@@ -738,10 +774,11 @@ def _confirm_uncertain(
     *,
     code: str,
     message: str,
+    status: int | None = None,
 ) -> dict[str, Any]:
     return {
         "ok": False,
-        "status": None,
+        "status": status,
         "error": {"code": code, "message": message},
         "outcome": {
             "class": "unknown",

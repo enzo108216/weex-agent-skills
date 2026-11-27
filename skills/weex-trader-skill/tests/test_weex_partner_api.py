@@ -52,14 +52,20 @@ EXPECTED_ENDPOINTS = {
 def ready_mcp_runtime() -> dict[str, object]:
     return {
         "installed": True,
-        "version": "0.2.0",
-        "expected_version": "0.2.0",
+        "version": "0.3.0",
+        "expected_version": "0.3.0",
         "package_ok": True,
         "manifest_ok": True,
         "runtime_profile": "local_user",
         "trade_enabled": False,
-        "tool_contract_version": "1",
+        "manifest_version": 2,
+        "tool_contract_version": "2",
         "manifest_digest": "sha256:" + ("a" * 64),
+        "boundary_manifest_digest": "sha256:" + ("b" * 64),
+        "boundary_contract_digest": "sha256:" + ("c" * 64),
+        "private_read_ready": True,
+        "mutation_ready": False,
+        "runtime_action_required": [],
         "action_required": None,
     }
 

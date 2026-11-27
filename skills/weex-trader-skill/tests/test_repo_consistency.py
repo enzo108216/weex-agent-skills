@@ -283,6 +283,14 @@ class RepoConsistencyTests(unittest.TestCase):
                 self.assertEqual(manifest["routing"]["compatibility"][key], path)
                 self.assertIn(path, file_index["file_guide"])
                 self.assertTrue((ROOT / path).is_file())
+        validator_index = file_index["file_guide"][
+            expected["mcp_boundary_contract_validator"]
+        ]
+        self.assertIn("historical source-evidence", validator_index["role"])
+        self.assertIn(
+            "--verify-current-source-evidence",
+            validator_index["surface"],
+        )
         self.assertEqual(
             manifest["read_order"]["open_if_needed"]["mcp_boundary_contract"],
             expected["mcp_boundary_contract"],
@@ -347,6 +355,25 @@ class RepoConsistencyTests(unittest.TestCase):
             self.assertIn(path, file_index["file_guide"])
         self.assertIn("runtime_status", file_index["file_guide"][gateway_path]["surface"])
         self.assertIn("probe_local_mcp_runtime", file_index["file_guide"][gateway_path]["surface"])
+        self.assertIn("prepare_mutation", file_index["file_guide"][gateway_path]["surface"])
+        self.assertIn(
+            "references/mcp-boundary-contract-v1.json",
+            file_index["file_guide"][gateway_path]["depends_on"],
+        )
+        gateway_role = file_index["file_guide"][gateway_path]["role"]
+        self.assertIn("CredentialBinding", gateway_role)
+        self.assertIn("transport metadata", gateway_role)
+        self.assertNotIn("credential refs", gateway_role)
+        self.assertNotIn("approval-key binding", gateway_role)
+        profile_surface = file_index["file_guide"]["scripts/weex_profile_store.py"][
+            "surface"
+        ]
+        for required in (
+            "get_or_create_local_mcp_binding_key",
+            "rotate_local_mcp_binding_key",
+            "local_mcp_binding_key_status",
+        ):
+            self.assertIn(required, profile_surface)
         self.assertIn(
             "project_mcp_status",
             file_index["file_guide"]["scripts/weex_agent_state.py"]["surface"],

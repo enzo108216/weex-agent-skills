@@ -151,14 +151,20 @@ class DoctorMcpTests(unittest.TestCase):
     ) -> dict[str, object]:
         return {
             "installed": ready,
-            "version": "0.2.0" if ready else "0.1.0",
-            "expected_version": "0.2.0",
+            "version": "0.3.0" if ready else "0.1.0",
+            "expected_version": "0.3.0",
             "package_ok": ready,
             "manifest_ok": ready,
             "runtime_profile": "local_user",
             "trade_enabled": trade_enabled,
-            "tool_contract_version": "1",
+            "manifest_version": 2,
+            "tool_contract_version": "2",
             "manifest_digest": f"sha256:{'a' * 64}",
+            "boundary_manifest_digest": f"sha256:{'b' * 64}",
+            "boundary_contract_digest": f"sha256:{'c' * 64}",
+            "private_read_ready": ready,
+            "mutation_ready": bool(ready and trade_enabled),
+            "runtime_action_required": [],
             "action_required": None if ready else "install_verified_mcp_candidate",
         }
 
@@ -176,7 +182,13 @@ class DoctorMcpTests(unittest.TestCase):
 
         return probe
 
-    def _store(self, *, state: str, key_status: dict[str, object] | None):
+    def _store(
+        self,
+        *,
+        state: str,
+        key_status: dict[str, object] | None,
+        profile_ready: bool = True,
+    ):
         key_probe = mock.Mock(
             return_value=key_status,
         )
@@ -193,26 +205,40 @@ class DoctorMcpTests(unittest.TestCase):
                     "vault_data_path": "/private/vault.enc",
                 }
             ),
-            local_mcp_approval_key_status=key_probe,
+            local_mcp_binding_key_status=key_probe,
+            local_mcp_approval_key_status=mock.Mock(
+                side_effect=AssertionError("doctor must not read the deprecated approval key")
+            ),
+            get_or_create_local_mcp_binding_key=mock.Mock(
+                side_effect=AssertionError("doctor must not create binding keys")
+            ),
             get_or_create_local_mcp_approval_key=mock.Mock(
                 side_effect=AssertionError("doctor must not create approval keys")
+            ),
+            get_default_profile_id=mock.Mock(
+                return_value="profile-a" if profile_ready else None
+            ),
+            profile_has_credentials_by_id=mock.Mock(
+                return_value=profile_ready
             ),
         )
         return store, key_probe
 
     def test_mcp_report_distinguishes_read_and_trade_readiness_without_mutation(self) -> None:
         states = (
-            ("uninitialized", None, False, "setup_vault"),
-            ("locked", None, False, "unlock_vault"),
+            ("uninitialized", None, False, False, "setup_vault"),
+            ("locked", None, False, False, "unlock_vault"),
             (
                 "unlocked",
                 {"present": False, "valid": False, "length": 0, "fp_sha256": None},
                 False,
-                "provision_local_mcp_approval_key",
+                False,
+                "provision_local_mcp_binding_key",
             ),
             (
                 "unlocked",
                 {"present": True, "valid": True, "length": 64, "fp_sha256": "b" * 16},
+                True,
                 True,
                 None,
             ),
@@ -221,8 +247,8 @@ class DoctorMcpTests(unittest.TestCase):
             sentinel = Path(tempdir) / "vault.enc"
             sentinel.write_bytes(b"encrypted-vault-bytes")
             before = sentinel.read_bytes()
-            for state, key_status, trade_ready, action_required in states:
-                with self.subTest(state=state, trade_ready=trade_ready):
+            for state, key_status, read_ready, trade_ready, action_required in states:
+                with self.subTest(state=state, read_ready=read_ready, trade_ready=trade_ready):
                     store, key_probe = self._store(state=state, key_status=key_status)
                     with mock.patch.object(
                         doctor,
@@ -235,18 +261,30 @@ class DoctorMcpTests(unittest.TestCase):
                     ):
                         report = doctor.build_mcp_report("en")
 
-                    self.assertTrue(report["read_ready"])
+                    self.assertTrue(report["read_contract_ready"])
+                    self.assertTrue(report["trade_contract_ready"])
+                    self.assertEqual(report["read_ready"], read_ready)
                     self.assertTrue(report["runtime"]["manifest_ok"])
                     self.assertTrue(report["trade_runtime"]["manifest_ok"])
                     self.assertTrue(report["trade_runtime"]["trade_enabled"])
                     self.assertEqual(report["trade_ready"], trade_ready)
                     self.assertEqual(report["action_required"], action_required)
                     self.assertEqual(sentinel.read_bytes(), before)
+                    store.get_or_create_local_mcp_binding_key.assert_not_called()
                     store.get_or_create_local_mcp_approval_key.assert_not_called()
+                    store.local_mcp_approval_key_status.assert_not_called()
                     if state == "unlocked":
                         key_probe.assert_called_once_with()
                     else:
                         key_probe.assert_not_called()
+                    if state == "unlocked" and key_status and key_status.get("valid") is True:
+                        store.get_default_profile_id.assert_called_once_with()
+                        store.profile_has_credentials_by_id.assert_called_once_with(
+                            "profile-a"
+                        )
+                    else:
+                        store.get_default_profile_id.assert_not_called()
+                        store.profile_has_credentials_by_id.assert_not_called()
                     serialized = json.dumps(report, sort_keys=True)
                     for forbidden in (
                         "/private/vault.enc",
@@ -254,8 +292,90 @@ class DoctorMcpTests(unittest.TestCase):
                         "profile-a",
                         "credential_ref",
                         "approval-key-secret",
+                        "binding-key-secret",
                     ):
                         self.assertNotIn(forbidden, serialized)
+
+    def test_mcp_report_keeps_dynamic_mutation_readiness_separate_from_static_contract(self) -> None:
+        store, key_probe = self._store(
+            state="unlocked",
+            key_status={"present": True, "valid": True, "length": 64, "fp_sha256": "b" * 16},
+        )
+
+        def probe(*, trade_enabled: bool = False):
+            status = self._runtime_status(trade_enabled=trade_enabled)
+            if trade_enabled:
+                status["mutation_ready"] = False
+                status["runtime_action_required"] = [
+                    "configure_execution_grant_consumer"
+                ]
+            return status
+
+        with mock.patch.object(
+            doctor,
+            "_probe_local_mcp_runtime",
+            side_effect=probe,
+        ), mock.patch.object(
+            doctor,
+            "_load_profile_store_module",
+            return_value=store,
+        ):
+            report = doctor.build_mcp_report("en")
+
+        self.assertTrue(report["runtime"]["manifest_ok"])
+        self.assertTrue(report["trade_runtime"]["manifest_ok"])
+        self.assertTrue(report["read_ready"])
+        self.assertFalse(report["trade_ready"])
+        self.assertTrue(report["binding_key"]["valid"])
+        self.assertEqual(
+            report["action_required"],
+            "configure_execution_grant_consumer",
+        )
+        key_probe.assert_called_once_with()
+
+    def test_mcp_report_requires_profile_credentials_for_final_readiness(self) -> None:
+        store, key_probe = self._store(
+            state="unlocked",
+            key_status={"present": True, "valid": True, "length": 64, "fp_sha256": "b" * 16},
+            profile_ready=False,
+        )
+        with mock.patch.object(
+            doctor,
+            "_probe_local_mcp_runtime",
+            side_effect=self._runtime_probe(),
+        ), mock.patch.object(
+            doctor,
+            "_load_profile_store_module",
+            return_value=store,
+        ):
+            report = doctor.build_mcp_report("en")
+
+        self.assertTrue(report["read_contract_ready"])
+        self.assertFalse(report["profile_ready"])
+        self.assertFalse(report["read_ready"])
+        self.assertFalse(report["trade_ready"])
+        self.assertEqual(report["action_required"], "configure_profile_credentials")
+        key_probe.assert_called_once_with()
+
+    def test_mcp_report_keeps_read_contract_ready_when_dynamic_private_read_is_unavailable(self) -> None:
+        def probe(*, trade_enabled: bool = False):
+            status = self._runtime_status(trade_enabled=trade_enabled)
+            if not trade_enabled:
+                status["private_read_ready"] = False
+            return status
+
+        with mock.patch.object(
+            doctor,
+            "_probe_local_mcp_runtime",
+            side_effect=probe,
+        ), mock.patch.object(doctor, "_load_profile_store_module") as store_loader:
+            report = doctor.build_mcp_report("en")
+
+        self.assertTrue(report["read_contract_ready"])
+        self.assertFalse(report["read_runtime_ready"])
+        self.assertFalse(report["read_ready"])
+        self.assertEqual(report["action_required"], "repair_mcp_runtime")
+        store_loader.assert_not_called()
 
     def test_mcp_report_prioritizes_safe_package_action_and_handles_probe_exceptions(self) -> None:
         store, _ = self._store(
@@ -304,7 +424,7 @@ class DoctorMcpTests(unittest.TestCase):
         self.assertEqual(report["action_required"], "repair_mcp_runtime")
         store_loader.assert_not_called()
 
-    def test_mcp_report_requires_trade_on_contract_before_vault_probe(self) -> None:
+    def test_mcp_report_trade_contract_failure_does_not_block_read_path(self) -> None:
         store, key_probe = self._store(
             state="unlocked",
             key_status={"present": True, "valid": True, "length": 64, "fp_sha256": "b" * 16},
@@ -331,12 +451,14 @@ class DoctorMcpTests(unittest.TestCase):
 
         self.assertTrue(report["read_ready"])
         self.assertFalse(report["trade_ready"])
+        self.assertTrue(report["read_contract_ready"])
+        self.assertFalse(report["trade_contract_ready"])
         self.assertTrue(report["runtime"]["manifest_ok"])
         self.assertFalse(report["trade_runtime"]["manifest_ok"])
         self.assertEqual(report["action_required"], "repair_mcp_contract")
-        self.assertFalse(report["approval_key"]["valid"])
-        store_loader.assert_not_called()
-        key_probe.assert_not_called()
+        self.assertTrue(report["binding_key"]["valid"])
+        store_loader.assert_called_once_with()
+        key_probe.assert_called_once_with()
 
     def test_mcp_parser_has_no_fix_and_json_and_text_render_are_safe(self) -> None:
         parser = doctor.build_parser("en")
@@ -360,6 +482,7 @@ class DoctorMcpTests(unittest.TestCase):
         rendered = doctor.render_mcp_report("en", report)
         self.assertIn("Read ready", rendered)
         self.assertIn("Trade ready", rendered)
+        self.assertIn("Binding key", rendered)
 
         with mock.patch.object(doctor, "build_mcp_report", return_value=report):
             stream = io.StringIO()

@@ -245,7 +245,7 @@ class McpReadFacade:
         _validate_endpoint_contract(endpoint, operation)
         arguments = _map_arguments(operation, query=dict(query), body=dict(body))
         try:
-            payload = self._get_gateway().call_typed_tool(
+            wrapped = self._get_gateway().call_typed_tool(
                 str(operation["target"]["tool"]),
                 arguments,
             )
@@ -255,7 +255,15 @@ class McpReadFacade:
                 "status": None,
                 "error": {"code": exc.code, "message": exc.message},
             }
-        return _serialize_legacy_response(operation, payload)
+        unwrapped = _unwrap_gateway_result(wrapped)
+        if unwrapped is None:
+            return _compat_error("The WEEX MCP read result wrapper is invalid.")
+        payload, transport_meta = unwrapped
+        return _serialize_legacy_response(
+            operation,
+            payload,
+            transport_meta=transport_meta,
+        )
 
     def describe(
         self,
@@ -285,7 +293,7 @@ class McpReadFacade:
         _validate_endpoint_contract(endpoint, operation)
         arguments = _map_arguments(operation, query=dict(query), body=dict(body))
         try:
-            description = self._request_describer(
+            wrapped = self._request_describer(
                 name=str(operation["target"]["tool"]),
                 arguments=arguments,
                 effective_spot_base_url=self.settings.spot_base_url,
@@ -296,6 +304,7 @@ class McpReadFacade:
             )
         except McpGatewayError as exc:
             raise McpReadCompatibilityError(exc.code, exc.message) from exc
+        description = _unwrap_request_description(wrapped)
         if _request_description_contract_error(
             operation,
             description,
@@ -307,6 +316,45 @@ class McpReadFacade:
                 "The MCP request description does not match the verified legacy mapping.",
             )
         return description
+
+
+def _unwrap_gateway_result(
+    value: Any,
+) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    if not isinstance(value, dict) or set(value) != {
+        "structured_content",
+        "is_error",
+        "transport_meta",
+    }:
+        return None
+    payload = value.get("structured_content")
+    is_error = value.get("is_error")
+    transport_meta = value.get("transport_meta")
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("ok"), bool)
+        or not isinstance(is_error, bool)
+        or is_error is payload["ok"]
+        or (transport_meta is not None and not isinstance(transport_meta, dict))
+    ):
+        return None
+    return dict(payload), dict(transport_meta) if transport_meta is not None else None
+
+
+def _unwrap_request_description(value: Any) -> dict[str, Any] | None:
+    unwrapped = _unwrap_gateway_result(value)
+    if unwrapped is None:
+        return None
+    payload, transport_meta = unwrapped
+    result = payload.get("result")
+    request = result.get("request") if isinstance(result, dict) else None
+    if (
+        payload.get("ok") is not True
+        or transport_meta is not None
+        or not isinstance(request, dict)
+    ):
+        return None
+    return dict(request)
 
 
 def _request_description_contract_error(
@@ -498,6 +546,8 @@ def _encode_legacy_collection_value(value: Any) -> Any:
 def _serialize_legacy_response(
     operation: dict[str, Any],
     payload: Any,
+    *,
+    transport_meta: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
         return _compat_error("The WEEX MCP read result envelope is invalid.")
@@ -510,7 +560,9 @@ def _serialize_legacy_response(
             return _compat_error("The WEEX MCP read result does not match the legacy container.")
         return {
             "ok": True,
-            "status": _http_status(data) or _http_status(data.get("transport")),
+            "status": _http_status(transport_meta)
+            or _http_status(data)
+            or _http_status(data.get("transport")),
             "data": raw,
         }
 
@@ -518,7 +570,7 @@ def _serialize_legacy_response(
     if not isinstance(error, dict):
         return _compat_error("The WEEX MCP read error envelope is invalid.")
     details = error.get("details")
-    status = _http_status(details)
+    status = _http_status(transport_meta) or _http_status(details)
     if isinstance(details, dict) and "upstream_payload" in details:
         legacy_error = details["upstream_payload"]
     else:

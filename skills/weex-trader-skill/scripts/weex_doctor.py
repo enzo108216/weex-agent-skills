@@ -66,7 +66,7 @@ TEXTS = {
         "label_read_ready": "Read ready",
         "label_trade_ready": "Trade ready",
         "label_vault_state": "Vault state",
-        "label_approval_key": "Approval key",
+        "label_binding_key": "Binding key",
         "label_action_required": "Action required",
         "value_yes": "yes",
         "value_no": "no",
@@ -113,7 +113,7 @@ TEXTS = {
         "label_read_ready": "只读就绪",
         "label_trade_ready": "交易就绪",
         "label_vault_state": "Vault 状态",
-        "label_approval_key": "Approval key",
+        "label_binding_key": "Binding key",
         "label_action_required": "需要操作",
         "value_yes": "是",
         "value_no": "否",
@@ -350,13 +350,19 @@ def _failed_mcp_runtime_status(*, trade_enabled: bool) -> dict[str, Any]:
         "manifest_ok": False,
         "runtime_profile": "local_user",
         "trade_enabled": trade_enabled,
+        "manifest_version": None,
         "tool_contract_version": None,
         "manifest_digest": None,
+        "boundary_manifest_digest": None,
+        "boundary_contract_digest": None,
+        "private_read_ready": False,
+        "mutation_ready": False,
+        "runtime_action_required": [],
         "action_required": "repair_mcp_gateway",
     }
 
 
-def _empty_approval_key_status() -> dict[str, Any]:
+def _empty_binding_key_status() -> dict[str, Any]:
     return {
         "present": False,
         "valid": False,
@@ -365,9 +371,9 @@ def _empty_approval_key_status() -> dict[str, Any]:
     }
 
 
-def _safe_approval_key_status(raw: object) -> dict[str, Any]:
+def _safe_binding_key_status(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        return _empty_approval_key_status()
+        return _empty_binding_key_status()
     present = raw.get("present") is True
     raw_length = raw.get("length")
     length = raw_length if isinstance(raw_length, int) and not isinstance(raw_length, bool) and 0 <= raw_length <= 4096 else 0
@@ -418,7 +424,13 @@ def build_mcp_report(language: str) -> dict[str, Any]:
     except Exception:
         trade_runtime = _failed_mcp_runtime_status(trade_enabled=True)
 
-    read_ready = _mcp_runtime_ready(runtime, trade_enabled=False)
+    read_contract_ready = _mcp_runtime_ready(
+        runtime,
+        trade_enabled=False,
+    )
+    read_runtime_ready = bool(
+        read_contract_ready and runtime.get("private_read_ready") is True
+    )
     trade_contract_ready = _mcp_runtime_ready(
         trade_runtime,
         trade_enabled=True,
@@ -428,13 +440,15 @@ def build_mcp_report(language: str) -> dict[str, Any]:
         "state": "unavailable",
         "action_required": "repair",
     }
-    approval_key = _empty_approval_key_status()
+    binding_key = _empty_binding_key_status()
     action_required = runtime.get("action_required") or "repair_mcp_gateway"
+    profile_ready = False
+    read_ready = False
     trade_ready = False
 
-    if read_ready and not trade_contract_ready:
-        action_required = trade_runtime.get("action_required") or "repair_mcp_gateway"
-    elif read_ready:
+    if read_contract_ready and not read_runtime_ready:
+        action_required = "repair_mcp_runtime"
+    elif read_runtime_ready:
         action_required = None
         try:
             store = _load_profile_store_module()
@@ -467,23 +481,58 @@ def build_mcp_report(language: str) -> dict[str, Any]:
             action_required = "repair_vault"
         else:
             try:
-                approval_key = _safe_approval_key_status(
-                    store.local_mcp_approval_key_status()
+                binding_key = _safe_binding_key_status(
+                    store.local_mcp_binding_key_status()
                 )
             except Exception:
-                approval_key = _empty_approval_key_status()
+                binding_key = _empty_binding_key_status()
                 action_required = "repair_vault"
             else:
-                trade_ready = bool(approval_key["valid"])
-                action_required = (
-                    None if trade_ready else "provision_local_mcp_approval_key"
-                )
+                if not binding_key["valid"]:
+                    action_required = "provision_local_mcp_binding_key"
+                else:
+                    try:
+                        profile_id = store.get_default_profile_id()
+                        profile_ready = bool(
+                            isinstance(profile_id, str)
+                            and profile_id
+                            and store.profile_has_credentials_by_id(profile_id) is True
+                        )
+                    except Exception:
+                        action_required = "repair_vault"
+                    else:
+                        if not profile_ready:
+                            action_required = "configure_profile_credentials"
+                        else:
+                            read_ready = True
+                            if not trade_contract_ready:
+                                action_required = (
+                                    trade_runtime.get("action_required")
+                                    or "repair_mcp_gateway"
+                                )
+                            elif trade_runtime.get("mutation_ready") is not True:
+                                runtime_actions = trade_runtime.get(
+                                    "runtime_action_required"
+                                )
+                                action_required = (
+                                    runtime_actions[0]
+                                    if isinstance(runtime_actions, list)
+                                    and runtime_actions
+                                    else "repair_mcp_runtime"
+                                )
+                            else:
+                                trade_ready = True
+                                action_required = None
 
     return {
         "runtime": runtime,
         "trade_runtime": trade_runtime,
         "vault": vault,
-        "approval_key": approval_key,
+        "binding_key": binding_key,
+        "read_contract_ready": read_contract_ready,
+        "read_runtime_ready": read_runtime_ready,
+        "trade_contract_ready": trade_contract_ready,
+        "profile_ready": profile_ready,
         "read_ready": read_ready,
         "trade_ready": trade_ready,
         "action_required": action_required,
@@ -499,9 +548,9 @@ def render_mcp_report(language: str, payload: dict[str, Any]) -> str:
         if payload["read_ready"]
         else t(resolved_language, "value_not_ready")
     )
-    approval_label = (
+    binding_label = (
         t(resolved_language, "value_ready")
-        if payload["approval_key"]["valid"]
+        if payload["binding_key"]["valid"]
         else t(resolved_language, "value_not_ready")
     )
     action = payload["action_required"] or t(resolved_language, "value_none")
@@ -511,7 +560,7 @@ def render_mcp_report(language: str, payload: dict[str, Any]) -> str:
             f"{t(resolved_language, 'label_read_ready')}: {yes if payload['read_ready'] else no}",
             f"{t(resolved_language, 'label_trade_ready')}: {yes if payload['trade_ready'] else no}",
             f"{t(resolved_language, 'label_vault_state')}: {payload['vault']['state']}",
-            f"{t(resolved_language, 'label_approval_key')}: {approval_label}",
+            f"{t(resolved_language, 'label_binding_key')}: {binding_label}",
             f"{t(resolved_language, 'label_action_required')}: {action}",
         ]
     )

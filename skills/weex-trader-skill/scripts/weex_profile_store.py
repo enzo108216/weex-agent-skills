@@ -61,6 +61,9 @@ APPLICATION_SECRETS_FIELD = "application_secrets"
 LOCAL_MCP_APPROVAL_KEY_FIELD = "local_mcp_approval_key"
 LOCAL_MCP_APPROVAL_KEY_MIN_BYTES = 32
 LOCAL_MCP_APPROVAL_KEY_RANDOM_BYTES = 48
+LOCAL_MCP_BINDING_KEY_FIELD = "local_mcp_binding_key"
+LOCAL_MCP_BINDING_KEY_MIN_BYTES = 32
+LOCAL_MCP_BINDING_KEY_RANDOM_BYTES = 48
 FIELD_LABELS = {
     "api_key": "API Key",
     "api_secret": "Secret Key",
@@ -837,6 +840,69 @@ def local_mcp_approval_key_status() -> Dict[str, Any]:
             application_secrets[LOCAL_MCP_APPROVAL_KEY_FIELD]
         )
         encoded = approval_key.encode("utf-8")
+        return {
+            "present": True,
+            "valid": True,
+            "length": len(encoded),
+            "fp_sha256": sha256(encoded).hexdigest()[:16],
+        }
+
+
+def _validated_local_mcp_binding_key(value: Any) -> str:
+    if not isinstance(value, str) or len(value.encode("utf-8")) < LOCAL_MCP_BINDING_KEY_MIN_BYTES:
+        raise ProfileError("Invalid local MCP binding key in application vault")
+    return value
+
+
+def _new_local_mcp_binding_key() -> str:
+    return secrets.token_urlsafe(LOCAL_MCP_BINDING_KEY_RANDOM_BYTES)
+
+
+def get_or_create_local_mcp_binding_key() -> str:
+    with _vault_lock():
+        payload, key, config, salt = _load_unlocked_vault_payload()
+        application_secrets = _application_secrets(payload, create=True)
+        assert application_secrets is not None
+        if LOCAL_MCP_BINDING_KEY_FIELD in application_secrets:
+            return _validated_local_mcp_binding_key(
+                application_secrets[LOCAL_MCP_BINDING_KEY_FIELD]
+            )
+        binding_key = _new_local_mcp_binding_key()
+        application_secrets[LOCAL_MCP_BINDING_KEY_FIELD] = binding_key
+        _save_vault_file(_encrypt_vault_payload(payload, key, config, salt))
+        return binding_key
+
+
+def rotate_local_mcp_binding_key() -> str:
+    with _vault_lock():
+        payload, key, config, salt = _load_unlocked_vault_payload()
+        application_secrets = _application_secrets(payload, create=True)
+        assert application_secrets is not None
+        if LOCAL_MCP_BINDING_KEY_FIELD in application_secrets:
+            _validated_local_mcp_binding_key(
+                application_secrets[LOCAL_MCP_BINDING_KEY_FIELD]
+            )
+        binding_key = _new_local_mcp_binding_key()
+        application_secrets[LOCAL_MCP_BINDING_KEY_FIELD] = binding_key
+        _save_vault_file(_encrypt_vault_payload(payload, key, config, salt))
+        return binding_key
+
+
+def local_mcp_binding_key_status() -> Dict[str, Any]:
+    with _vault_lock():
+        payload, _, _, _ = _load_unlocked_vault_payload()
+        application_secrets = _application_secrets(payload, create=False)
+        if application_secrets is None or LOCAL_MCP_BINDING_KEY_FIELD not in application_secrets:
+            return {
+                "present": False,
+                "valid": False,
+                "length": 0,
+                "fp_sha256": None,
+            }
+        binding_key = _validated_local_mcp_binding_key(
+            application_secrets[LOCAL_MCP_BINDING_KEY_FIELD]
+        )
+        encoded = binding_key.encode("utf-8")
         return {
             "present": True,
             "valid": True,

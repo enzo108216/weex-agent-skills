@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import shutil
@@ -29,6 +30,13 @@ LOCAL_EVIDENCE_RELS = {
     "trade_facade": Path("scripts/weex_mcp_trade_compat.py"),
     "trade_golden": Path("tests/test_weex_mcp_trade_compat.py"),
 }
+PARTNER_EVIDENCE_RELS = {
+    "partner_field_catalog": Path("references/partner-field-catalog.json"),
+    "partner_output_schema": Path("references/partner-output-schema.md"),
+}
+APPROVED_SOURCE_EVIDENCE_NAMES = frozenset(
+    {*LOCAL_EVIDENCE_RELS, *PARTNER_EVIDENCE_RELS}
+)
 EXPECTED_COUNTS = {"read": 51, "write": 21, "partner": 7, "total": 79}
 EXPECTED_DIRECT_TOOLS = {
     "trade_place_order",
@@ -214,6 +222,21 @@ def canonical_digest(value: Any) -> str:
 
 def file_digest(path: Path) -> str:
     return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
+def _source_evidence_paths(skill_root: Path) -> dict[str, Path]:
+    paths = {
+        name: skill_root / relative
+        for name, relative in LOCAL_EVIDENCE_RELS.items()
+    }
+    partner_root = skill_root.parent / "weex-partner-skill"
+    paths.update(
+        {
+            name: partner_root / relative
+            for name, relative in PARTNER_EVIDENCE_RELS.items()
+        }
+    )
+    return paths
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -653,6 +676,7 @@ def validate_documents(
     contract: dict[str, Any],
     inventory: dict[str, Any],
     matrix: dict[str, Any],
+    verify_current_source_evidence: bool = False,
 ) -> dict[str, Any]:
     contract_body = dict(contract)
     stored_contract_digest = contract_body.pop("boundary_contract_digest", None)
@@ -689,10 +713,30 @@ def validate_documents(
         raise ValueError("matrix counts mismatch")
     if inventory.get("source_catalog_digests") != catalog_digests(skill_root):
         raise ValueError("source catalog digest mismatch")
-    for name, relative in LOCAL_EVIDENCE_RELS.items():
-        expected = inventory["source_evidence_digests"].get(name)
-        if expected != file_digest(skill_root / relative):
-            raise ValueError(f"source evidence digest mismatch: {name}")
+    inventory_source_evidence = inventory.get("source_evidence_digests")
+    contract_compatibility = contract.get("compatibility")
+    contract_source_evidence = (
+        contract_compatibility.get("source_evidence_digests")
+        if isinstance(contract_compatibility, dict)
+        else None
+    )
+    if (
+        not isinstance(inventory_source_evidence, dict)
+        or set(inventory_source_evidence) != APPROVED_SOURCE_EVIDENCE_NAMES
+        or contract_source_evidence != inventory_source_evidence
+        or any(
+            not isinstance(value, str)
+            or not value.startswith("sha256:")
+            or len(value) != 71
+            or any(character not in "0123456789abcdef" for character in value[7:])
+            for value in inventory_source_evidence.values()
+        )
+    ):
+        raise ValueError("historical source evidence digest mismatch")
+    if verify_current_source_evidence:
+        for name, path in _source_evidence_paths(skill_root).items():
+            if inventory_source_evidence[name] != file_digest(path):
+                raise ValueError(f"source evidence digest mismatch: {name}")
 
     actual_inventory_digest = canonical_digest(inventory_digest_body(inventory))
     if inventory.get("inventory_digest") != actual_inventory_digest:
@@ -832,15 +876,23 @@ def validate_documents(
         "boundary_contract_digest": stored_contract_digest,
         "inventory_digest": actual_inventory_digest,
         "matrix_digest": actual_matrix_digest,
+        "source_evidence_mode": (
+            "current" if verify_current_source_evidence else "historical"
+        ),
     }
 
 
-def validate_bundle(skill_root: Path = SKILL_ROOT) -> dict[str, Any]:
+def validate_bundle(
+    skill_root: Path = SKILL_ROOT,
+    *,
+    verify_current_source_evidence: bool = False,
+) -> dict[str, Any]:
     return validate_documents(
         skill_root=skill_root,
         contract=load_json(skill_root / CONTRACT_REL),
         inventory=load_json(skill_root / INVENTORY_REL),
         matrix=load_json(skill_root / MATRIX_REL),
+        verify_current_source_evidence=verify_current_source_evidence,
     )
 
 
@@ -859,9 +911,21 @@ def copy_validation_fixture(source_root: Path, target_root: Path) -> None:
         shutil.copy2(source_root / relative, destination)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Validate the tracked WEEX MCP boundary contract bundle."
+    )
+    parser.add_argument(
+        "--verify-current-source-evidence",
+        action="store_true",
+        help="Also compare approved historical source digests with the current implementation files.",
+    )
+    args = parser.parse_args(argv)
     try:
-        report = validate_bundle(SKILL_ROOT)
+        report = validate_bundle(
+            SKILL_ROOT,
+            verify_current_source_evidence=args.verify_current_source_evidence,
+        )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"MCP boundary contract validation failed: {exc}", file=sys.stderr)
         return 1

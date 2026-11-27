@@ -169,10 +169,11 @@
       ]
     },
     "scripts/validate_mcp_boundary_contract.py": {
-      "role": "Offline standard-library validator for the tracked MCP boundary contract, exact compatibility inventory and matrix, evidence digests, capability-specific target paths, and clean-bundle independence.",
+      "role": "Offline standard-library validator for the tracked MCP boundary contract, exact compatibility inventory and matrix, approved historical source-evidence bindings, capability-specific target paths, and clean-bundle independence.",
       "when": [
         "reviewing or changing any MCP boundary contract artifact",
-        "running repository consistency and candidate preflight checks"
+        "running repository consistency and candidate preflight checks",
+        "using --verify-current-source-evidence for an explicit drift audit against all ten current Trader and Partner source-evidence files"
       ],
       "depends_on": [
         "references/mcp-boundary-contract-v1.json",
@@ -183,6 +184,7 @@
       "surface": [
         "validate_bundle",
         "validate_documents",
+        "--verify-current-source-evidence",
         "copy_validation_fixture"
       ]
     },
@@ -203,29 +205,32 @@
       ]
     },
     "scripts/weex_mcp_gateway.py": {
-      "role": "Profile-bound embedded Local MCP boundary with verified package/manifest preflight, pure typed request description, safe runtime readiness, Vault-backed credential refs, approval-key binding, and strict typed-tool envelopes.",
+      "role": "Profile-bound embedded Local MCP v2 boundary with fixed artifact and static/dynamic preflight, trusted InvocationContext/CredentialBinding, Vault-backed resolution, host-private prepare, Direct grant context, and strict wrapper transport metadata.",
       "when": [
         "constructing a Local User MCP service for one profile, effective Spot/Futures route pair, and Trade mode",
-        "validating the verified MCP candidate package and compatibility manifest before a business request",
-        "calling an allowlisted typed MCP tool without exposing plaintext credentials or raw REST routing",
+        "validating the verified MCP artifact, active manifest, boundary static manifest, and dynamic availability before a business request",
+        "preparing one typed mutation without exposing a public preview tool or consuming a grant",
+        "calling an allowlisted typed MCP tool with credentials and grants supplied only through trusted context",
         "describing one typed request without constructing a service, loading credentials, signing, or sending network traffic",
         "probing package and manifest readiness without loading credentials or sending a business request"
       ],
       "depends_on": [
         "references/mcp-capability-mapping.json",
+        "references/mcp-boundary-contract-v1.json",
         "scripts/weex_profile_store.py"
       ],
       "surface": [
         "LocalMcpGateway",
         "VaultSecretProvider",
-        "McpGatewayError and strict structuredContent return",
+        "McpGatewayError and fixed structured_content/is_error/transport_meta wrapper",
         "describe_local_mcp_request",
+        "prepare_mutation",
         "runtime_status",
         "probe_local_mcp_runtime"
       ]
     },
     "scripts/weex_mcp_read_compat.py": {
-      "role": "Mapping-driven Contract/Spot read compatibility facade that preserves legacy routing precedence and JSON envelopes while calling verified Local MCP typed tools and the pure MCP request descriptor.",
+      "role": "Mapping-driven Contract/Spot read compatibility facade that unwraps the fixed Gateway result, preserves top-level transport status, and retains legacy routing precedence and JSON envelopes.",
       "when": [
         "mapping a legacy Contract or Spot read endpoint to a typed MCP tool",
         "resolving effective Spot/Futures origins, timeout, and locale for Local MCP reads",
@@ -243,7 +248,7 @@
       ]
     },
     "scripts/weex_mcp_trade_compat.py": {
-      "role": "Mapping-driven manual Trade preview/confirm and zero-network description facade that binds canonical legacy arguments, opaque MCP previews, stable profile/origin settings, and conservative mutation outcomes.",
+      "role": "Mapping-driven legacy manual Trade migration facade that unwraps the fixed Gateway result and transport status while retaining preview/confirm state until the universal intent migration completes.",
       "when": [
         "mapping a legacy Contract or Spot write endpoint to an MCP preview/confirm tool pair",
         "persisting a credential-free manual Trade preview for later confirmation",
@@ -261,7 +266,7 @@
       ]
     },
     "scripts/weex_mcp_partner_compat.py": {
-      "role": "Mapping-driven Partner compatibility facade that calls the seven Local MCP Partner tools and restores the legacy executor envelope without loading plaintext credentials.",
+      "role": "Mapping-driven Partner compatibility facade that unwraps the fixed Gateway result, restores top-level transport status/rate-limit metadata, and keeps environment validation in the Host.",
       "when": [
         "mapping one allowlisted Partner request to a typed Local MCP tool",
         "restoring Partner profile, environment, status, rate-limit, retry, data, and typed-error metadata",
@@ -294,13 +299,14 @@
       ]
     },
     "scripts/weex_profile_store.py": {
-      "role": "Shared profile metadata and application-vault backend, including the encrypted Local MCP approval key lifecycle.",
+      "role": "Shared profile metadata and application-vault backend, including the independent encrypted Local MCP binding key lifecycle and preserved deprecated approval key.",
       "when": [
         "profile resolution",
         "default profile behavior",
         "application vault debugging",
         "private auth credential loading",
-        "checking, provisioning, or explicitly rotating the encrypted Local MCP approval key"
+        "checking, provisioning, or explicitly rotating the encrypted Local MCP binding key",
+        "preserving or diagnosing the deprecated Local MCP approval key during migration"
       ],
       "surface": [
         "metadata load/save",
@@ -309,7 +315,10 @@
         "credential backend integration",
         "get_or_create_local_mcp_approval_key",
         "rotate_local_mcp_approval_key",
-        "local_mcp_approval_key_status"
+        "local_mcp_approval_key_status",
+        "get_or_create_local_mcp_binding_key",
+        "rotate_local_mcp_binding_key",
+        "local_mcp_binding_key_status"
       ]
     },
     "scripts/weex_agent_state.py": {
@@ -392,7 +401,7 @@
       ]
     },
     "scripts/weex_doctor.py": {
-      "role": "User-facing runtime doctor command for guided GUI repair and read-only Local MCP diagnostics.",
+      "role": "User-facing runtime doctor command for guided GUI repair and read-only Local MCP contract, dynamic availability, Vault, binding-key, and profile diagnostics.",
       "when": [
         "terminal-friendly troubleshooting",
         "one-command GUI diagnosis",

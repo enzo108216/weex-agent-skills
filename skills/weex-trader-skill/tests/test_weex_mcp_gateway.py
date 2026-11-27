@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import hmac
 import importlib.util
 import json
 import sys
@@ -20,10 +19,28 @@ MODULE_PATH = SCRIPTS / "weex_mcp_gateway.py"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+DIRECT_DIGEST = "sha256:" + "2" * 64
+LEGACY_DIGEST = "sha256:" + "3" * 64
+INVENTORY_DIGEST = "sha256:" + "4" * 64
+MATRIX_DIGEST = "sha256:" + "5" * 64
+SOURCE_CATALOG_DIGESTS = {
+    "contract": "sha256:" + "6" * 64,
+    "spot": "sha256:" + "7" * 64,
+    "partner": "sha256:" + "8" * 64,
+}
+VERSIONS = {
+    "package": "0.3.0",
+    "tool_contract": "2",
+    "manifest": "2",
+    "output": "1",
+    "prepare": "1",
+    "request_description": "2",
+    "transport_meta": "1",
+    "grant": "1",
+}
+
 
 def load_gateway_module():
-    if not MODULE_PATH.exists():
-        return None
     spec = importlib.util.spec_from_file_location("weex_mcp_gateway", MODULE_PATH)
     if spec is None or spec.loader is None:
         return None
@@ -44,60 +61,62 @@ def canonical_digest(value: object) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def credential_schema() -> dict[str, object]:
-    return {
-        "type": "object",
-        "properties": {
-            "type": {"const": "credential_ref"},
-            "key_id": {"type": "string"},
-            "ref": {"type": "string"},
-        },
-    }
-
-
 def tool_catalog(*, trade_enabled: bool) -> list[dict[str, object]]:
-    output_schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
-    tools: list[dict[str, object]] = [
-        {
-            "name": "market_get_symbol_price",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"market": {"type": "string"}, "symbol": {"type": "string"}},
-            },
-            "outputSchema": output_schema,
-        },
-        {
-            "name": "account_get_balance",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"credential": credential_schema()},
-            },
-            "outputSchema": output_schema,
-        },
-        {
-            "name": "partner_verify_referrals",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"credential": credential_schema()},
-            },
-            "outputSchema": output_schema,
-        },
-    ]
+    output_schema = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    tools: list[dict[str, object]] = []
+    for name, module in (
+        ("market_get_symbol_price", "market"),
+        ("account_get_balance", "account"),
+        ("partner_verify_referrals", "partner"),
+    ):
+        tools.append(
+            {
+                "name": name,
+                "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "market": {"type": "string"},
+                        "symbol": {"type": "string"},
+                    },
+                },
+                "outputSchema": copy.deepcopy(output_schema),
+                "annotations": {
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": True,
+                },
+                "_meta": {
+                    "com.weex/mcp": {"module": module, "permission": "NONE" if module == "market" else "USER_DATA"}
+                },
+            }
+        )
     if trade_enabled:
         tools.append(
             {
-                "name": "trade_preview_order",
+                "name": "trade_place_order",
                 "inputSchema": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
-                        "credential": credential_schema(),
-                        "delegated_authorization": {
-                            "type": "object",
-                            "properties": {"ref": {"type": "string"}},
-                        },
+                        "market": {"type": "string"},
+                        "symbol": {"type": "string"},
+                        "client_order_id": {"type": "string"},
                     },
                 },
-                "outputSchema": output_schema,
+                "outputSchema": copy.deepcopy(output_schema),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                    "idempotentHint": False,
+                    "openWorldHint": True,
+                },
+                "_meta": {"com.weex/mcp": {"module": "trade", "permission": "TRADE"}},
             }
         )
     return sorted(tools, key=lambda item: str(item["name"]))
@@ -106,26 +125,26 @@ def tool_catalog(*, trade_enabled: bool) -> list[dict[str, object]]:
 def build_manifest(tools: list[dict[str, object]], *, trade_enabled: bool) -> dict[str, object]:
     names = sorted(str(tool["name"]) for tool in tools)
     schemas = sorted(
-        (
+        [
             {
                 "name": tool["name"],
                 "inputSchema": tool["inputSchema"],
                 "outputSchema": tool["outputSchema"],
             }
             for tool in tools
-        ),
+        ],
         key=lambda item: str(item["name"]),
     )
     manifest: dict[str, object] = {
-        "manifest_version": 1,
-        "package_version": "0.2.0",
-        "tool_contract_version": "1",
+        "manifest_version": 2,
+        "package_version": "0.3.0",
+        "tool_contract_version": "2",
         "runtime_profile": "local_user",
         "trade_enabled": trade_enabled,
         "tools": names,
-        "credential_modes": ["credential_ref"],
-        "delegated_authorization": trade_enabled,
-        "modules": ["account", "market", "partner", *( ["trade"] if trade_enabled else [])],
+        "credential_modes": [],
+        "delegated_authorization": False,
+        "modules": ["account", "market", "partner", *(["trade"] if trade_enabled else [])],
         "tool_set_digest": canonical_digest(names),
         "schema_digest": canonical_digest(schemas),
     }
@@ -133,42 +152,123 @@ def build_manifest(tools: list[dict[str, object]], *, trade_enabled: bool) -> di
     return manifest
 
 
-def mapping_for(manifests: dict[bool, dict[str, object]]) -> dict[str, object]:
-    profiles: list[dict[str, object]] = []
-    for runtime_profile in ("broker_server", "local_user"):
-        for trade_enabled in (False, True):
-            if runtime_profile == "local_user":
-                manifest = manifests[trade_enabled]
-                profiles.append(
-                    {
-                        "runtime_profile": runtime_profile,
-                        "trade_enabled": trade_enabled,
-                        "tool_count": len(manifest["tools"]),
-                        "tool_set_digest": manifest["tool_set_digest"],
-                        "schema_digest": manifest["schema_digest"],
-                        "manifest_digest": manifest["manifest_digest"],
-                    }
-                )
-            else:
-                profiles.append(
-                    {
-                        "runtime_profile": runtime_profile,
-                        "trade_enabled": trade_enabled,
-                        "tool_count": 26 if not trade_enabled else 52,
-                        "tool_set_digest": f"sha256:{'1' if not trade_enabled else '2'}" + "0" * 63,
-                        "schema_digest": f"sha256:{'3' if not trade_enabled else '4'}" + "0" * 63,
-                        "manifest_digest": f"sha256:{'5' if not trade_enabled else '6'}" + "0" * 63,
-                    }
-                )
+def build_static_manifest(tools: list[dict[str, object]]) -> dict[str, object]:
+    projections = sorted(tools, key=lambda item: str(item["name"]))
+    manifest: dict[str, object] = {
+        "status": "CANDIDATE_NEEDS_RELEASE_OWNER",
+        "versions": dict(VERSIONS),
+        "package_version": "0.3.0",
+        "composition_kind": "local_user",
+        "tools": [item["name"] for item in projections],
+        "input_schema_digest": canonical_digest(
+            [{"name": item["name"], "schema": item["inputSchema"]} for item in projections]
+        ),
+        "output_schema_digest": canonical_digest(
+            [{"name": item["name"], "schema": item["outputSchema"]} for item in projections]
+        ),
+        "annotations_digest": canonical_digest(
+            [{"name": item["name"], "annotations": item["annotations"]} for item in projections]
+        ),
+        "tool_meta_digest": canonical_digest([{"name": item["name"], "_meta": item["_meta"]} for item in projections]),
+        "boundary_contract_digest": boundary_contract()["boundary_contract_digest"],
+        "direct_tools_digest": DIRECT_DIGEST,
+        "legacy_mapping_digest": LEGACY_DIGEST,
+        "inventory_digest": INVENTORY_DIGEST,
+        "matrix_digest": MATRIX_DIGEST,
+        "source_catalog_digests": dict(SOURCE_CATALOG_DIGESTS),
+        "credential_binding_version": 1,
+        "grant_consumer_version": 1,
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest)
+    return manifest
+
+
+def availability(
+    tools: list[dict[str, object]], *, trade_enabled: bool, mutation_ready: bool = False
+) -> dict[str, object]:
+    actions = [] if not trade_enabled or mutation_ready else ["configure_execution_grant_consumer"]
+    return {
+        "effective_tools": [tool["name"] for tool in tools],
+        "private_read_ready": True,
+        "mutation_ready": bool(trade_enabled and mutation_ready),
+        "action_required": actions,
+    }
+
+
+def mapping_for(
+    manifests: dict[bool, dict[str, object]],
+    statics: dict[bool, dict[str, object]],
+) -> dict[str, object]:
+    profiles = []
+    for trade_enabled in (False, True):
+        manifest = manifests[trade_enabled]
+        profiles.append(
+            {
+                "runtime_profile": "local_user",
+                "trade_enabled": trade_enabled,
+                "tool_count": len(manifest["tools"]),
+                "tool_set_digest": manifest["tool_set_digest"],
+                "schema_digest": manifest["schema_digest"],
+                "manifest_digest": manifest["manifest_digest"],
+                "boundary_static_manifest_digest": statics[trade_enabled]["manifest_digest"],
+            }
+        )
     return {
         "schema_version": 1,
         "mapping_version": "trader-mcp-capability-v2",
         "verified_mcp_candidate": {
-            "package_version": "0.2.0",
-            "tool_contract_version": "1",
+            "official_repository": "https://github.com/weex-labs/weex-mcp",
+            "package_version": "0.3.0",
+            "tool_contract_version": "2",
+            "manifest_version": 2,
+            "source_commit": "5c2a439b916b3095974fa0b94a425fb7c77d93ec",
+            "publication_status": "unpublished",
+            "distribution_sha256": {"wheel": "a" * 64, "sdist": "b" * 64},
+            "versions": dict(VERSIONS),
+            "boundary_contract_digest": boundary_contract()["boundary_contract_digest"],
+            "direct_tools_digest": DIRECT_DIGEST,
+            "legacy_mapping_digest": LEGACY_DIGEST,
+            "inventory_digest": INVENTORY_DIGEST,
+            "matrix_digest": MATRIX_DIGEST,
+            "source_catalog_digests": dict(SOURCE_CATALOG_DIGESTS),
             "compatibility_profiles": profiles,
         },
     }
+
+
+def boundary_contract() -> dict[str, object]:
+    body: dict[str, object] = {
+        "candidate_versions": {**VERSIONS, "intent": "2", "status": "CANDIDATE_NEEDS_RELEASE_OWNER"},
+        "direct_tools_digest": DIRECT_DIGEST,
+        "compatibility": {
+            "legacy_mapping_digest": LEGACY_DIGEST,
+            "inventory_digest": INVENTORY_DIGEST,
+            "matrix_digest": MATRIX_DIGEST,
+            "source_catalog_digests": dict(SOURCE_CATALOG_DIGESTS),
+        },
+        "permissions": {
+            "account": {
+                "account_get_balance/spot": {
+                    "host_policy_capability": "account.spot.get_balance",
+                    "openapi_truth": "accountDetails",
+                }
+            },
+            "market": {},
+            "partner": {
+                "partner_verify_referrals": {
+                    "host_policy_capability": "partner.read.verify_referrals",
+                    "openapi_truth": "accountDetails",
+                }
+            },
+            "trade": {
+                "trade_place_order/spot": {
+                    "host_policy_capability": "trade.spot.place_order",
+                    "required_upstream_evidence": ["spotTrading"],
+                }
+            },
+        },
+    }
+    return {"boundary_contract_digest": canonical_digest(body), **body}
 
 
 class FakeSecretProviderError(ValueError):
@@ -178,19 +278,50 @@ class FakeSecretProviderError(ValueError):
         self.message = message
 
 
-class FakeExecutionAuthorizationError(ValueError):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
+@dataclass(frozen=True)
+class FakePrincipal:
+    principal_id: str
+    tenant_id: str
+    authn_method: str
+    authenticated_at: int
+    trust_level: str
 
 
 @dataclass(frozen=True)
-class FakeVerifiedExecutionAuthorization:
-    authorization_id: str
-    scope_fingerprint: str
-    expires_at: int
-    audit_metadata: dict[str, object]
+class FakeAccountBinding:
+    account_binding_id: str
+    profile_id: str
+    allowed_markets: frozenset[str]
+    route_fingerprint: str
+
+
+@dataclass(frozen=True)
+class FakeCredentialBinding:
+    binding_id: str
+    credential_fingerprint: str
+    host_policy_capabilities: frozenset[str]
+    upstream_permission_evidence: dict[str, str]
+    valid_until: int | None
+
+
+@dataclass(frozen=True)
+class FakeCorrelation:
+    request_id: str
+    session_id: str = ""
+
+
+@dataclass(frozen=True)
+class FakeExecutionGrant:
+    grant_id: str
+
+
+@dataclass(frozen=True)
+class FakeInvocationContext:
+    principal: FakePrincipal
+    account_binding: FakeAccountBinding | None
+    credential_binding: FakeCredentialBinding | None
+    execution_grant: FakeExecutionGrant | None
+    correlation: FakeCorrelation
 
 
 @dataclass(frozen=True)
@@ -201,14 +332,7 @@ class FakeResolvedCredential:
     api_passphrase: str
     permissions: frozenset[str]
     fingerprint: str
-
-
-@dataclass(frozen=True)
-class FakeTenantContext:
-    tenant_id: str
-    user_id: str
-    session_id: str
-    request_id: str = "request"
+    valid_until: int | None
 
 
 class FakeSettings:
@@ -216,33 +340,59 @@ class FakeSettings:
         self.__dict__.update(kwargs)
 
 
+class FakePrepared:
+    def __init__(self, *, tool_name: str):
+        self.tool_name = tool_name
+
+    def to_dict(self):
+        return {
+            "version": 1,
+            "tool_name": self.tool_name,
+            "prepared_artifact_digest": "sha256:" + "d" * 64,
+            "execution_binding_digest": "sha256:" + "e" * 64,
+        }
+
+
 class FakeService:
-    def __init__(self, *, tools: list[dict[str, object]], manifest: dict[str, object], secret_provider):
+    def __init__(
+        self,
+        *,
+        tools: list[dict[str, object]],
+        manifest: dict[str, object],
+        static_manifest: dict[str, object],
+        runtime_availability: dict[str, object],
+    ):
         self.tools = copy.deepcopy(tools)
         self.manifest = copy.deepcopy(manifest)
-        self.secret_provider = secret_provider
-        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.static_manifest = copy.deepcopy(static_manifest)
+        self.runtime_availability = copy.deepcopy(runtime_availability)
+        self.calls: list[tuple[str, dict[str, object], object]] = []
+        self.prepares: list[tuple[str, dict[str, object], object]] = []
         self.tool_handler = None
+
+    def prepare_mutation(self, *, tool_name, arguments, invocation_context):
+        self.prepares.append((tool_name, copy.deepcopy(arguments), invocation_context))
+        return FakePrepared(tool_name=tool_name)
 
     def handle_jsonrpc(self, request, *, context=None):
         method = request.get("method")
-        self.calls.append((str(method), copy.deepcopy(request)))
+        self.calls.append((str(method), copy.deepcopy(request), context))
         if method == "server/discover":
             return {
                 "jsonrpc": "2.0",
                 "id": request["id"],
                 "result": {
                     "_meta": {
-                        "com.weex/mcp": {"compatibility": copy.deepcopy(self.manifest)}
+                        "com.weex/mcp": {
+                            "compatibility": copy.deepcopy(self.manifest),
+                            "boundaryStaticManifest": copy.deepcopy(self.static_manifest),
+                            "runtimeAvailability": copy.deepcopy(self.runtime_availability),
+                        }
                     }
                 },
             }
         if method == "tools/list":
-            return {
-                "jsonrpc": "2.0",
-                "id": request["id"],
-                "result": {"tools": copy.deepcopy(self.tools)},
-            }
+            return {"jsonrpc": "2.0", "id": request["id"], "result": {"tools": copy.deepcopy(self.tools)}}
         if method == "tools/call":
             if self.tool_handler is not None:
                 return self.tool_handler(request, context)
@@ -254,35 +404,43 @@ class FakeService:
                     "structuredContent": payload,
                     "content": [{"type": "text", "text": "ignored"}],
                     "isError": False,
+                    "_meta": {
+                        "com.weex/transport": {
+                            "version": 1,
+                            "request_id": "upstream-request",
+                            "attempt_count": 1,
+                            "http_status": 200,
+                        }
+                    },
                 },
             }
         raise AssertionError(method)
 
 
-def fake_runtime(service: FakeService, *, package_version: str = "0.2.0"):
+def fake_runtime(service: FakeService, *, package_version: str = "0.3.0"):
     def build_local_user_service(**kwargs):
-        service.secret_provider = kwargs["secret_provider"]
         service.settings = kwargs["settings"]
-        service.execution_authorizer = kwargs.get("execution_authorizer")
+        service.secret_provider = kwargs["secret_provider"]
+        service.grant_consumer = kwargs.get("grant_consumer")
         return service
 
     def describe_request(*, settings, name, arguments):
         trade_enabled = bool(getattr(settings, "trade_enabled", False))
-        private = name.startswith("account_") or name.startswith("trade_preview_")
+        private = name.startswith(("account_", "partner_", "trade_"))
         return {
-            "method": "POST" if name.startswith("trade_preview_") else "GET",
+            "method": "POST" if name.startswith("trade_") else "GET",
             "url": "https://api-spot.weex.com/description",
             "headers": {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "locale": "en-US",
-                "User-Agent": "weex-mcp/0.1 trade",
+                "User-Agent": "weex-mcp/0.3",
                 **(
                     {
-                    "ACCESS-KEY": "***",
-                    "ACCESS-PASSPHRASE": "***",
-                    "ACCESS-TIMESTAMP": "<generated-at-send>",
-                    "ACCESS-SIGN": "***",
+                        "ACCESS-KEY": "***",
+                        "ACCESS-PASSPHRASE": "***",
+                        "ACCESS-TIMESTAMP": "<generated-at-send>",
+                        "ACCESS-SIGN": "***",
                     }
                     if private
                     else {}
@@ -305,1179 +463,706 @@ def fake_runtime(service: FakeService, *, package_version: str = "0.2.0"):
         build_local_user_service=build_local_user_service,
         describe_request=describe_request,
         Settings=FakeSettings,
-        TenantContext=FakeTenantContext,
+        VerifiedPrincipal=FakePrincipal,
+        AccountBinding=FakeAccountBinding,
+        CredentialBinding=FakeCredentialBinding,
+        CorrelationContext=FakeCorrelation,
+        AuthenticatedInvocationContext=FakeInvocationContext,
         ResolvedWeexCredential=FakeResolvedCredential,
         SecretProviderError=FakeSecretProviderError,
-        ExecutionAuthorizationError=FakeExecutionAuthorizationError,
-        VerifiedExecutionAuthorization=FakeVerifiedExecutionAuthorization,
+        ExecutionGrant=FakeExecutionGrant,
     )
 
 
 class GatewayFixture(unittest.TestCase):
     def setUp(self) -> None:
-        self.gateway = load_gateway_module()
-        self.assertIsNotNone(
-            self.gateway,
-            "weex_mcp_gateway.py is missing; expected T4B RED.",
-        )
+        self.gateway_module = load_gateway_module()
+        self.assertIsNotNone(self.gateway_module)
         self.credentials = SimpleNamespace(
             api_key="AK_ONE",
             api_secret="SK_ONE",
             api_passphrase="PP_ONE",
         )
         self.credential_loads: list[str] = []
-        self.profile_loads: list[str] = []
-        self.approval_key = "approval-key-" + "a" * 48
-        self.approval_status = {
+        self.binding_key = "binding-key-" + "b" * 48
+        self.binding_status = {
             "present": True,
             "valid": True,
-            "length": len(self.approval_key),
-            "fp_sha256": hashlib.sha256(self.approval_key.encode()).hexdigest()[:16],
+            "length": len(self.binding_key),
+            "fp_sha256": hashlib.sha256(self.binding_key.encode()).hexdigest()[:16],
         }
 
     def credential_loader(self, profile_id: str):
         self.credential_loads.append(profile_id)
         return self.credentials
 
-    def profile_loader(self, profile_id: str):
-        self.profile_loads.append(profile_id)
-        return SimpleNamespace(profile_id=profile_id, name="renamed-profile")
+    @staticmethod
+    def profile_loader(profile_id: str):
+        return SimpleNamespace(profile_id=profile_id, name="main")
 
     def make_gateway(
         self,
         *,
         trade_enabled: bool,
         profile_id: str | None = "profile-a",
+        mutation_ready: bool = False,
+        grant_consumer=None,
+        boundary_contract_loader=boundary_contract,
         effective_spot_base_url: str = "https://api-spot.weex.com",
         effective_futures_base_url: str = "https://api-contract.weex.com",
-        delegated_authorizer=None,
+        timeout_seconds: float = 15.0,
+        request_locale: str = "en-US",
     ):
-        tools = tool_catalog(trade_enabled=trade_enabled)
-        manifest = build_manifest(tools, trade_enabled=trade_enabled)
-        manifests = {
-            False: build_manifest(tool_catalog(trade_enabled=False), trade_enabled=False),
-            True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
-        }
-        service = FakeService(tools=tools, manifest=manifest, secret_provider=None)
-        gateway = self.gateway.LocalMcpGateway(
+        tools_by_mode = {flag: tool_catalog(trade_enabled=flag) for flag in (False, True)}
+        manifests = {flag: build_manifest(tools_by_mode[flag], trade_enabled=flag) for flag in (False, True)}
+        statics = {flag: build_static_manifest(tools_by_mode[flag]) for flag in (False, True)}
+        active_tools = tools_by_mode[trade_enabled]
+        service = FakeService(
+            tools=active_tools,
+            manifest=manifests[trade_enabled],
+            static_manifest=statics[trade_enabled],
+            runtime_availability=availability(
+                active_tools,
+                trade_enabled=trade_enabled,
+                mutation_ready=mutation_ready,
+            ),
+        )
+        gateway = self.gateway_module.LocalMcpGateway(
             profile_id=profile_id,
             effective_spot_base_url=effective_spot_base_url,
             effective_futures_base_url=effective_futures_base_url,
             trade_enabled=trade_enabled,
-            timeout_seconds=15.0,
-            runtime_loader=lambda _expected_version: fake_runtime(service),
-            mapping_loader=lambda: mapping_for(manifests),
+            timeout_seconds=timeout_seconds,
+            request_locale=request_locale,
+            runtime_loader=lambda _expected: fake_runtime(service),
+            mapping_loader=lambda: mapping_for(manifests, statics),
+            boundary_contract_loader=boundary_contract_loader,
             profile_loader=self.profile_loader,
             credential_loader=self.credential_loader,
-            approval_key_loader=lambda: self.approval_key,
-            approval_key_status_loader=lambda: dict(self.approval_status),
-            delegated_authorizer=delegated_authorizer,
+            binding_key_loader=lambda: self.binding_key,
+            binding_key_status_loader=lambda: dict(self.binding_status),
+            grant_consumer=grant_consumer,
         )
         return gateway, service
 
 
 class VaultSecretProviderTests(GatewayFixture):
-    def test_provider_accepts_legacy_non_ascii_profile_id(self) -> None:
-        runtime = fake_runtime(FakeService(tools=[], manifest={}, secret_provider=None))
-        loaded: list[str] = []
-        credentials = SimpleNamespace(
-            api_key="AK_ONE",
-            api_secret="SK_ONE",
-            api_passphrase="PP_ONE",
-        )
-        provider = self.gateway.VaultSecretProvider(
-            profile_id="中文账户",
-            bound_ref="ref-bound",
-            expected_user_id="中文账户",
-            fingerprint_key=b"f" * 32,
-            credential_loader=lambda profile_id: loaded.append(profile_id) or credentials,
-            runtime=runtime,
-        )
-
-        resolved = provider.resolve(
-            credential_argument={
-                "type": "credential_ref",
-                "key_id": "中文账户",
-                "ref": "ref-bound",
-            },
-            context=FakeTenantContext("local", "中文账户", "session"),
-            required_permission="USER_DATA",
-        )
-
-        self.assertEqual(loaded, ["中文账户"])
-        self.assertEqual(resolved.key_id, "中文账户")
-        self.assertNotIn("中文账户", resolved.fingerprint)
-
-    def test_provider_rejects_binding_context_and_permission_before_loading(self) -> None:
+    def make_provider(self, *, profile_id: str = "profile-a"):
         runtime = fake_runtime(
             FakeService(
                 tools=[],
                 manifest={},
-                secret_provider=None,
+                static_manifest={},
+                runtime_availability={},
             )
         )
-        provider = self.gateway.VaultSecretProvider(
-            profile_id="profile-a",
-            bound_ref="ref-bound",
-            expected_user_id="profile-a",
+        return self.gateway_module.VaultSecretProvider(
+            profile_id=profile_id,
+            account_binding_id="account-binding",
+            binding_id="credential-binding",
             fingerprint_key=b"f" * 32,
             credential_loader=self.credential_loader,
             runtime=runtime,
+        ), runtime
+
+    def context(self, runtime, *, profile_id: str = "profile-a", capabilities=None):
+        provider, _ = self.make_provider(profile_id=profile_id)
+        fingerprint = provider._current_credential_fingerprint()
+        capabilities = frozenset(capabilities or {"account.spot.get_balance"})
+        return runtime.AuthenticatedInvocationContext(
+            principal=runtime.VerifiedPrincipal("principal", "tenant", "local", 1, "local_process"),
+            account_binding=runtime.AccountBinding(
+                "account-binding",
+                profile_id,
+                frozenset({"spot", "futures"}),
+                "sha256:" + "a" * 64,
+            ),
+            credential_binding=runtime.CredentialBinding(
+                "credential-binding",
+                fingerprint,
+                capabilities,
+                {"accountDetails": "unverified"},
+                None,
+            ),
+            execution_grant=None,
+            correlation=runtime.CorrelationContext("request", "session"),
         )
-        context = FakeTenantContext("local", "profile-a", "session")
-        valid = {"type": "credential_ref", "key_id": "profile-a", "ref": "ref-bound"}
-        invalid = (
-            ({**valid, "type": "plaintext"}, context, "USER_DATA"),
-            ({**valid, "key_id": "profile-b"}, context, "USER_DATA"),
-            ({**valid, "ref": "other-ref"}, context, "USER_DATA"),
-            (valid, FakeTenantContext("local", "profile-b", "session"), "USER_DATA"),
-            (valid, context, "ADMIN"),
+
+    def test_provider_resolves_from_trusted_context_without_public_credential_argument(self) -> None:
+        provider, runtime = self.make_provider(profile_id="配置一")
+        context = self.context(runtime, profile_id="配置一")
+
+        resolved = provider.resolve(
+            invocation_context=context,
+            required_capabilities=frozenset({"account.spot.get_balance", "accountDetails"}),
         )
-        for arguments, active_context, permission in invalid:
-            with self.subTest(arguments=arguments, permission=permission):
-                with self.assertRaises(FakeSecretProviderError):
+
+        self.assertEqual(resolved.api_key, "AK_ONE")
+        self.assertEqual(resolved.fingerprint, context.credential_binding.credential_fingerprint)
+        self.assertEqual(resolved.valid_until, None)
+        self.assertEqual(resolved.permissions, frozenset())
+
+    def test_provider_rejects_profile_binding_capability_and_fingerprint_drift(self) -> None:
+        provider, runtime = self.make_provider()
+        valid = self.context(runtime)
+        cases = (
+            runtime.AuthenticatedInvocationContext(
+                valid.principal,
+                runtime.AccountBinding("account-binding", "other", frozenset({"spot"}), "sha256:" + "a" * 64),
+                valid.credential_binding,
+                None,
+                valid.correlation,
+            ),
+            runtime.AuthenticatedInvocationContext(
+                valid.principal,
+                valid.account_binding,
+                runtime.CredentialBinding(
+                    "credential-binding",
+                    valid.credential_binding.credential_fingerprint,
+                    frozenset(),
+                    {"accountDetails": "unverified"},
+                    None,
+                ),
+                None,
+                valid.correlation,
+            ),
+            runtime.AuthenticatedInvocationContext(
+                valid.principal,
+                valid.account_binding,
+                runtime.CredentialBinding(
+                    "credential-binding",
+                    "stale",
+                    valid.credential_binding.host_policy_capabilities,
+                    {"accountDetails": "unverified"},
+                    None,
+                ),
+                None,
+                valid.correlation,
+            ),
+        )
+        for context in cases:
+            with self.subTest(context=context):
+                before = len(self.credential_loads)
+                with self.assertRaises(runtime.SecretProviderError):
                     provider.resolve(
-                        credential_argument=arguments,
-                        context=active_context,
-                        required_permission=permission,
+                        invocation_context=context,
+                        required_capabilities=frozenset({"account.spot.get_balance"}),
                     )
-        self.assertEqual(self.credential_loads, [])
+                self.assertLessEqual(len(self.credential_loads) - before, 1)
 
-    def test_provider_loads_each_time_and_fingerprint_binds_full_secret_tuple(self) -> None:
-        runtime = fake_runtime(FakeService(tools=[], manifest={}, secret_provider=None))
-        provider = self.gateway.VaultSecretProvider(
-            profile_id="profile-a",
-            bound_ref="ref-bound",
-            expected_user_id="profile-a",
-            fingerprint_key=b"f" * 32,
-            credential_loader=self.credential_loader,
-            runtime=runtime,
-        )
-        arguments = {"type": "credential_ref", "key_id": "profile-a", "ref": "ref-bound"}
-        context = FakeTenantContext("local", "profile-a", "session")
-
-        first = provider.resolve(
-            credential_argument=arguments,
-            context=context,
-            required_permission="USER_DATA",
-        )
+    def test_provider_reloads_credentials_and_rotation_changes_fingerprint(self) -> None:
+        provider, _runtime = self.make_provider()
+        first = provider._current_credential_fingerprint()
         self.credentials = SimpleNamespace(
-            api_key="AK_ONE",
+            api_key="AK_TWO",
             api_secret="SK_TWO",
-            api_passphrase="PP_ONE",
+            api_passphrase="PP_TWO",
         )
-        second = provider.resolve(
-            credential_argument=arguments,
-            context=context,
-            required_permission="TRADE",
-        )
+        second = provider._current_credential_fingerprint()
+        self.assertNotEqual(first, second)
+        self.assertGreaterEqual(len(self.credential_loads), 2)
 
-        self.assertEqual(self.credential_loads, ["profile-a", "profile-a"])
-        self.assertNotEqual(first.fingerprint, second.fingerprint)
-        self.assertEqual(first.permissions, frozenset({"USER_DATA", "TRADE"}))
-        canonical = json.dumps(
-            {
-                "profile_id": "profile-a",
-                "key_id": "profile-a",
-                "api_key": "AK_ONE",
-                "api_secret": "SK_ONE",
-                "api_passphrase": "PP_ONE",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        expected = "fp_" + hmac.new(
-            b"f" * 32,
-            b"weex-trader-vault-credential-v1\0" + canonical,
-            hashlib.sha256,
-        ).hexdigest()[:32]
-        self.assertEqual(first.fingerprint, expected)
-        self.assertNotIn("profile-a", first.fingerprint)
-        self.assertNotIn("SK_ONE", first.fingerprint)
-        self.assertEqual(first.api_secret, "SK_ONE")
-
-    def test_provider_maps_loader_failures_to_safe_existing_codes(self) -> None:
-        runtime = fake_runtime(FakeService(tools=[], manifest={}, secret_provider=None))
-
-        def broken_loader(_profile_id: str):
-            raise RuntimeError("profile-a ref-secret AK_LEAK")
-
-        provider = self.gateway.VaultSecretProvider(
-            profile_id="profile-a",
-            bound_ref="ref-bound",
-            expected_user_id="profile-a",
-            fingerprint_key=b"f" * 32,
-            credential_loader=broken_loader,
-            runtime=runtime,
-        )
-        with self.assertRaises(FakeSecretProviderError) as ctx:
-            provider.resolve(
-                credential_argument={
-                    "type": "credential_ref",
-                    "key_id": "profile-a",
-                    "ref": "ref-bound",
-                },
-                context=FakeTenantContext("local", "profile-a", "session"),
-                required_permission="USER_DATA",
-            )
-        self.assertIn(ctx.exception.code, {
-            "secret_provider_unconfigured",
-            "credential_invalid",
-            "credential_ref_not_found",
-            "permission_denied",
-        })
-        self.assertNotIn("profile-a", str(ctx.exception))
-        self.assertNotIn("AK_LEAK", str(ctx.exception))
+    def test_provider_loader_failure_is_safe(self) -> None:
+        provider, runtime = self.make_provider()
+        provider._credential_loader = lambda _profile: (_ for _ in ()).throw(RuntimeError("SK_LEAK /private/vault"))
+        with self.assertRaises(runtime.SecretProviderError) as caught:
+            provider._current_credential_fingerprint()
+        self.assertEqual(caught.exception.code, "secret_provider_unconfigured")
+        self.assertNotIn("SK_LEAK", str(caught.exception))
 
 
 class LocalMcpGatewayTests(GatewayFixture):
-    def test_request_description_uses_pure_runtime_without_service_or_private_state(self) -> None:
-        manifests = {
-            False: build_manifest(
-                tool_catalog(trade_enabled=False),
-                trade_enabled=False,
-            ),
-            True: build_manifest(
-                tool_catalog(trade_enabled=True),
-                trade_enabled=True,
-            ),
-        }
-        runtime = fake_runtime(
-            FakeService(
-                tools=tool_catalog(trade_enabled=True),
-                manifest=manifests[True],
-                secret_provider=None,
-            )
-        )
-        runtime.build_local_user_service = mock.Mock(
-            side_effect=AssertionError("request description must not build a service")
-        )
-
-        with (
-            mock.patch.object(
-                self.gateway,
-                "_default_profile_loader",
-                side_effect=AssertionError("profile loader must not run"),
-            ),
-            mock.patch.object(
-                self.gateway,
-                "_default_credential_loader",
-                side_effect=AssertionError("credential loader must not run"),
-            ),
-            mock.patch.object(
-                self.gateway,
-                "_default_approval_key_loader",
-                side_effect=AssertionError("approval loader must not run"),
-            ),
-        ):
-            description = self.gateway.describe_local_mcp_request(
-                name="trade_preview_order",
-                arguments={
-                    "market": "spot",
-                    "trading_mode": "live",
-                    "symbol": "BTCUSDT",
-                },
-                effective_spot_base_url="https://api-spot.weex.com",
-                effective_futures_base_url="https://api-contract.weex.com",
-                trade_enabled=True,
-                timeout_seconds=15.0,
-                request_locale="zh-CN",
-                runtime_loader=lambda _expected: runtime,
-                mapping_loader=lambda: mapping_for(manifests),
-            )
-
-        self.assertEqual(description["method"], "POST")
-        runtime.build_local_user_service.assert_not_called()
-        self.assertEqual(self.profile_loads, [])
-        self.assertEqual(self.credential_loads, [])
-
-    def test_request_description_rejects_origin_and_auth_placeholder_drift(self) -> None:
-        manifests = {
-            False: build_manifest(
-                tool_catalog(trade_enabled=False),
-                trade_enabled=False,
-            ),
-            True: build_manifest(
-                tool_catalog(trade_enabled=True),
-                trade_enabled=True,
-            ),
-        }
-        for mutation in ("origin", "signature", "duplicate_signature", "extra_header"):
-            with self.subTest(mutation=mutation):
-                runtime = fake_runtime(
-                    FakeService(
-                        tools=tool_catalog(trade_enabled=True),
-                        manifest=manifests[True],
-                        secret_provider=None,
-                    )
-                )
-                original = runtime.describe_request
-
-                def describe_request(**kwargs):
-                    value = original(**kwargs)
-                    if mutation == "origin":
-                        value["url"] = "https://evil.example/description"
-                    elif mutation == "signature":
-                        value["headers"]["ACCESS-SIGN"] = "real-signature"
-                    elif mutation == "duplicate_signature":
-                        value["headers"]["access-sign"] = "real-signature"
-                    else:
-                        value["headers"]["X-Debug"] = "private-value"
-                    return value
-
-                runtime.describe_request = describe_request
-                with self.assertRaises(self.gateway.McpGatewayError) as exc_info:
-                    self.gateway.describe_local_mcp_request(
-                        name="trade_preview_order",
-                        arguments={"market": "spot"},
-                        effective_spot_base_url="https://api-spot.weex.com",
-                        effective_futures_base_url="https://api-contract.weex.com",
-                        trade_enabled=True,
-                        timeout_seconds=15.0,
-                        runtime_loader=lambda _expected: runtime,
-                        mapping_loader=lambda: mapping_for(manifests),
-                    )
-                self.assertEqual(exc_info.exception.code, "mcp_contract_mismatch")
-
-    def test_gateway_ref_is_instance_unique_but_approval_and_credential_fingerprint_are_stable(self) -> None:
-        first, first_service = self.make_gateway(trade_enabled=True)
-        second, second_service = self.make_gateway(trade_enabled=True)
-        captured: dict[str, dict[str, object]] = {}
-
-        def handler(label):
-            def capture(request, context):
-                captured[label] = copy.deepcopy(request["params"]["arguments"]["credential"])
-                payload = {"ok": True, "data": {}}
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request["id"],
-                    "result": {"structuredContent": payload, "isError": False},
-                }
-
-            return capture
-
-        first_service.tool_handler = handler("first")
-        second_service.tool_handler = handler("second")
-        first.call_typed_tool(
-            "account_get_balance",
-            {"market": "spot", "trading_mode": "live"},
-        )
-        second.call_typed_tool(
-            "account_get_balance",
-            {"market": "spot", "trading_mode": "live"},
-        )
-
-        self.assertNotEqual(captured["first"]["ref"], captured["second"]["ref"])
-        self.assertEqual(
-            first_service.settings.approval_token_secret,
-            second_service.settings.approval_token_secret,
-        )
-        first_resolved = first_service.secret_provider.resolve(
-            credential_argument=captured["first"],
-            context=first._context(),
-            required_permission="USER_DATA",
-        )
-        second_resolved = second_service.secret_provider.resolve(
-            credential_argument=captured["second"],
-            context=second._context(),
-            required_permission="USER_DATA",
-        )
-        self.assertEqual(first_resolved.fingerprint, second_resolved.fingerprint)
-
-        loads_before = len(self.credential_loads)
-        with self.assertRaises(FakeSecretProviderError):
-            second_service.secret_provider.resolve(
-                credential_argument=captured["first"],
-                context=second._context(),
-                required_permission="USER_DATA",
-            )
-        self.assertEqual(len(self.credential_loads), loads_before)
-
-    def test_module_import_does_not_require_installed_mcp(self) -> None:
+    def test_module_import_has_no_runtime_dependency_or_legacy_authorization_surface(self) -> None:
         source = MODULE_PATH.read_text(encoding="utf-8")
-        tree_prefix = source.split("def _load_default_runtime", 1)[0]
-        self.assertNotIn("from weex_mcp", tree_prefix)
-        self.assertNotIn("import weex_mcp", tree_prefix)
-
-    def test_runtime_status_is_nonsecret_and_rechecks_the_manifest(self) -> None:
-        gateway, service = self.make_gateway(trade_enabled=False, profile_id=None)
-
-        ready = gateway.runtime_status()
-
-        self.assertEqual(
-            set(ready),
-            {
-                "installed",
-                "version",
-                "expected_version",
-                "package_ok",
-                "manifest_ok",
-                "runtime_profile",
-                "trade_enabled",
-                "tool_contract_version",
-                "manifest_digest",
-                "action_required",
-            },
-        )
-        self.assertEqual(ready["version"], "0.2.0")
-        self.assertEqual(ready["expected_version"], "0.2.0")
-        self.assertTrue(ready["installed"])
-        self.assertTrue(ready["package_ok"])
-        self.assertTrue(ready["manifest_ok"])
-        self.assertEqual(ready["runtime_profile"], "local_user")
-        self.assertFalse(ready["trade_enabled"])
-        self.assertEqual(ready["tool_contract_version"], "1")
-        self.assertIsNone(ready["action_required"])
-        serialized = json.dumps(ready, sort_keys=True)
         for forbidden in (
-            "profile-a",
-            "api-spot.weex.com",
-            "api-contract.weex.com",
-            "partner-ref",
-            "approval-key",
-            "/Users/",
+            "TenantContext",
+            "approval_token_secret",
+            "delegated_authorizer",
+            "credential_argument",
+            "trade_preview_",
+            "trade_confirm_",
         ):
-            self.assertNotIn(forbidden, serialized)
+            self.assertNotIn(forbidden, source)
 
-        service.manifest["manifest_digest"] = f"sha256:{'f' * 64}"
-        stale = gateway.runtime_status()
-        self.assertTrue(stale["package_ok"])
-        self.assertFalse(stale["manifest_ok"])
-        self.assertEqual(stale["action_required"], "repair_mcp_contract")
-
-    def test_probe_local_mcp_runtime_reports_safe_success_and_failure_states(self) -> None:
-        manifests = {
-            False: build_manifest(tool_catalog(trade_enabled=False), trade_enabled=False),
-            True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
-        }
-        mapping = mapping_for(manifests)
-        tools = tool_catalog(trade_enabled=False)
-        service = FakeService(tools=tools, manifest=manifests[False], secret_provider=None)
-
-        ready = self.gateway.probe_local_mcp_runtime(
-            runtime_loader=lambda _expected: fake_runtime(service),
-            mapping_loader=lambda: copy.deepcopy(mapping),
-        )
-        self.assertTrue(ready["installed"])
-        self.assertTrue(ready["package_ok"])
-        self.assertTrue(ready["manifest_ok"])
-        self.assertIsNone(ready["action_required"])
-
-        failures = (
-            (
-                lambda _expected: (_ for _ in ()).throw(
-                    self.gateway.McpGatewayError("mcp_package_missing", "AK_MISSING /private/path")
-                ),
-                "install_verified_mcp_candidate",
-                False,
-            ),
-            (
-                lambda _expected: fake_runtime(service, package_version="9.9.9"),
-                "install_verified_mcp_candidate",
-                True,
-            ),
-            (
-                lambda _expected: (_ for _ in ()).throw(RuntimeError("AK_RUNTIME /private/path")),
-                "repair_mcp_runtime",
-                False,
-            ),
-        )
-        for runtime_loader, action_required, installed in failures:
-            with self.subTest(action_required=action_required):
-                status = self.gateway.probe_local_mcp_runtime(
-                    runtime_loader=runtime_loader,
-                    mapping_loader=lambda: copy.deepcopy(mapping),
-                )
-                self.assertEqual(status["installed"], installed)
-                self.assertFalse(status["package_ok"])
-                self.assertFalse(status["manifest_ok"])
-                self.assertEqual(status["action_required"], action_required)
-                serialized = json.dumps(status, sort_keys=True)
-                self.assertNotIn("AK_", serialized)
-                self.assertNotIn("/private/path", serialized)
-
-        tampered_service = FakeService(
-            tools=tools,
-            manifest=manifests[False],
-            secret_provider=None,
-        )
-        tampered_service.manifest["manifest_digest"] = f"sha256:{'e' * 64}"
-        contract = self.gateway.probe_local_mcp_runtime(
-            runtime_loader=lambda _expected: fake_runtime(tampered_service),
-            mapping_loader=lambda: copy.deepcopy(mapping),
-        )
-        self.assertTrue(contract["installed"])
-        self.assertTrue(contract["package_ok"])
-        self.assertFalse(contract["manifest_ok"])
-        self.assertEqual(contract["action_required"], "repair_mcp_contract")
-
-    def test_probe_local_mcp_runtime_sanitizes_malformed_mapping_and_runtime_versions(self) -> None:
-        manifests = {
-            False: build_manifest(tool_catalog(trade_enabled=False), trade_enabled=False),
-            True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
-        }
-        mapping = mapping_for(manifests)
-        service = FakeService(
-            tools=tool_catalog(trade_enabled=False),
-            manifest=manifests[False],
-            secret_provider=None,
-        )
-        malformed_mapping_values = (
-            ("package_version", "AK_MAPPING /private/candidate.whl"),
-            ("tool_contract_version", "profile-a"),
-        )
-        for field, unsafe_value in malformed_mapping_values:
-            with self.subTest(field=field):
-                bad_mapping = copy.deepcopy(mapping)
-                bad_mapping["verified_mcp_candidate"][field] = unsafe_value
-                status = self.gateway.probe_local_mcp_runtime(
-                    runtime_loader=lambda _expected: fake_runtime(service),
-                    mapping_loader=lambda: bad_mapping,
-                )
-                self.assertEqual(status["action_required"], "repair_mcp_mapping")
-                serialized = json.dumps(status, sort_keys=True)
-                self.assertNotIn(unsafe_value, serialized)
-                self.assertNotIn("/private/", serialized)
-
-        bad_digest_mapping = copy.deepcopy(mapping)
-        bad_digest_mapping["verified_mcp_candidate"]["compatibility_profiles"][2][
-            "manifest_digest"
-        ] = "AK_DIGEST /private/manifest.json"
-        digest_status = self.gateway.probe_local_mcp_runtime(
-            runtime_loader=lambda _expected: fake_runtime(service),
-            mapping_loader=lambda: bad_digest_mapping,
-        )
-        self.assertEqual(digest_status["action_required"], "repair_mcp_mapping")
-        self.assertNotIn("AK_DIGEST", json.dumps(digest_status, sort_keys=True))
-
-        runtime_status = self.gateway.probe_local_mcp_runtime(
-            runtime_loader=lambda _expected: fake_runtime(
-                service,
-                package_version="AK_RUNTIME /private/runtime.py",
-            ),
-            mapping_loader=lambda: copy.deepcopy(mapping),
-        )
-        self.assertEqual(
-            runtime_status["action_required"],
-            "install_verified_mcp_candidate",
-        )
-        self.assertIsNone(runtime_status["version"])
-        serialized_runtime = json.dumps(runtime_status, sort_keys=True)
-        self.assertNotIn("AK_RUNTIME", serialized_runtime)
-        self.assertNotIn("/private/", serialized_runtime)
-
-    def test_gateway_selects_each_local_manifest_and_derives_trade_secrets_only_for_trade(self) -> None:
-        approval_loads = []
-        tools = tool_catalog(trade_enabled=False)
-        readonly_manifest = build_manifest(tools, trade_enabled=False)
-        manifests = {
-            False: readonly_manifest,
-            True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
-        }
-        readonly_fake = FakeService(tools=tools, manifest=readonly_manifest, secret_provider=None)
-        readonly = self.gateway.LocalMcpGateway(
-            profile_id="profile-a",
-            effective_spot_base_url="https://api-spot.weex.com",
-            effective_futures_base_url="https://api-contract.weex.com",
-            trade_enabled=False,
-            timeout_seconds=15.0,
-            runtime_loader=lambda _expected: fake_runtime(readonly_fake),
-            mapping_loader=lambda: mapping_for(manifests),
-            profile_loader=self.profile_loader,
-            credential_loader=self.credential_loader,
-            approval_key_loader=lambda: approval_loads.append("load") or self.approval_key,
-            approval_key_status_loader=lambda: approval_loads.append("status") or dict(self.approval_status),
-        )
-        readonly_service = readonly_fake
-        trading, trading_service = self.make_gateway(trade_enabled=True)
-
-        self.assertFalse(readonly.trade_enabled)
-        self.assertEqual(readonly_service.settings.approval_token_secret, "")
-        self.assertEqual(approval_loads, [])
-        self.assertTrue(trading.trade_enabled)
-        self.assertNotEqual(trading_service.settings.approval_token_secret, self.approval_key)
-        self.assertGreaterEqual(len(trading_service.settings.approval_token_secret), 32)
-        self.assertEqual(self.profile_loads, ["profile-a", "profile-a"])
-
-        expected_secret = hmac.new(
-            self.approval_key.encode(),
-            b"weex-trader-local-mcp-approval-v1\0"
-            + str(manifests[True]["manifest_digest"]).encode(),
-            hashlib.sha256,
-        ).hexdigest()
-        self.assertEqual(trading_service.settings.approval_token_secret, expected_secret)
-
-    def test_gateway_passes_caller_resolved_effective_origins_exactly_to_settings(self) -> None:
+    def test_gateway_builds_v2_runtime_and_passes_resolved_routes(self) -> None:
         gateway, service = self.make_gateway(
             trade_enabled=False,
-            effective_spot_base_url="https://effective-spot.weex.tech",
-            effective_futures_base_url="https://effective-futures.weex.tech",
+            effective_spot_base_url="https://stg-spotpro-openapi.weex.tech",
+            effective_futures_base_url="https://stg-api-contract.weex.tech",
+            timeout_seconds=7.5,
+            request_locale="zh-CN",
         )
-
-        self.assertEqual(
-            gateway.effective_spot_base_url,
-            "https://effective-spot.weex.tech",
-        )
-        self.assertEqual(
-            gateway.effective_futures_base_url,
-            "https://effective-futures.weex.tech",
-        )
+        self.assertEqual(gateway.runtime_status()["version"], "0.3.0")
         self.assertEqual(
             service.settings.spot_base_url,
-            "https://effective-spot.weex.tech",
+            "https://stg-spotpro-openapi.weex.tech",
         )
         self.assertEqual(
             service.settings.futures_base_url,
-            "https://effective-futures.weex.tech",
+            "https://stg-api-contract.weex.tech",
         )
-
-    def test_read_gateway_preserves_locale_and_disables_market_retries(self) -> None:
-        tools = tool_catalog(trade_enabled=False)
-        manifest = build_manifest(tools, trade_enabled=False)
-        manifests = {
-            False: manifest,
-            True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
-        }
-        service = FakeService(tools=tools, manifest=manifest, secret_provider=None)
-
-        self.gateway.LocalMcpGateway(
-            profile_id="profile-a",
-            effective_spot_base_url="https://api-spot.weex.com",
-            effective_futures_base_url="https://api-contract.weex.com",
-            trade_enabled=False,
-            timeout_seconds=7.5,
-            request_locale="zh-CN",
-            runtime_loader=lambda _expected: fake_runtime(service),
-            mapping_loader=lambda: mapping_for(manifests),
-            profile_loader=self.profile_loader,
-            credential_loader=self.credential_loader,
-        )
-
         self.assertEqual(service.settings.request_locale, "zh-CN")
         self.assertEqual(service.settings.market_timeout_seconds, 7.5)
         self.assertEqual(service.settings.account_timeout_seconds, 7.5)
         self.assertEqual(service.settings.partner_timeout_seconds, 7.5)
         self.assertEqual(service.settings.market_max_attempts, 1)
         self.assertEqual(service.settings.market_retry_base_delay_seconds, 0.0)
+        self.assertFalse(hasattr(service.settings, "approval_token_secret"))
 
-    def test_public_gateway_needs_no_profile_or_vault_but_private_tool_requires_profile(self) -> None:
-        public_gateway, service = self.make_gateway(trade_enabled=False, profile_id=None)
-        public = public_gateway.call_typed_tool(
-            "market_get_symbol_price",
-            {"market": "spot", "symbol": "BTCUSDT"},
-        )
-        self.assertTrue(public["ok"])
-        self.assertEqual(self.profile_loads, [])
-        self.assertEqual(self.credential_loads, [])
-
-        with self.assertRaises(self.gateway.McpGatewayError) as ctx:
-            public_gateway.call_typed_tool(
-                "account_get_balance",
-                {"market": "spot", "trading_mode": "live"},
-            )
-        self.assertEqual(ctx.exception.code, "profile_required")
-        self.assertFalse(any(call[0] == "tools/call" for call in service.calls[5:]))
-
-    def test_private_call_injects_bound_credential_and_rejects_caller_override(self) -> None:
-        gateway, service = self.make_gateway(trade_enabled=False)
-        captured: dict[str, object] = {}
-
-        def handler(request, context):
-            captured["arguments"] = copy.deepcopy(request["params"]["arguments"])
-            captured["context"] = context
-            payload = {"ok": True, "data": {"balances": []}}
-            return {
-                "jsonrpc": "2.0",
-                "id": request["id"],
-                "result": {"structuredContent": payload, "isError": False},
-            }
-
-        service.tool_handler = handler
+    def test_public_call_needs_no_profile_and_private_call_requires_profile(self) -> None:
+        gateway, _ = self.make_gateway(trade_enabled=False, profile_id=None)
         result = gateway.call_typed_tool(
-            "account_get_balance",
-            {"market": "spot", "trading_mode": "live"},
-        )
-        self.assertTrue(result["ok"])
-        credential = captured["arguments"]["credential"]
-        self.assertEqual(credential["type"], "credential_ref")
-        self.assertEqual(credential["key_id"], "profile-a")
-        self.assertNotEqual(credential["ref"], "profile-a")
-        self.assertEqual(captured["context"].user_id, "profile-a")
-
-        for forbidden in ("credential", "endpoint", "path", "method"):
-            with self.subTest(forbidden=forbidden):
-                with self.assertRaises(self.gateway.McpGatewayError):
-                    gateway.call_typed_tool(
-                        "account_get_balance",
-                        {"market": "spot", forbidden: "override"},
-                    )
-
-    def test_every_call_rechecks_discovery_and_tools_before_business_call(self) -> None:
-        gateway, service = self.make_gateway(trade_enabled=False)
-        initial_discover = sum(method == "server/discover" for method, _ in service.calls)
-        initial_list = sum(method == "tools/list" for method, _ in service.calls)
-
-        gateway.call_typed_tool(
             "market_get_symbol_price",
             {"market": "spot", "symbol": "BTCUSDT"},
         )
-        gateway.call_typed_tool(
-            "market_get_symbol_price",
-            {"market": "spot", "symbol": "ETHUSDT"},
-        )
+        self.assertTrue(result["structured_content"]["ok"])
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+            gateway.call_typed_tool("account_get_balance", {"market": "spot"})
+        self.assertEqual(caught.exception.code, "profile_required")
 
-        self.assertEqual(
-            sum(method == "server/discover" for method, _ in service.calls),
-            initial_discover + 2,
-        )
-        self.assertEqual(
-            sum(method == "tools/list" for method, _ in service.calls),
-            initial_list + 2,
-        )
+        with self.assertRaises(self.gateway_module.McpGatewayError) as trade_gateway:
+            self.make_gateway(trade_enabled=True, profile_id=None)
+        self.assertEqual(trade_gateway.exception.code, "profile_required")
 
-    def test_trade_call_rejects_rotated_missing_or_locked_approval_key_before_tool(self) -> None:
-        gateway, service = self.make_gateway(trade_enabled=True)
-        base_tool_calls = sum(method == "tools/call" for method, _ in service.calls)
-        original = dict(self.approval_status)
-        invalid_statuses = (
-            ({**original, "fp_sha256": "0" * 16}, "approval_key_changed"),
-            ({"present": False, "valid": False, "length": 0, "fp_sha256": None}, "approval_key_required"),
-        )
-        for status, expected_code in invalid_statuses:
-            with self.subTest(expected_code=expected_code):
-                self.approval_status = status
-                with self.assertRaises(self.gateway.McpGatewayError) as ctx:
-                    gateway.call_typed_tool(
-                        "trade_preview_order",
-                        {"market": "spot", "trading_mode": "live"},
-                    )
-                self.assertEqual(ctx.exception.code, expected_code)
-        self.assertEqual(
-            sum(method == "tools/call" for method, _ in service.calls),
-            base_tool_calls,
-        )
+    def test_private_call_uses_context_and_never_injects_credential_argument(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=False)
 
-        self.approval_status = dict(original)
-        gateway._approval_key_status_loader = lambda: (_ for _ in ()).throw(
-            RuntimeError("vault locked profile-a")
-        )
-        with self.assertRaises(self.gateway.McpGatewayError) as locked:
-            gateway.call_typed_tool(
-                "trade_preview_order",
-                {"market": "spot", "trading_mode": "live"},
-            )
-        self.assertEqual(locked.exception.code, "approval_key_required")
-        self.assertNotIn("profile-a", str(locked.exception))
-
-    def test_trade_gateway_bridges_neutral_delegated_authorizer_callback(self) -> None:
-        captured: dict[str, object] = {}
-
-        def callback(payload: dict[str, object]) -> dict[str, object]:
-            captured.update(copy.deepcopy(payload))
-            return {
-                "authorization_id": "auth-1",
-                "scope_fingerprint": "scope-fingerprint",
-                "expires_at": 4102444800,
-                "audit_metadata": {"usage_count": 2},
-            }
-
-        gateway, service = self.make_gateway(
-            trade_enabled=True,
-            delegated_authorizer=callback,
-        )
-        execution = SimpleNamespace(
-            action="batch_order",
-            market="spot",
-            trading_mode="live",
-            summary={"orders": 2},
-            risk={"level": "bounded"},
-            risk_signature="risk-signature",
-        )
-
-        result = service.execution_authorizer.authorize(
-            context=gateway._context(),
-            credential_fingerprint="fp_credential",
-            execution=execution,
-            delegated_ref={"ref": "opaque-ref"},
-        )
-
-        self.assertIsInstance(result, FakeVerifiedExecutionAuthorization)
-        self.assertEqual(result.authorization_id, "auth-1")
-        self.assertEqual(result.scope_fingerprint, "scope-fingerprint")
-        self.assertEqual(result.audit_metadata, {"usage_count": 2})
-        self.assertEqual(
-            captured,
-            {
-                "context": {
-                    "tenant_id": "weex-trader-local",
-                    "user_id": "profile-a",
-                    "session_id": gateway._context().session_id,
-                    "request_id": "request",
-                },
-                "credential_fingerprint": "fp_credential",
-                "execution": {
-                    "action": "batch_order",
-                    "market": "spot",
-                    "trading_mode": "live",
-                    "summary": {"orders": 2},
-                    "risk": {"level": "bounded"},
-                    "risk_signature": "risk-signature",
-                },
-                "delegated_ref": {"ref": "opaque-ref"},
-            },
-        )
-
-    def test_delegated_authorizer_failures_use_stable_mcp_error_codes(self) -> None:
-        class CallbackError(RuntimeError):
-            def __init__(self, code: str):
-                super().__init__("unsafe callback detail AK_LEAK")
-                self.code = code
-                self.message = "unsafe callback detail AK_LEAK"
-
-        cases = (
-            ("execution_authorization_invalid", "execution_authorization_invalid"),
-            ("execution_authorization_expired", "execution_authorization_expired"),
-            ("unsupported_code", "execution_authorization_denied"),
-        )
-        for callback_code, expected_code in cases:
-            with self.subTest(callback_code=callback_code):
-                gateway, service = self.make_gateway(
-                    trade_enabled=True,
-                    delegated_authorizer=lambda _payload, code=callback_code: (_ for _ in ()).throw(
-                        CallbackError(code)
-                    ),
-                )
-                with self.assertRaises(FakeExecutionAuthorizationError) as raised:
-                    service.execution_authorizer.authorize(
-                        context=gateway._context(),
-                        credential_fingerprint="fp",
-                        execution=SimpleNamespace(
-                            action="order",
-                            market="spot",
-                            trading_mode="live",
-                            summary={},
-                            risk={},
-                            risk_signature="sig",
-                        ),
-                        delegated_ref={"ref": "opaque"},
-                    )
-                self.assertEqual(raised.exception.code, expected_code)
-                self.assertNotIn("AK_LEAK", str(raised.exception))
-
-        gateway, service = self.make_gateway(
-            trade_enabled=True,
-            delegated_authorizer=lambda _payload: {"authorization_id": "missing-fields"},
-        )
-        with self.assertRaises(FakeExecutionAuthorizationError) as invalid:
-            service.execution_authorizer.authorize(
-                context=gateway._context(),
-                credential_fingerprint="fp",
-                execution=SimpleNamespace(
-                    action="order",
-                    market="spot",
-                    trading_mode="live",
-                    summary={},
-                    risk={},
-                    risk_signature="sig",
-                ),
-                delegated_ref={"ref": "opaque"},
-            )
-        self.assertEqual(invalid.exception.code, "execution_authorization_invalid")
-
-    def test_manual_gateway_keeps_default_fail_closed_authorizer_wiring(self) -> None:
-        _gateway, service = self.make_gateway(trade_enabled=True)
-        self.assertIsNone(service.execution_authorizer)
-
-    def test_credential_rotation_is_loaded_fresh_and_mcp_error_is_preserved(self) -> None:
-        gateway, service = self.make_gateway(trade_enabled=True)
-        fingerprints: list[str] = []
-
-        def handler(request, context):
+        def resolve_through_gateway(request, context):
             resolved = service.secret_provider.resolve(
-                credential_argument=request["params"]["arguments"]["credential"],
-                context=context,
-                required_permission="TRADE",
+                invocation_context=context,
+                required_capabilities=frozenset({"account.spot.get_balance", "accountDetails"}),
             )
-            fingerprints.append(resolved.fingerprint)
-            payload = (
-                {"ok": True, "data": {"preview_id": "first"}}
-                if len(fingerprints) == 1
-                else {"ok": False, "error": {"code": "approval_mismatch", "message": "safe"}}
-            )
+            self.assertEqual(resolved.api_key, "AK_ONE")
             return {
                 "jsonrpc": "2.0",
                 "id": request["id"],
-                "result": {"structuredContent": payload, "isError": not payload["ok"]},
+                "result": {
+                    "structuredContent": {"ok": True, "data": {}},
+                    "isError": False,
+                },
             }
 
-        service.tool_handler = handler
-        first = gateway.call_typed_tool(
-            "trade_preview_order",
-            {"market": "spot", "trading_mode": "live"},
-        )
-        self.assertTrue(first["ok"])
-        self.credentials = SimpleNamespace(
-            api_key="AK_ONE",
-            api_secret="SK_ROTATED",
-            api_passphrase="PP_ONE",
-        )
-        second = gateway.call_typed_tool(
-            "trade_preview_order",
-            {"market": "spot", "trading_mode": "live"},
-        )
-        self.assertEqual(second["error"]["code"], "approval_mismatch")
-        self.assertEqual(len(fingerprints), 2)
-        self.assertNotEqual(fingerprints[0], fingerprints[1])
+        service.tool_handler = resolve_through_gateway
+        result = gateway.call_typed_tool("account_get_balance", {"market": "spot"})
+        method, request, context = service.calls[-1]
+        self.assertEqual(method, "tools/call")
+        self.assertEqual(request["params"]["arguments"], {"market": "spot"})
+        self.assertIsInstance(context, FakeInvocationContext)
+        self.assertIsNone(context.execution_grant)
+        self.assertEqual(context.account_binding.profile_id, "profile-a")
+        self.assertIsNone(result["transport_meta"])
 
-    def test_strict_envelope_preserves_structured_fields_and_rejects_protocol_errors(self) -> None:
+    def test_binding_key_rotation_rejects_private_call_before_tool_dispatch(self) -> None:
         gateway, service = self.make_gateway(trade_enabled=False)
-        payload = {
-            "ok": False,
-            "error": {"code": "upstream_error", "message": "safe"},
-            "audit": {"request_id": "request"},
-            "outcome": {"class": "unknown", "write_attempted": True, "action": "x"},
-        }
-        service.tool_handler = lambda request, context: {
-            "jsonrpc": "2.0",
-            "id": request["id"],
-            "result": {
-                "structuredContent": copy.deepcopy(payload),
-                "content": [{"type": "text", "text": "not parsed"}],
-                "isError": True,
-            },
-        }
+        self.binding_status["fp_sha256"] = "0" * 16
+        before = len(service.calls)
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+            gateway.call_typed_tool("account_get_balance", {"market": "spot"})
+        self.assertEqual(caught.exception.code, "binding_key_changed")
+        self.assertEqual(len(service.calls), before + 2)  # fresh discover/list only
+
+    def test_caller_credential_and_routing_fields_are_rejected_before_preflight(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=False)
+        before = len(service.calls)
+        for arguments in (
+            {"market": "spot", "credential": {"ref": "caller"}},
+            {"market": "spot", "expected_environment": "staging"},
+            {"market": "spot", "endpoint": "https://evil.example"},
+        ):
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+                    gateway.call_typed_tool("account_get_balance", arguments)
+                self.assertEqual(caught.exception.code, "invalid_arguments")
+                self.assertEqual(len(service.calls), before)
+
+    def test_prepare_mutation_uses_context_without_execution_grant(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=True)
+        prepared = gateway.prepare_mutation(
+            "trade_place_order",
+            {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"},
+        )
+        self.assertEqual(prepared["tool_name"], "trade_place_order")
+        _name, arguments, context = service.prepares[-1]
+        self.assertEqual(arguments["client_order_id"], "client-1")
+        self.assertIsNone(context.execution_grant)
+
+    def test_direct_call_requires_execution_grant_only_in_context(self) -> None:
+        gateway, service = self.make_gateway(
+            trade_enabled=True,
+            mutation_ready=True,
+            grant_consumer=object(),
+        )
+        arguments = {"market": "spot", "symbol": "BTCUSDT", "client_order_id": "client-1"}
+        with self.assertRaises(self.gateway_module.McpGatewayError) as missing:
+            gateway.call_typed_tool("trade_place_order", arguments)
+        self.assertEqual(missing.exception.code, "execution_grant_required")
+
+        grant = FakeExecutionGrant("grant-1")
+        gateway.call_typed_tool(
+            "trade_place_order",
+            arguments,
+            execution_grant=grant,
+        )
+        _method, request, context = service.calls[-1]
+        self.assertNotIn("execution_grant", request["params"]["arguments"])
+        self.assertIs(context.execution_grant, grant)
+
+    def test_fixed_wrapper_preserves_top_level_transport_meta_and_null_absence(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=False)
+        wrapped = gateway.call_typed_tool(
+            "market_get_symbol_price",
+            {"market": "spot", "symbol": "BTCUSDT"},
+        )
+        self.assertEqual(set(wrapped), {"structured_content", "is_error", "transport_meta"})
+        self.assertFalse(wrapped["is_error"])
+        self.assertEqual(wrapped["transport_meta"]["version"], 1)
+
+        def no_meta(request, _context):
+            return {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"structuredContent": {"ok": True}, "isError": False},
+            }
+
+        service.tool_handler = no_meta
+        without_meta = gateway.call_typed_tool(
+            "market_get_symbol_price",
+            {"market": "spot", "symbol": "BTCUSDT"},
+        )
+        self.assertIsNone(without_meta["transport_meta"])
+
+        def typed_error(request, _context):
+            return {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "structuredContent": {
+                        "ok": False,
+                        "error": {"code": "rejected", "message": "Rejected."},
+                    },
+                    "isError": True,
+                    "_meta": {
+                        "com.weex/transport": {
+                            "version": 1,
+                            "request_id": "typed-error",
+                            "attempt_count": 1,
+                        }
+                    },
+                },
+            }
+
+        service.tool_handler = typed_error
+        rejected = gateway.call_typed_tool(
+            "market_get_symbol_price",
+            {"market": "spot", "symbol": "BTCUSDT"},
+        )
+        self.assertTrue(rejected["is_error"])
+        self.assertFalse(rejected["structured_content"]["ok"])
         self.assertEqual(
+            rejected["structured_content"]["error"]["code"],
+            "rejected",
+        )
+        self.assertEqual(rejected["transport_meta"]["request_id"], "typed-error")
+
+    def test_malformed_transport_meta_fails_closed_without_payload_pollution(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=False)
+        for invalid in (
+            {"version": 1, "request_id": "r", "attempt_count": 0},
+            {"version": 1, "request_id": "r", "attempt_count": 1, "secret": "SK_LEAK"},
+            "invalid",
+        ):
+
+            def handler(request, _context, value=invalid):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "structuredContent": {"ok": True},
+                        "isError": False,
+                        "_meta": {"com.weex/transport": value},
+                    },
+                }
+
+            service.tool_handler = handler
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+                    gateway.call_typed_tool(
+                        "market_get_symbol_price",
+                        {"market": "spot", "symbol": "BTCUSDT"},
+                    )
+                self.assertEqual(caught.exception.code, "mcp_protocol_error")
+                self.assertNotIn("SK_LEAK", str(caught.exception))
+
+    def test_static_contract_is_pinned_while_dynamic_readiness_may_change(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=True)
+        first = gateway.runtime_status()
+        self.assertTrue(first["manifest_ok"])
+        self.assertFalse(first["mutation_ready"])
+        self.assertEqual(first["runtime_action_required"], ["configure_execution_grant_consumer"])
+
+        service.runtime_availability = availability(
+            service.tools,
+            trade_enabled=True,
+            mutation_ready=True,
+        )
+        second = gateway.runtime_status()
+        self.assertTrue(second["manifest_ok"])
+        self.assertTrue(second["mutation_ready"])
+        self.assertEqual(second["boundary_manifest_digest"], first["boundary_manifest_digest"])
+
+        service.runtime_availability["action_required"] = ["AK_LEAK"]
+        malformed = gateway.runtime_status()
+        self.assertFalse(malformed["manifest_ok"])
+        self.assertEqual(malformed["action_required"], "repair_mcp_runtime")
+        self.assertNotIn("AK_LEAK", json.dumps(malformed, sort_keys=True))
+
+    def test_active_static_and_tool_tampering_fail_before_business_call(self) -> None:
+        mutations = ("manifest", "static", "tool")
+        for mutation in mutations:
+            gateway, service = self.make_gateway(trade_enabled=False)
+            if mutation == "manifest":
+                service.manifest["package_version"] = "9.9.9"
+            elif mutation == "static":
+                service.static_manifest["boundary_contract_digest"] = "sha256:" + "0" * 64
+            else:
+                service.tools[0]["inputSchema"]["properties"]["extra"] = {"type": "string"}
+            before = len(service.calls)
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+                    gateway.call_typed_tool(
+                        "market_get_symbol_price",
+                        {"market": "spot", "symbol": "BTCUSDT"},
+                    )
+                self.assertEqual(caught.exception.code, "mcp_contract_mismatch")
+                self.assertEqual(len(service.calls), before + 2)
+
+    def test_boundary_permission_tampering_with_stale_digest_fails_closed(self) -> None:
+        tampered = boundary_contract()
+        tampered["permissions"]["account"]["account_get_balance/spot"]["host_policy_capability"] = (
+            "account.spot.unreviewed_capability"
+        )
+
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+            self.make_gateway(
+                trade_enabled=False,
+                boundary_contract_loader=lambda: tampered,
+            )
+
+        self.assertEqual(caught.exception.code, "mcp_mapping_invalid")
+
+    def test_request_description_returns_fixed_wrapper_and_rejects_origin_drift(self) -> None:
+        gateway, _service = self.make_gateway(trade_enabled=False)
+        wrapped = self.gateway_module.describe_local_mcp_request(
+            name="account_get_balance",
+            arguments={"market": "spot"},
+            effective_spot_base_url="https://api-spot.weex.com",
+            effective_futures_base_url="https://api-contract.weex.com",
+            trade_enabled=False,
+            timeout_seconds=15.0,
+            runtime_loader=lambda _expected: gateway._runtime,
+            mapping_loader=lambda: gateway._mapping,
+        )
+        self.assertEqual(set(wrapped), {"structured_content", "is_error", "transport_meta"})
+        self.assertFalse(wrapped["is_error"])
+        self.assertIsNone(wrapped["transport_meta"])
+        self.assertEqual(
+            wrapped["structured_content"]["result"]["request"]["method"],
+            "GET",
+        )
+
+        runtime = gateway._runtime
+        original = runtime.describe_request
+
+        def drifted(**kwargs):
+            value = original(**kwargs)
+            value["url"] = "https://evil.example/private"
+            return value
+
+        runtime.describe_request = drifted
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+            self.gateway_module.describe_local_mcp_request(
+                name="account_get_balance",
+                arguments={"market": "spot"},
+                effective_spot_base_url="https://api-spot.weex.com",
+                effective_futures_base_url="https://api-contract.weex.com",
+                trade_enabled=False,
+                timeout_seconds=15.0,
+                runtime_loader=lambda _expected: runtime,
+                mapping_loader=lambda: gateway._mapping,
+            )
+        self.assertEqual(caught.exception.code, "mcp_contract_mismatch")
+
+    def test_protocol_errors_and_is_error_mismatch_fail_closed(self) -> None:
+        gateway, service = self.make_gateway(trade_enabled=False)
+
+        def bad(request, _context):
+            return {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"structuredContent": {"ok": True}, "isError": True},
+            }
+
+        service.tool_handler = bad
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
             gateway.call_typed_tool(
                 "market_get_symbol_price",
                 {"market": "spot", "symbol": "BTCUSDT"},
-            ),
-            payload,
-        )
+            )
+        self.assertEqual(caught.exception.code, "mcp_protocol_error")
 
-        invalid_responses = (
-            {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603}},
-            {"jsonrpc": "2.0", "id": 1, "result": []},
-            {"jsonrpc": "2.0", "id": 1, "result": {"structuredContent": []}},
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {"structuredContent": {"ok": True}, "isError": True},
-            },
-        )
-        for response in invalid_responses:
-            with self.subTest(response=response):
-                service.tool_handler = lambda request, context, response=response: response
-                with self.assertRaises(self.gateway.McpGatewayError):
-                    gateway.call_typed_tool(
-                        "market_get_symbol_price",
-                        {"market": "spot", "symbol": "BTCUSDT"},
-                    )
-
-    def test_jsonrpc_version_and_id_are_strict_for_discover_list_and_call(self) -> None:
-        gateway, service = self.make_gateway(trade_enabled=False)
-        original_handle = service.handle_jsonrpc
-        mutations = (
-            ("server/discover", "missing_version"),
-            ("server/discover", "wrong_version"),
-            ("tools/list", "missing_id"),
-            ("tools/list", "wrong_id"),
-            ("tools/call", "missing_version"),
-            ("tools/call", "wrong_version"),
-            ("tools/call", "missing_id"),
-            ("tools/call", "wrong_id"),
-        )
-
-        for target_method, mutation in mutations:
-            with self.subTest(target_method=target_method, mutation=mutation):
-                def mutate(request, *, context=None):
-                    response = original_handle(request, context=context)
-                    if request.get("method") != target_method:
-                        return response
-                    response = copy.deepcopy(response)
-                    if mutation == "missing_version":
-                        response.pop("jsonrpc", None)
-                    elif mutation == "wrong_version":
-                        response["jsonrpc"] = "1.0"
-                    elif mutation == "missing_id":
-                        response.pop("id", None)
-                    else:
-                        response["id"] = "wrong-id"
-                    return response
-
-                service.handle_jsonrpc = mutate
-                with self.assertRaises(self.gateway.McpGatewayError) as ctx:
-                    gateway.call_typed_tool(
-                        "market_get_symbol_price",
-                        {"market": "spot", "symbol": "BTCUSDT"},
-                    )
-                self.assertEqual(ctx.exception.code, "mcp_protocol_error")
-                service.handle_jsonrpc = original_handle
-
-    def test_package_mapping_manifest_and_tool_tampering_fail_before_business_call(self) -> None:
-        mutations = (
-            "package_version",
-            "mapping_version",
-            "missing_local_profile",
-            "manifest_digest",
-            "tool_schema",
-            "duplicate_tool",
-            "profile_label",
-            "trade_flag",
-            "unhashable_profile",
-        )
-        for mutation in mutations:
-            with self.subTest(mutation=mutation):
-                tools = tool_catalog(trade_enabled=False)
-                manifest = build_manifest(tools, trade_enabled=False)
-                manifests = {
-                    False: build_manifest(tool_catalog(trade_enabled=False), trade_enabled=False),
-                    True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True),
-                }
-                mapping = mapping_for(manifests)
-                runtime = fake_runtime(
-                    FakeService(tools=tools, manifest=manifest, secret_provider=None)
-                )
-                service = runtime.build_local_user_service(
-                    settings=FakeSettings(),
-                    secret_provider=None,
-                )
-                if mutation == "package_version":
-                    runtime.package_version = "9.9.9"
-                elif mutation == "mapping_version":
-                    mapping["mapping_version"] = "trader-mcp-capability-v1"
-                elif mutation == "missing_local_profile":
-                    mapping["verified_mcp_candidate"]["compatibility_profiles"] = [
-                        item
-                        for item in mapping["verified_mcp_candidate"]["compatibility_profiles"]
-                        if item["runtime_profile"] != "local_user"
-                    ]
-                elif mutation == "manifest_digest":
-                    service.manifest["manifest_digest"] = f"sha256:{'f' * 64}"
-                elif mutation == "tool_schema":
-                    service.tools[0]["inputSchema"]["properties"]["tampered"] = {"type": "string"}
-                elif mutation == "duplicate_tool":
-                    service.tools.append(copy.deepcopy(service.tools[0]))
-                elif mutation == "profile_label":
-                    service.manifest["runtime_profile"] = "broker_server"
-                    payload = dict(service.manifest)
-                    payload.pop("manifest_digest")
-                    service.manifest["manifest_digest"] = canonical_digest(payload)
-                elif mutation == "trade_flag":
-                    service.manifest["trade_enabled"] = True
-                    payload = dict(service.manifest)
-                    payload.pop("manifest_digest")
-                    service.manifest["manifest_digest"] = canonical_digest(payload)
-                elif mutation == "unhashable_profile":
-                    mapping["verified_mcp_candidate"]["compatibility_profiles"][0][
-                        "runtime_profile"
-                    ] = {"bad": []}
-
-                with self.assertRaises(self.gateway.McpGatewayError):
-                    self.gateway.LocalMcpGateway(
-                        profile_id="profile-a",
-                        effective_spot_base_url="https://api-spot.weex.com",
-                        effective_futures_base_url="https://api-contract.weex.com",
-                        trade_enabled=False,
-                        timeout_seconds=15.0,
-                        runtime_loader=lambda _expected: runtime,
-                        mapping_loader=lambda mapping=mapping: mapping,
-                        profile_loader=self.profile_loader,
-                        credential_loader=self.credential_loader,
-                        approval_key_loader=lambda: self.approval_key,
-                        approval_key_status_loader=lambda: dict(self.approval_status),
-                    )
-                self.assertFalse(any(method == "tools/call" for method, _ in service.calls))
-
-    def test_default_runtime_loader_reports_missing_package_version_and_public_api(self) -> None:
-        with mock.patch.object(
-            self.gateway.metadata,
-            "version",
-            side_effect=self.gateway.metadata.PackageNotFoundError,
+        for response in (
+            {"jsonrpc": "1.0", "id": "wrong", "result": {}},
+            {"jsonrpc": "2.0", "id": "wrong", "result": {}},
+            {"jsonrpc": "2.0", "id": "placeholder", "error": {"code": -1}},
         ):
-            with self.assertRaises(self.gateway.McpGatewayError) as missing:
-                self.gateway._load_default_runtime("0.2.0")
-        self.assertEqual(missing.exception.code, "mcp_package_missing")
 
-        with mock.patch.object(self.gateway.metadata, "version", return_value="0.1.0"):
-            with self.assertRaises(self.gateway.McpGatewayError) as mismatch:
-                self.gateway._load_default_runtime("0.2.0")
-        self.assertEqual(mismatch.exception.code, "mcp_version_mismatch")
+            def protocol_handler(request, _context, raw=response):
+                value = copy.deepcopy(raw)
+                if value.get("id") == "placeholder":
+                    value["id"] = request["id"]
+                return value
 
-        modules = {
-            "weex_mcp.local": SimpleNamespace(),
-            "weex_mcp.settings": SimpleNamespace(Settings=FakeSettings),
-            "weex_mcp.tenant_context": SimpleNamespace(TenantContext=FakeTenantContext),
-            "weex_mcp.secret_provider": SimpleNamespace(
-                ResolvedWeexCredential=FakeResolvedCredential,
-                SecretProviderError=FakeSecretProviderError,
-            ),
-        }
-        with mock.patch.object(self.gateway.metadata, "version", return_value="0.2.0"):
-            with mock.patch.object(
-                self.gateway.importlib,
-                "import_module",
-                side_effect=lambda name: modules[name],
-            ):
-                with self.assertRaises(self.gateway.McpGatewayError) as incompatible:
-                    self.gateway._load_default_runtime("0.2.0")
-        self.assertEqual(incompatible.exception.code, "mcp_runtime_incompatible")
+            service.tool_handler = protocol_handler
+            with self.subTest(response=response):
+                with self.assertRaises(self.gateway_module.McpGatewayError) as protocol_error:
+                    gateway.call_typed_tool(
+                        "market_get_symbol_price",
+                        {"market": "spot", "symbol": "BTCUSDT"},
+                    )
+                self.assertEqual(protocol_error.exception.code, "mcp_protocol_error")
 
-        with mock.patch.object(self.gateway.metadata, "version", return_value="0.2.0"):
-            with mock.patch.object(
-                self.gateway.importlib,
-                "import_module",
-                side_effect=RuntimeError("AK_LEAK /private/checkout"),
-            ):
-                with self.assertRaises(self.gateway.McpGatewayError) as broken:
-                    self.gateway._load_default_runtime("0.2.0")
-        self.assertEqual(broken.exception.code, "mcp_runtime_incompatible")
-        self.assertNotIn("AK_LEAK", str(broken.exception))
-
-    def test_mapping_and_service_exceptions_are_projected_as_stable_gateway_errors(self) -> None:
-        with self.assertRaises(self.gateway.McpGatewayError) as mapping_error:
-            self.gateway.LocalMcpGateway(
+    def test_old_new_contract_mismatches_fail_at_preflight(self) -> None:
+        tools = tool_catalog(trade_enabled=False)
+        manifest = build_manifest(tools, trade_enabled=False)
+        static = build_static_manifest(tools)
+        service = FakeService(
+            tools=tools,
+            manifest=manifest,
+            static_manifest=static,
+            runtime_availability=availability(tools, trade_enabled=False),
+        )
+        manifests = {False: manifest, True: build_manifest(tool_catalog(trade_enabled=True), trade_enabled=True)}
+        statics = {False: static, True: build_static_manifest(tool_catalog(trade_enabled=True))}
+        old_mapping = mapping_for(manifests, statics)
+        old_mapping["verified_mcp_candidate"]["package_version"] = "0.2.0"
+        with self.assertRaises(self.gateway_module.McpGatewayError) as caught:
+            self.gateway_module.LocalMcpGateway(
                 profile_id=None,
                 effective_spot_base_url="https://api-spot.weex.com",
                 effective_futures_base_url="https://api-contract.weex.com",
                 trade_enabled=False,
                 timeout_seconds=15.0,
-                runtime_loader=lambda _expected: None,
-                mapping_loader=lambda: (_ for _ in ()).throw(RuntimeError("AK_MAPPING")),
+                runtime_loader=lambda _expected: fake_runtime(service),
+                mapping_loader=lambda: old_mapping,
+                boundary_contract_loader=boundary_contract,
+            )
+        self.assertIn(caught.exception.code, {"mcp_mapping_invalid", "mcp_version_mismatch"})
+
+    def test_mapping_and_runtime_loader_failures_use_stable_safe_errors(self) -> None:
+        with self.assertRaises(self.gateway_module.McpGatewayError) as mapping_error:
+            self.gateway_module.LocalMcpGateway(
+                profile_id=None,
+                effective_spot_base_url="https://api-spot.weex.com",
+                effective_futures_base_url="https://api-contract.weex.com",
+                trade_enabled=False,
+                timeout_seconds=15.0,
+                mapping_loader=lambda: (_ for _ in ()).throw(RuntimeError("AK_LEAK /private/mapping")),
             )
         self.assertEqual(mapping_error.exception.code, "mcp_mapping_invalid")
-        self.assertNotIn("AK_MAPPING", str(mapping_error.exception))
+        self.assertNotIn("AK_LEAK", str(mapping_error.exception))
 
-        gateway, service = self.make_gateway(trade_enabled=False)
-        original_handle = service.handle_jsonrpc
-
-        def broken_handle(request, *, context=None):
-            if request.get("method") == "server/discover":
-                raise RuntimeError("AK_SERVICE private-origin")
-            return original_handle(request, context=context)
-
-        service.handle_jsonrpc = broken_handle
-        with self.assertRaises(self.gateway.McpGatewayError) as service_error:
-            gateway.call_typed_tool(
-                "market_get_symbol_price",
-                {"market": "spot", "symbol": "BTCUSDT"},
+        tools_by_mode = {flag: tool_catalog(trade_enabled=flag) for flag in (False, True)}
+        manifests = {flag: build_manifest(tools_by_mode[flag], trade_enabled=flag) for flag in (False, True)}
+        statics = {flag: build_static_manifest(tools_by_mode[flag]) for flag in (False, True)}
+        with self.assertRaises(self.gateway_module.McpGatewayError) as runtime_error:
+            self.gateway_module.LocalMcpGateway(
+                profile_id=None,
+                effective_spot_base_url="https://api-spot.weex.com",
+                effective_futures_base_url="https://api-contract.weex.com",
+                trade_enabled=False,
+                timeout_seconds=15.0,
+                mapping_loader=lambda: mapping_for(manifests, statics),
+                boundary_contract_loader=boundary_contract,
+                runtime_loader=lambda _expected: (_ for _ in ()).throw(RuntimeError("SK_LEAK /private/runtime")),
             )
-        self.assertEqual(service_error.exception.code, "mcp_protocol_error")
-        self.assertNotIn("AK_SERVICE", str(service_error.exception))
+        self.assertEqual(runtime_error.exception.code, "mcp_runtime_incompatible")
+        self.assertNotIn("SK_LEAK", str(runtime_error.exception))
 
-    def test_source_has_no_fallback_private_mcp_helper_or_editable_path(self) -> None:
-        source = MODULE_PATH.read_text(encoding="utf-8")
-        for forbidden in (
-            "StaticMappingSecretProvider",
-            "_credential_version_fingerprint",
-            "/Users/enzo/IdeaProjects/weex-mcp",
-            "pip install",
-            "urlopen(",
-            "requests.",
-            "direct_rest",
+    def test_default_runtime_loader_requires_v2_public_api(self) -> None:
+        module = self.gateway_module
+        with mock.patch.object(
+            module.metadata,
+            "version",
+            side_effect=module.metadata.PackageNotFoundError,
         ):
-            with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, source)
+            with self.assertRaises(module.McpGatewayError) as missing:
+                module._load_default_runtime("0.3.0")
+        self.assertEqual(missing.exception.code, "mcp_package_missing")
+
+        with mock.patch.object(module.metadata, "version", return_value="0.2.0"):
+            with self.assertRaises(module.McpGatewayError) as mismatch:
+                module._load_default_runtime("0.3.0")
+        self.assertEqual(mismatch.exception.code, "mcp_version_mismatch")
+
+        with (
+            mock.patch.object(module.metadata, "version", return_value="0.3.0"),
+            mock.patch.object(
+                module.importlib,
+                "import_module",
+            ) as importer,
+        ):
+            modules = {
+                "weex_mcp.local": SimpleNamespace(build_local_user_service=object(), describe_request=object()),
+                "weex_mcp.settings": SimpleNamespace(Settings=object()),
+                "weex_mcp.invocation_context": SimpleNamespace(
+                    VerifiedPrincipal=object(),
+                    AccountBinding=object(),
+                    CredentialBinding=object(),
+                    CorrelationContext=object(),
+                    AuthenticatedInvocationContext=object(),
+                ),
+                "weex_mcp.secret_provider": SimpleNamespace(
+                    ResolvedWeexCredential=object(),
+                    SecretProviderError=object(),
+                ),
+                "weex_mcp.execution_authorization": SimpleNamespace(ExecutionGrant=object()),
+            }
+            importer.side_effect = lambda name: modules[name]
+            runtime = module._load_default_runtime("0.3.0")
+        self.assertIs(
+            runtime.AuthenticatedInvocationContext,
+            modules["weex_mcp.invocation_context"].AuthenticatedInvocationContext,
+        )
+        imported = {call.args[0] for call in importer.call_args_list}
+        self.assertNotIn("weex_mcp.tenant_context", imported)
+
+    def test_probe_projects_safe_v2_status(self) -> None:
+        gateway, _service = self.make_gateway(trade_enabled=False)
+        status = self.gateway_module.probe_local_mcp_runtime(
+            runtime_loader=lambda _expected: gateway._runtime,
+            mapping_loader=lambda: gateway._mapping,
+            boundary_contract_loader=boundary_contract,
+        )
+        self.assertTrue(status["manifest_ok"])
+        self.assertEqual(status["manifest_version"], 2)
+        self.assertEqual(status["tool_contract_version"], "2")
+        serialized = json.dumps(status, sort_keys=True)
+        for forbidden in ("AK_ONE", "SK_ONE", "profile-a", "api-spot"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_probe_sanitizes_unexpected_runtime_loader_failures(self) -> None:
+        gateway, _service = self.make_gateway(trade_enabled=False)
+        status = self.gateway_module.probe_local_mcp_runtime(
+            runtime_loader=lambda _expected: (_ for _ in ()).throw(RuntimeError("SK_LEAK /private/runtime")),
+            mapping_loader=lambda: gateway._mapping,
+            boundary_contract_loader=boundary_contract,
+        )
+
+        self.assertFalse(status["manifest_ok"])
+        self.assertEqual(status["action_required"], "repair_mcp_runtime")
+        serialized = json.dumps(status, sort_keys=True)
+        self.assertNotIn("SK_LEAK", serialized)
+        self.assertNotIn("/private/runtime", serialized)
 
 
 if __name__ == "__main__":

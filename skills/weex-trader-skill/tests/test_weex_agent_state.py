@@ -22,6 +22,64 @@ from weex_gui_bootstrap import RuntimeProbe  # noqa: E402
 
 
 class AgentStateGuiRuntimeTests(unittest.TestCase):
+    def test_mcp_projection_separates_static_contract_from_dynamic_readiness(self) -> None:
+        ready = {
+            "installed": True,
+            "version": "0.3.0",
+            "expected_version": "0.3.0",
+            "package_ok": True,
+            "manifest_ok": True,
+            "runtime_profile": "local_user",
+            "trade_enabled": True,
+            "manifest_version": 2,
+            "tool_contract_version": "2",
+            "manifest_digest": f"sha256:{'a' * 64}",
+            "boundary_manifest_digest": f"sha256:{'b' * 64}",
+            "boundary_contract_digest": f"sha256:{'c' * 64}",
+            "private_read_ready": True,
+            "mutation_ready": False,
+            "runtime_action_required": ["configure_execution_grant_consumer"],
+            "action_required": None,
+        }
+
+        projected = agent_state.project_mcp_status(ready)
+
+        self.assertTrue(projected["manifest_ok"])
+        self.assertIsNone(projected["action_required"])
+        self.assertTrue(projected["private_read_ready"])
+        self.assertFalse(projected["mutation_ready"])
+        self.assertEqual(
+            projected["runtime_action_required"],
+            ["configure_execution_grant_consumer"],
+        )
+
+        malformed = agent_state.project_mcp_status(
+            {
+                **ready,
+                "runtime_action_required": ["AK_LEAK"],
+                "origin": "https://private.weex.tech",
+            }
+        )
+        self.assertFalse(malformed["manifest_ok"])
+        self.assertEqual(malformed["action_required"], "repair_mcp_gateway")
+        serialized = json.dumps(malformed, sort_keys=True)
+        self.assertNotIn("AK_LEAK", serialized)
+        self.assertNotIn("private.weex.tech", serialized)
+
+        contradictory = agent_state.project_mcp_status(
+            {
+                **ready,
+                "private_read_ready": False,
+                "mutation_ready": True,
+                "runtime_action_required": [],
+            }
+        )
+        self.assertFalse(contradictory["manifest_ok"])
+        self.assertEqual(
+            contradictory["action_required"],
+            "repair_mcp_gateway",
+        )
+
     def test_runtime_state_can_skip_default_profile_credential_probe(self) -> None:
         self.assertIn(
             "probe_default_profile_usable",
@@ -52,13 +110,19 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
         mcp_status = {
             "installed": False,
             "version": None,
-            "expected_version": "0.2.0",
+            "expected_version": "0.3.0",
             "package_ok": False,
             "manifest_ok": False,
             "runtime_profile": "local_user",
             "trade_enabled": False,
-            "tool_contract_version": "1",
+            "manifest_version": 2,
+            "tool_contract_version": "2",
             "manifest_digest": f"sha256:{'a' * 64}",
+            "boundary_manifest_digest": f"sha256:{'b' * 64}",
+            "boundary_contract_digest": f"sha256:{'c' * 64}",
+            "private_read_ready": False,
+            "mutation_ready": False,
+            "runtime_action_required": [],
             "action_required": "install_verified_mcp_candidate",
         }
         with tempfile.TemporaryDirectory() as tempdir:
@@ -108,14 +172,20 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
         self.assertFalse(hasattr(agent_state, "_project_mcp_status"))
         raw = {
             "installed": True,
-            "version": "0.2.0",
-            "expected_version": "0.2.0",
+            "version": "0.3.0",
+            "expected_version": "0.3.0",
             "package_ok": True,
             "manifest_ok": True,
             "runtime_profile": "local_user",
             "trade_enabled": False,
-            "tool_contract_version": "1",
+            "manifest_version": 2,
+            "tool_contract_version": "2",
             "manifest_digest": f"sha256:{'a' * 64}",
+            "boundary_manifest_digest": f"sha256:{'b' * 64}",
+            "boundary_contract_digest": f"sha256:{'c' * 64}",
+            "private_read_ready": True,
+            "mutation_ready": False,
+            "runtime_action_required": [],
             "action_required": None,
             "origin": "https://private.weex.tech",
             "profile": "profile-a",
@@ -135,8 +205,14 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
                 "manifest_ok",
                 "runtime_profile",
                 "trade_enabled",
+                "manifest_version",
                 "tool_contract_version",
                 "manifest_digest",
+                "boundary_manifest_digest",
+                "boundary_contract_digest",
+                "private_read_ready",
+                "mutation_ready",
+                "runtime_action_required",
                 "action_required",
             },
         )
@@ -169,14 +245,20 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
     def test_mcp_projection_rejects_malformed_versions_trade_mode_and_actions(self) -> None:
         ready = {
             "installed": True,
-            "version": "0.2.0",
-            "expected_version": "0.2.0",
+            "version": "0.3.0",
+            "expected_version": "0.3.0",
             "package_ok": True,
             "manifest_ok": True,
             "runtime_profile": "local_user",
             "trade_enabled": False,
-            "tool_contract_version": "1",
+            "manifest_version": 2,
+            "tool_contract_version": "2",
             "manifest_digest": f"sha256:{'a' * 64}",
+            "boundary_manifest_digest": f"sha256:{'b' * 64}",
+            "boundary_contract_digest": f"sha256:{'c' * 64}",
+            "private_read_ready": True,
+            "mutation_ready": False,
+            "runtime_action_required": [],
             "action_required": None,
         }
         malformed = (
@@ -200,14 +282,20 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
     def test_mcp_projection_rejects_non_string_unhashable_actions(self) -> None:
         ready = {
             "installed": True,
-            "version": "0.2.0",
-            "expected_version": "0.2.0",
+            "version": "0.3.0",
+            "expected_version": "0.3.0",
             "package_ok": True,
             "manifest_ok": True,
             "runtime_profile": "local_user",
             "trade_enabled": False,
-            "tool_contract_version": "1",
+            "manifest_version": 2,
+            "tool_contract_version": "2",
             "manifest_digest": f"sha256:{'a' * 64}",
+            "boundary_manifest_digest": f"sha256:{'b' * 64}",
+            "boundary_contract_digest": f"sha256:{'c' * 64}",
+            "private_read_ready": True,
+            "mutation_ready": False,
+            "runtime_action_required": [],
             "action_required": None,
         }
         for action in ({"key": "AK_LEAK"}, ["AK_LEAK"], {"AK_LEAK"}):
@@ -216,6 +304,18 @@ class AgentStateGuiRuntimeTests(unittest.TestCase):
                     {**ready, "action_required": action}
                 )
 
+                self.assertFalse(projected["manifest_ok"])
+                self.assertEqual(
+                    projected["action_required"],
+                    "repair_mcp_gateway",
+                )
+                self.assertNotIn("AK_LEAK", json.dumps(projected, sort_keys=True))
+
+        for runtime_actions in ([{"key": "AK_LEAK"}], [["AK_LEAK"]], {"AK_LEAK"}):
+            with self.subTest(runtime_action_type=type(runtime_actions).__name__):
+                projected = agent_state.project_mcp_status(
+                    {**ready, "runtime_action_required": runtime_actions}
+                )
                 self.assertFalse(projected["manifest_ok"])
                 self.assertEqual(
                     projected["action_required"],

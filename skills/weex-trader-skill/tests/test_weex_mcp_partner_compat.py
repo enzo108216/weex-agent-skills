@@ -54,14 +54,26 @@ def endpoint_from_mapping(entry: dict[str, object]) -> SimpleNamespace:
 
 
 class FakeGateway:
-    def __init__(self, payload: dict[str, object], **kwargs: object):
+    def __init__(
+        self,
+        payload: dict[str, object],
+        *,
+        transport_meta: dict[str, object] | None = None,
+        **kwargs: object,
+    ):
         self.payload = payload
+        self.transport_meta = transport_meta
         self.init_kwargs = kwargs
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def call_typed_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, copy.deepcopy(arguments)))
-        return copy.deepcopy(self.payload)
+        ok = self.payload.get("ok")
+        return {
+            "structured_content": copy.deepcopy(self.payload),
+            "is_error": isinstance(ok, bool) and not ok,
+            "transport_meta": copy.deepcopy(self.transport_meta),
+        }
 
 
 class PartnerMappingTests(unittest.TestCase):
@@ -170,7 +182,14 @@ class McpPartnerCompatTests(unittest.TestCase):
                     "capability_mode": "read_only_query",
                     "data": {"rows": [{"uid": "10001"}], "page": 1, "pages": 1},
                 },
-            }
+            },
+            transport_meta={
+                "version": 1,
+                "request_id": "partner-success",
+                "attempt_count": 1,
+                "http_status": 201,
+                "rate_limit": {"used": {"1M": 11}, "remaining": {"1M": 89}},
+            },
         )
         result = self.facade(gateway).execute(
             endpoint=endpoint_from_mapping(entry),
@@ -185,16 +204,15 @@ class McpPartnerCompatTests(unittest.TestCase):
                     "partner_verify_referrals",
                     {
                         "user_ids": ["10001", "10002"],
-                        "expected_environment": "partner_production",
                     },
                 )
             ],
         )
         self.assertTrue(result["ok"])
-        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["status"], 201)
         self.assertEqual(result["profile"]["resolved_profile_id"], "profile-id")
         self.assertEqual(result["data"]["page"], 1)
-        self.assertEqual(result["rate_limit"]["remaining"]["1M"], 90)
+        self.assertEqual(result["rate_limit"]["remaining"]["1M"], 89)
 
     def test_numeric_and_test_null_time_mapping_is_single_call(self) -> None:
         entry = mapping_entry(self.mapping, "partner.query-sub-channel-transactions")
@@ -237,9 +255,9 @@ class McpPartnerCompatTests(unittest.TestCase):
                 "product_type": "SPOT",
                 "page_num": "1",
                 "page_size": "20",
-                "expected_environment": "partner_test",
             },
         )
+        self.assertNotIn("expected_environment", gateway.calls[0][1])
 
     def test_typed_rate_limit_error_restores_partner_error_contract(self) -> None:
         entry = mapping_entry(self.mapping, "partner.get-affiliate-uids")
@@ -260,7 +278,14 @@ class McpPartnerCompatTests(unittest.TestCase):
                         "retry_automatic": False,
                     },
                 },
-            }
+            },
+            transport_meta={
+                "version": 1,
+                "request_id": "partner-error",
+                "attempt_count": 1,
+                "http_status": 429,
+                "rate_limit": {"used": {"1M": 101}, "remaining": {"1M": 0}},
+            },
         )
         result = self.facade(gateway).execute(
             endpoint=endpoint_from_mapping(entry),
@@ -271,7 +296,7 @@ class McpPartnerCompatTests(unittest.TestCase):
         self.assertEqual(result["status"], 429)
         self.assertEqual(result["error"]["category"], "rate_limit")
         self.assertEqual(result["error"]["code"], "-1054")
-        self.assertEqual(result["rate_limit"]["used"]["1M"], 1200)
+        self.assertEqual(result["rate_limit"]["used"]["1M"], 101)
         self.assertFalse(result["retry"]["automatic"])
         self.assertEqual(result["environment"], "partner_production")
 

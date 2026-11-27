@@ -16,7 +16,11 @@ from weex_mcp_gateway import (
     LocalMcpGateway,
     McpGatewayError,
 )
-from weex_mcp_read_compat import EXPECTED_MAPPING_VERSION, _load_default_mapping
+from weex_mcp_read_compat import (
+    EXPECTED_MAPPING_VERSION,
+    _load_default_mapping,
+    _unwrap_gateway_result,
+)
 
 
 PARTNER_BASE_URL = "https://api-spot.weex.com"
@@ -152,9 +156,8 @@ class McpPartnerFacade:
                 code=exc.code,
                 message=exc.message,
             )
-        arguments["expected_environment"] = self.settings.environment
         try:
-            payload = self._get_gateway().call_typed_tool(
+            wrapped = self._get_gateway().call_typed_tool(
                 str(operation["target"]["tool"]),
                 arguments,
             )
@@ -165,16 +168,18 @@ class McpPartnerFacade:
                 code=exc.code,
                 message=exc.message,
             )
-        if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+        unwrapped = _unwrap_gateway_result(wrapped)
+        if unwrapped is None:
             return self._local_failure(
                 operation,
                 category="schema",
                 code="partner_response_schema_error",
                 message="WEEX Partner response schema validation failed.",
             )
+        payload, transport_meta = unwrapped
         if payload["ok"]:
-            return self._success(operation, payload)
-        return self._error(operation, payload)
+            return self._success(operation, payload, transport_meta=transport_meta)
+        return self._error(operation, payload, transport_meta=transport_meta)
 
     def _operation(self, endpoint: Any) -> dict[str, Any]:
         key = getattr(endpoint, "key", None)
@@ -227,10 +232,24 @@ class McpPartnerFacade:
         self,
         operation: dict[str, Any],
         payload: dict[str, Any],
+        *,
+        transport_meta: dict[str, Any] | None,
     ) -> dict[str, Any]:
         data = payload.get("data")
-        status = _http_status(data.get("http_status")) if isinstance(data, dict) else None
-        rate_limit = data.get("rate_limit") if isinstance(data, dict) else None
+        status = (
+            _http_status(transport_meta.get("http_status"))
+            if isinstance(transport_meta, dict)
+            else None
+        )
+        if status is None and isinstance(data, dict):
+            status = _http_status(data.get("http_status"))
+        rate_limit = (
+            transport_meta.get("rate_limit")
+            if isinstance(transport_meta, dict)
+            else None
+        )
+        if rate_limit is None and isinstance(data, dict):
+            rate_limit = data.get("rate_limit")
         retry = data.get("retry") if isinstance(data, dict) else None
         if (
             not isinstance(data, dict)
@@ -271,6 +290,8 @@ class McpPartnerFacade:
         self,
         operation: dict[str, Any],
         payload: dict[str, Any],
+        *,
+        transport_meta: dict[str, Any] | None,
     ) -> dict[str, Any]:
         error = payload.get("error")
         if not isinstance(error, dict):
@@ -298,8 +319,20 @@ class McpPartnerFacade:
                 category = "upstream"
         upstream_code = details.get("upstream_code")
         legacy_code = upstream_code if isinstance(upstream_code, str) else code
-        status = _http_status(details.get("http_status"))
-        rate_limit = details.get("rate_limit")
+        status = (
+            _http_status(transport_meta.get("http_status"))
+            if isinstance(transport_meta, dict)
+            else None
+        )
+        if status is None:
+            status = _http_status(details.get("http_status"))
+        rate_limit = (
+            transport_meta.get("rate_limit")
+            if isinstance(transport_meta, dict)
+            else None
+        )
+        if rate_limit is None:
+            rate_limit = details.get("rate_limit")
         if not isinstance(rate_limit, dict):
             rate_limit = {"used": {}, "remaining": {}}
         result = self._base_envelope(operation)

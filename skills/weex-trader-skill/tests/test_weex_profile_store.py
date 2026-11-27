@@ -519,6 +519,67 @@ class ApplicationVaultApprovalKeyTests(unittest.TestCase):
             first,
         )
 
+    def test_binding_key_is_separate_from_legacy_approval_key_and_rotates_independently(self) -> None:
+        self._setup()
+        profile = self._create_profile()
+        approval_key = store.get_or_create_local_mcp_approval_key()
+
+        first = store.get_or_create_local_mcp_binding_key()
+        second = store.rotate_local_mcp_binding_key()
+
+        self.assertNotEqual(first, approval_key)
+        self.assertNotEqual(second, first)
+        self.assertEqual(store.get_or_create_local_mcp_binding_key(), second)
+        self.assertEqual(store.get_or_create_local_mcp_approval_key(), approval_key)
+        application_secrets = self._payload()["application_secrets"]
+        self.assertEqual(application_secrets["local_mcp_approval_key"], approval_key)
+        self.assertEqual(application_secrets["local_mcp_binding_key"], second)
+        self.assertEqual(
+            store.load_profile_credentials(profile.profile_id).api_secret,
+            "secret-1234",
+        )
+
+    def test_binding_key_first_provision_is_atomic_and_status_is_non_mutating(self) -> None:
+        self._setup()
+        before = store.vault_data_path().read_bytes()
+        self.assertEqual(
+            store.local_mcp_binding_key_status(),
+            {"present": False, "valid": False, "length": 0, "fp_sha256": None},
+        )
+        self.assertEqual(store.vault_data_path().read_bytes(), before)
+
+        results: list[str] = []
+        errors: list[BaseException] = []
+        original_save = store._save_vault_file
+
+        def worker() -> None:
+            try:
+                results.append(store.get_or_create_local_mcp_binding_key())
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        with mock.patch.object(store, "_save_vault_file", wraps=original_save) as save_mock:
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 8)
+        self.assertEqual(len(set(results)), 1)
+        self.assertEqual(save_mock.call_count, 1)
+        binding_key = results[0]
+        status = store.local_mcp_binding_key_status()
+        self.assertEqual(status["present"], True)
+        self.assertEqual(status["valid"], True)
+        self.assertEqual(status["length"], len(binding_key.encode("utf-8")))
+        self.assertEqual(
+            status["fp_sha256"],
+            hashlib.sha256(binding_key.encode("utf-8")).hexdigest()[:16],
+        )
+        self.assertNotIn(binding_key, json.dumps(status, sort_keys=True))
+
     def test_concurrent_first_provision_returns_one_key_and_writes_once(self) -> None:
         self._setup()
         results: list[str] = []
@@ -556,6 +617,24 @@ class ApplicationVaultApprovalKeyTests(unittest.TestCase):
 
         self.assertEqual(store.vault_data_path().read_bytes(), before)
 
+    def test_locked_vault_refuses_binding_key_operations_without_writing(self) -> None:
+        store.setup_linux_vault(
+            mode="manual_once",
+            passphrase="vault-pass",
+            unlock=False,
+        )
+        before = store.vault_data_path().read_bytes()
+
+        for operation in (
+            store.get_or_create_local_mcp_binding_key,
+            store.rotate_local_mcp_binding_key,
+            store.local_mcp_binding_key_status,
+        ):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaisesRegex(store.ProfileError, "locked"):
+                    operation()
+                self.assertEqual(store.vault_data_path().read_bytes(), before)
+
     def test_invalid_application_secret_payload_fails_closed_without_rewrite(self) -> None:
         self._setup()
         invalid_values: tuple[object, ...] = (
@@ -573,6 +652,25 @@ class ApplicationVaultApprovalKeyTests(unittest.TestCase):
                     store.get_or_create_local_mcp_approval_key,
                     store.rotate_local_mcp_approval_key,
                     store.local_mcp_approval_key_status,
+                ):
+                    with self.assertRaises(store.ProfileError):
+                        operation()
+                self.assertEqual(store.vault_data_path().read_bytes(), before)
+
+    def test_invalid_binding_key_payload_fails_closed_without_rewrite(self) -> None:
+        self._setup()
+        for value in (123, "short"):
+            with self.subTest(value=value):
+                payload = self._payload()
+                payload["application_secrets"] = {
+                    "local_mcp_binding_key": value,
+                }
+                self._rewrite_payload(payload)
+                before = store.vault_data_path().read_bytes()
+                for operation in (
+                    store.get_or_create_local_mcp_binding_key,
+                    store.rotate_local_mcp_binding_key,
+                    store.local_mcp_binding_key_status,
                 ):
                     with self.assertRaises(store.ProfileError):
                         operation()
@@ -657,15 +755,20 @@ class ApplicationVaultApprovalKeyTests(unittest.TestCase):
     def test_reset_and_force_setup_create_new_approval_keys(self) -> None:
         self._setup()
         first = store.get_or_create_local_mcp_approval_key()
+        first_binding = store.get_or_create_local_mcp_binding_key()
 
         store.reset_linux_vault()
         self._setup(passphrase="vault-pass-2")
         second = store.get_or_create_local_mcp_approval_key()
+        second_binding = store.get_or_create_local_mcp_binding_key()
         self.assertNotEqual(first, second)
+        self.assertNotEqual(first_binding, second_binding)
 
         self._setup(passphrase="vault-pass-3", force=True)
         third = store.get_or_create_local_mcp_approval_key()
+        third_binding = store.get_or_create_local_mcp_binding_key()
         self.assertNotEqual(second, third)
+        self.assertNotEqual(second_binding, third_binding)
 
     def test_simulated_old_writer_drop_regenerates_key_and_keeps_profiles(self) -> None:
         self._setup()
@@ -687,6 +790,7 @@ class ApplicationVaultApprovalKeyTests(unittest.TestCase):
         self._setup()
         profile = self._create_profile()
         approval_key = store.get_or_create_local_mcp_approval_key()
+        binding_key = store.get_or_create_local_mcp_binding_key()
         paths = (store.vault_config_path(), store.vault_data_path(), store.metadata_path())
         backup = {path.name: path.read_text(encoding="utf-8") for path in paths}
 
@@ -696,6 +800,7 @@ class ApplicationVaultApprovalKeyTests(unittest.TestCase):
         store.unlock_linux_vault("vault-pass")
 
         self.assertEqual(store.get_or_create_local_mcp_approval_key(), approval_key)
+        self.assertEqual(store.get_or_create_local_mcp_binding_key(), binding_key)
         self.assertEqual(store.get_default_profile_id(), profile.profile_id)
         self.assertEqual(store.resolve_profile("main").profile_id, profile.profile_id)
         self.assertEqual(store.load_profile_credentials(profile.profile_id).api_key, "key-1234")
